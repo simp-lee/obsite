@@ -1,0 +1,11 @@
+.agents-work/
+
+# Go build and test outputs
+bin/
+*.test
+*.out
+coverage.out
+.coverprofile
+
+# Local OS files
+.DS_Store

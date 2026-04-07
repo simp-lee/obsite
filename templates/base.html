@@ -1,0 +1,112 @@
+{{define "base"}}
+<!doctype html>
+<html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}}{{if and .Site.Title (ne .Title .Site.Title)}} · {{.Site.Title}}{{end}}{{else if .Site.Title}}{{.Site.Title}}{{else}}Untitled Site{{end}}</title>
+  {{with .Description}}<meta name="description" content="{{.}}">{{end}}
+  {{with .Site.Author}}<meta name="author" content="{{.}}">{{end}}
+  {{with .Canonical}}<link rel="canonical" href="{{.}}">{{end}}
+
+  {{with .OG.Title}}<meta property="og:title" content="{{.}}">{{end}}
+  <meta property="og:type" content="{{if .OG.Type}}{{.OG.Type}}{{else}}website{{end}}">
+  {{with .OG.Description}}<meta property="og:description" content="{{.}}">{{end}}
+  {{with .OG.URL}}<meta property="og:url" content="{{.}}">{{end}}
+  {{with .OG.Image}}<meta property="og:image" content="{{.}}">{{end}}
+  {{with .Site.Title}}<meta property="og:site_name" content="{{.}}">{{end}}
+
+  {{with .TwitterCard}}<meta name="twitter:card" content="{{.}}">{{end}}
+  {{with .OG.Title}}<meta name="twitter:title" content="{{.}}">{{end}}
+  {{with .OG.Description}}<meta name="twitter:description" content="{{.}}">{{end}}
+  {{with .OG.Image}}<meta name="twitter:image" content="{{.}}">{{end}}
+
+  <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
+
+  {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
+  <link rel="stylesheet" href="{{.Site.KaTeXCSSURL}}">
+  <script defer src="{{.Site.KaTeXJSURL}}"></script>
+  <script defer src="{{.Site.KaTeXAutoRenderURL}}"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      var target = document.querySelector("[data-page-content]");
+      if (target && typeof renderMathInElement === "function") {
+        renderMathInElement(target, {
+          delimiters: [
+            {left: "$$", right: "$$", display: true},
+            {left: "$", right: "$", display: false}
+          ],
+          throwOnError: false
+        });
+      }
+    });
+  </script>
+  {{end}}
+
+  {{if and .HasMermaid .Site.MermaidJSURL}}
+  <script type="module">
+    import mermaid from "{{.Site.MermaidJSURL}}";
+
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "neutral",
+      securityLevel: "loose"
+    });
+  </script>
+  {{end}}
+
+  {{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>{{end}}
+</head>
+<body class="kind-{{.Kind}}">
+  <div class="site-frame">
+    <header class="site-masthead">
+      <div class="masthead-band">
+        <a class="site-mark" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}">{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}</a>
+        <p class="site-mark-caption">Notes, references, and linked fragments.</p>
+      </div>
+      <div class="masthead-copy">
+        {{with .Site.Description}}<p class="site-description">{{.}}</p>{{end}}
+        {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}
+      </div>
+    </header>
+
+    {{if .Breadcrumbs}}
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        {{range .Breadcrumbs}}
+        <li>
+          {{if .URL}}
+          <a href="{{.URL}}">{{.Name}}</a>
+          {{else}}
+          <span aria-current="page">{{.Name}}</span>
+          {{end}}
+        </li>
+        {{end}}
+      </ol>
+    </nav>
+    {{end}}
+
+    <main class="site-main">
+      {{template "content" .}}
+    </main>
+
+    <footer class="site-footer">
+      <p>{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}{{if .Site.Author}} · {{.Site.Author}}{{end}}</p>
+      <p class="site-footer-note">Built for long-form reading, quick scanning, and durable internal links.</p>
+    </footer>
+  </div>
+</body>
+</html>
+{{end}}
+
+{{define "content"}}
+  {{if eq .Kind "note"}}
+    {{template "content-note" .}}
+  {{else if eq .Kind "index"}}
+    {{template "content-index" .}}
+  {{else if eq .Kind "tag"}}
+    {{template "content-tag" .}}
+  {{else if eq .Kind "404"}}
+    {{template "content-404" .}}
+  {{end}}
+{{end}}

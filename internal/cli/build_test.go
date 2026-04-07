@@ -1,0 +1,225 @@
+package cli
+
+import (
+	"errors"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	internalbuild "github.com/simp-lee/obsite/internal/build"
+	internalconfig "github.com/simp-lee/obsite/internal/config"
+	"github.com/simp-lee/obsite/internal/model"
+)
+
+func TestBuildCommandRequiresFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{
+			name:    "missing vault flag",
+			args:    []string{"build", "--output", filepath.Join(t.TempDir(), "site")},
+			wantErr: `required flag(s) "vault" not set`,
+		},
+		{
+			name:    "missing output flag",
+			args:    []string{"build", "--vault", t.TempDir()},
+			wantErr: `required flag(s) "output" not set`,
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			stdout, stderr, err := executeForTest(t, testCommandDependencies(), tt.args)
+			if err == nil {
+				t.Fatal("executeForTest() error = nil, want flag validation error")
+			}
+			if stdout != "" {
+				t.Fatalf("stdout = %q, want empty stdout", stdout)
+			}
+			if stderr != "" {
+				t.Fatalf("stderr = %q, want empty stderr", stderr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %q, want substring %q", err.Error(), tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	var gotConfigPath string
+	var gotVaultPath string
+	var gotOutputPath string
+	var gotConfig model.SiteConfig
+	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+		gotConfigPath = path
+		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	}
+	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+		gotConfig = cfg
+		gotVaultPath = vaultPath
+		gotOutputPath = outputPath
+		return &internalbuild.BuildResult{}, nil
+	}
+
+	stdout, stderr, err := executeForTest(t, deps, []string{"build", "--vault", vaultPath, "--output", outputPath})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr)
+	}
+	if gotConfigPath != configPath {
+		t.Fatalf("loadConfig path = %q, want %q", gotConfigPath, configPath)
+	}
+	if gotVaultPath != vaultPath {
+		t.Fatalf("build vaultPath = %q, want %q", gotVaultPath, vaultPath)
+	}
+	if gotOutputPath != outputPath {
+		t.Fatalf("build outputPath = %q, want %q", gotOutputPath, outputPath)
+	}
+	if gotConfig.Title != "Garden Notes" || gotConfig.BaseURL != "https://example.com/" {
+		t.Fatalf("build cfg = %#v, want loaded config", gotConfig)
+	}
+}
+
+func TestBuildCommandAllowsConfigOverride(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	overrideConfigPath := filepath.Join(t.TempDir(), "custom.yaml")
+	if err := os.WriteFile(overrideConfigPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", overrideConfigPath, err)
+	}
+
+	deps := testCommandDependencies()
+	var gotConfigPath string
+	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+		gotConfigPath = path
+		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	}
+	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+		return &internalbuild.BuildResult{}, nil
+	}
+
+	_, _, err := executeForTest(t, deps, []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", filepath.Join(t.TempDir(), "site"),
+		"--config", overrideConfigPath,
+	})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if gotConfigPath != overrideConfigPath {
+		t.Fatalf("loadConfig path = %q, want %q", gotConfigPath, overrideConfigPath)
+	}
+}
+
+func TestBuildCommandFailsWhenDefaultConfigMissing(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+
+	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", filepath.Join(t.TempDir(), "site"),
+	})
+	if err == nil {
+		t.Fatal("executeForTest() error = nil, want missing config error")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr)
+	}
+	if !strings.Contains(err.Error(), "default config file") {
+		t.Fatalf("error = %q, want missing default config message", err.Error())
+	}
+	if !strings.Contains(err.Error(), "pass --config") {
+		t.Fatalf("error = %q, want override guidance", err.Error())
+	}
+}
+
+func TestBuildCommandReturnsVaultPathErrorBeforeDefaultConfigLookup(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(vaultPath, []byte("content"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", vaultPath, err)
+	}
+
+	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", filepath.Join(t.TempDir(), "site"),
+	})
+	if err == nil {
+		t.Fatal("executeForTest() error = nil, want vault path error")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr)
+	}
+	if !strings.Contains(err.Error(), "vault path") || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("error = %q, want vault directory validation message", err.Error())
+	}
+	if strings.Contains(err.Error(), "default config file") {
+		t.Fatalf("error = %q, do not want default config lookup to mask vault path validation", err.Error())
+	}
+}
+
+func TestBuildCommandPropagatesBuildFailure(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	}
+	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+		return nil, errors.New("boom")
+	}
+
+	_, _, err := executeForTest(t, deps, []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", filepath.Join(t.TempDir(), "site"),
+	})
+	if err == nil {
+		t.Fatal("executeForTest() error = nil, want build failure")
+	}
+	if !strings.Contains(err.Error(), "build site: boom") {
+		t.Fatalf("error = %q, want wrapped build failure", err.Error())
+	}
+}

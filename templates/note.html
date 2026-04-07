@@ -1,0 +1,54 @@
+{{define "content-note"}}
+<article class="page-shell article-page">
+  <header class="page-header">
+    <p class="page-eyebrow">Note</p>
+    <h1 class="page-title"{{with .TitleID}} id="{{.}}"{{end}}>{{if .Title}}{{.Title}}{{else}}Untitled note{{end}}</h1>
+    {{with .Description}}<p class="page-deck">{{.}}</p>{{end}}
+
+    <div class="meta-strip" aria-label="Article metadata">
+      {{if not .Date.IsZero}}
+      <p>
+        <span class="meta-label">Published</span>
+        <time datetime="{{.Date.Format "2006-01-02T15:04:05Z07:00"}}">{{.Date.Format "02 Jan 2006"}}</time>
+      </p>
+      {{end}}
+      {{if not .LastModified.IsZero}}
+      <p>
+        <span class="meta-label">Updated</span>
+        <time datetime="{{.LastModified.Format "2006-01-02T15:04:05Z07:00"}}">{{.LastModified.Format "02 Jan 2006"}}</time>
+      </p>
+      {{end}}
+      {{if .Tags}}
+      <div>
+        <span class="meta-label">Tags</span>
+        <div class="tag-row">
+          {{range .Tags}}
+          <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+          {{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+  </header>
+
+  <section class="article-sheet">
+    <div class="entry-content" data-page-content>
+      {{.Content}}
+    </div>
+  </section>
+
+  {{if .Backlinks}}
+  <aside class="support-panel" aria-labelledby="backlinks-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Connections</p>
+      <h2 id="backlinks-heading">Backlinks</h2>
+    </div>
+    <ul class="linked-list">
+      {{range .Backlinks}}
+      <li><a href="{{.URL}}">{{.Title}}</a></li>
+      {{end}}
+    </ul>
+  </aside>
+  {{end}}
+</article>
+{{end}}

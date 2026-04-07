@@ -1,0 +1,25 @@
+{{define "content-404"}}
+<section class="page-shell not-found-page">
+  <header class="page-header not-found-hero">
+    <p class="page-eyebrow">Missing page</p>
+    <p class="not-found-code">404</p>
+    <h1 class="page-title">The note you asked for is not here.</h1>
+    <p class="page-deck">The link may be stale, the page may have moved, or the note was never published. Use the homepage to reorient, then follow the index back into the graph.</p>
+    <p><a class="action-link" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}">Return to the homepage</a></p>
+  </header>
+
+  {{if .RecentNotes}}
+  <section class="support-panel" aria-labelledby="recent-on-404-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Try these instead</p>
+      <h2 id="recent-on-404-heading">Recent notes</h2>
+    </div>
+    <ul class="linked-list">
+      {{range .RecentNotes}}
+      <li><a href="{{.URL}}">{{.Title}}</a></li>
+      {{end}}
+    </ul>
+  </section>
+  {{end}}
+</section>
+{{end}}
