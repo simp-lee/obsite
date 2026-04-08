@@ -1,0 +1,40 @@
+{{define "content-timeline"}}
+<section class="page-shell timeline-page">
+  <header class="page-header">
+    <p class="page-eyebrow">Timeline</p>
+    <h1 class="page-title">{{if .Title}}{{.Title}}{{else}}Recent notes{{end}}</h1>
+    <p class="page-deck">A reverse-chronological shelf of the latest published notes.</p>
+  </header>
+
+  <section class="support-panel" aria-labelledby="timeline-notes-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Reverse chronological</p>
+      <h2 id="timeline-notes-heading">Recent notes</h2>
+    </div>
+    {{if .TimelineNotes}}
+    <ol class="note-list">
+      {{range .TimelineNotes}}
+      <li class="note-card">
+        <div class="note-card-main">
+          <h3><a href="{{.URL}}">{{.Title}}</a></h3>
+          {{if not .Date.IsZero}}<time datetime="{{.Date.Format "2006-01-02T15:04:05Z07:00"}}">{{.Date.Format "02 Jan 2006"}}</time>{{end}}
+          {{if .Summary}}<p>{{.Summary}}</p>{{end}}
+        </div>
+        {{if .Tags}}
+        <div class="tag-row">
+          {{range .Tags}}
+          <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </li>
+      {{end}}
+    </ol>
+    {{else}}
+    <p class="empty-state">No public notes have been published yet.</p>
+    {{end}}
+  </section>
+
+  {{template "pagination-nav" .}}
+</section>
+{{end}}

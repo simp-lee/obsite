@@ -97,6 +97,7 @@ type Frontmatter struct {
 	Title       string
 	Description string
 	Date        time.Time
+	Updated     time.Time
 	Tags        []string
 	Aliases     []string
 	Publish     *bool

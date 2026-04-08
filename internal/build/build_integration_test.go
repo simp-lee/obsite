@@ -2,6 +2,7 @@ package build
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -16,7 +17,9 @@ import (
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
+	internalmodel "github.com/simp-lee/obsite/internal/model"
 	internalserver "github.com/simp-lee/obsite/internal/server"
+	xhtml "golang.org/x/net/html"
 )
 
 func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
@@ -365,13 +368,26 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		"author: Your Name",
 		"description: Notes published with obsite.",
 		"defaultPublish: true",
+		"search:",
+		"pagefindPath: pagefind_extended",
+		"pagefindVersion: 1.4.0",
+		"pagination:",
+		"pageSize: 20",
+		"related:",
+		"count: 5",
+		"rss:",
+		"enabled: true",
+		"timeline:",
+		"path: notes",
+		"templateDir:",
+		"customCSS:",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated config missing %q\n%s", want, content)
 		}
 	}
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{})
+	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
 		t.Fatalf("config.Load(%q) error = %v", configPath, err)
 	}
@@ -390,6 +406,465 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	if !cfg.DefaultPublish {
 		t.Fatal("cfg.DefaultPublish = false, want true")
 	}
+	if cfg.Search.PagefindPath != "pagefind_extended" || cfg.Search.PagefindVersion != "1.4.0" {
+		t.Fatalf("cfg.Search = %#v, want default Pagefind settings", cfg.Search)
+	}
+	if cfg.Pagination.PageSize != 20 {
+		t.Fatalf("cfg.Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 20)
+	}
+	if cfg.Related.Count != 5 {
+		t.Fatalf("cfg.Related.Count = %d, want %d", cfg.Related.Count, 5)
+	}
+	if !cfg.RSS.Enabled {
+		t.Fatal("cfg.RSS.Enabled = false, want true")
+	}
+	if cfg.Timeline.Enabled || cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
+		t.Fatalf("cfg.Timeline = %#v, want disabled timeline defaults", cfg.Timeline)
+	}
+}
+
+func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := copyFixtureVault(t, "feature-vault")
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+
+	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	if err != nil {
+		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+	}
+	if cfg.TemplateDir != filepath.Join(vaultPath, "templates") {
+		t.Fatalf("cfg.TemplateDir = %q, want %q", cfg.TemplateDir, filepath.Join(vaultPath, "templates"))
+	}
+	if cfg.CustomCSS != filepath.Join(vaultPath, "custom.css") {
+		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, filepath.Join(vaultPath, "custom.css"))
+	}
+
+	var diagnostics bytes.Buffer
+	var pagefindCalls [][]string
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
+		concurrency:       2,
+		diagnosticsWriter: &diagnostics,
+		pagefindLookPath: func(name string) (string, error) {
+			if name != cfg.Search.PagefindPath {
+				t.Fatalf("pagefindLookPath() name = %q, want %q", name, cfg.Search.PagefindPath)
+			}
+			return "/usr/local/bin/pagefind_extended", nil
+		},
+		pagefindCommand: func(name string, args ...string) ([]byte, error) {
+			pagefindCalls = append(pagefindCalls, append([]string{name}, args...))
+			if name != "/usr/local/bin/pagefind_extended" {
+				t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
+			}
+			if len(args) == 1 && args[0] == "--version" {
+				return []byte("pagefind_extended 1.4.0\n"), nil
+			}
+			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
+				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
+			}
+			writeMinimalPagefindBundle(t, filepath.Join(args[1], pagefindOutputSubdir))
+			return []byte("Indexed 5 pages\n"), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("buildWithOptions() = nil result, want build result")
+	}
+	if result.NotePages != 5 {
+		t.Fatalf("result.NotePages = %d, want %d", result.NotePages, 5)
+	}
+	if len(pagefindCalls) != 2 {
+		t.Fatalf("len(pagefindCalls) = %d, want %d", len(pagefindCalls), 2)
+	}
+	if strings.TrimSpace(diagnostics.String()) != "" {
+		t.Fatalf("diagnostics summary = %q, want empty summary for advanced feature fixture", diagnostics.String())
+	}
+
+	t.Run("artifacts", func(t *testing.T) {
+		styleCSS := readBuildOutputFile(t, outputPath, "style.css")
+		for _, want := range []string{
+			`:root[data-theme=dark]{`,
+			`--theme-toggle-bg:`,
+			`@media(prefers-color-scheme:dark){`,
+		} {
+			if !bytes.Contains(styleCSS, []byte(want)) {
+				t.Fatalf("style.css missing %q\n%s", want, styleCSS)
+			}
+		}
+
+		customCSS := readBuildOutputFile(t, outputPath, "assets/custom.css")
+		if len(bytes.TrimSpace(customCSS)) == 0 {
+			t.Fatal("assets/custom.css = empty, want copied fixture stylesheet")
+		}
+		if !regexp.MustCompile(`(?s)\bbody\s*\{[^}]*\boutline:\s*3px\s+solid\s+rgb\(12,\s*34,\s*56\)\s*;?[^}]*\}`).Match(customCSS) {
+			t.Fatalf("assets/custom.css missing body outline rule\n%s", customCSS)
+		}
+
+		rssXML := readBuildOutputFile(t, outputPath, "index.xml")
+		for _, want := range []string{
+			`<rss`,
+			`https://example.com/blog/updated-story/`,
+			`<title>Updated Story</title>`,
+		} {
+			if !bytes.Contains(rssXML, []byte(want)) {
+				t.Fatalf("index.xml missing %q\n%s", want, rssXML)
+			}
+		}
+
+		popoverJSON := readBuildOutputFile(t, outputPath, "_popover/updated-story.json")
+		popover := mustUnmarshalJSON[popoverPreviewPayload](t, popoverJSON)
+		if popover.Title != "Updated Story" {
+			t.Fatalf("_popover/updated-story.json title = %q, want %q", popover.Title, "Updated Story")
+		}
+		if len(popover.Tags) != 1 || popover.Tags[0] != "field" {
+			t.Fatalf("_popover/updated-story.json tags = %#v, want %#v", popover.Tags, []string{"field"})
+		}
+		if !strings.Contains(popover.Summary, "static site generator publishes linked notes") ||
+			!strings.Contains(popover.Summary, "exposes summaries for previews") {
+			t.Fatalf("_popover/updated-story.json summary = %q, want stable excerpt phrases", popover.Summary)
+		}
+
+		for _, relPath := range []string{
+			"_pagefind/pagefind-entry.json",
+			"_pagefind/pagefind-ui.css",
+			"_pagefind/pagefind-ui.js",
+			"_pagefind/index/en-test.pf_index",
+			"_pagefind/fragment/en-test.pf_fragment",
+			"page/2/index.html",
+			"page/3/index.html",
+			"notes/index.html",
+			"notes/garden/index.html",
+			"notes/garden/page/2/index.html",
+			"tags/field/index.html",
+			"tags/field/page/2/index.html",
+		} {
+			_ = readBuildOutputFile(t, outputPath, relPath)
+		}
+	})
+
+	t.Run("note page", func(t *testing.T) {
+		updatedHTML := readBuildOutputFile(t, outputPath, "updated-story/index.html")
+
+		for _, snippets := range [][]string{
+			{`data-theme-toggle`, `data-theme-toggle=""`},
+			{`__obsiteInitThemeToggle`, `window.__obsiteInitThemeToggle`},
+			{`localStorage.getItem(storageKey)`},
+			{`rel="alternate" type="application/rss+xml" title="Feature Garden RSS" href="../index.xml"`, `rel=alternate type=application/rss+xml title="Feature Garden RSS" href=../index.xml`},
+			{`href="../assets/custom.css"`, `href=../assets/custom.css`},
+			{`href="../_pagefind/pagefind-ui.css"`, `href=../_pagefind/pagefind-ui.css`},
+			{`data-obsite-search-ui`},
+			{`1 min read`},
+			{`<span class="meta-label">Published</span>`, `<span class=meta-label>Published</span>`},
+			{`04 Apr 2026`},
+			{`<span class="meta-label">Updated</span>`, `<span class=meta-label>Updated</span>`},
+			{`08 Apr 2026`},
+			{`<nav class="toc-nav" aria-label="Contents">`, `<nav class=toc-nav aria-label=Contents>`},
+			{`href="#overview"`, `href=#overview`},
+			{`href="#deep-dive"`, `href=#deep-dive`},
+			{`<h2 id="overview">Overview</h2>`, `<h2 id=overview>Overview</h2>`},
+			{`<h3 id="deep-dive">Deep Dive</h3>`, `<h3 id=deep-dive>Deep Dive</h3>`},
+			{`<figure>`, `<figure `},
+			{`src="../assets/cover.png"`, `src=../assets/cover.png`},
+			{`<figcaption><p>Caption with <strong>bold</strong> detail.`, `<figcaption><p>Caption with <strong>bold</strong> detail</figcaption>`},
+			{`<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"`, `<iframe src=https://www.youtube.com/embed/dQw4w9WgXcQ`},
+			{`allowfullscreen`},
+			{`data-popover-path="reference-guide"`, `data-popover-path=reference-guide`},
+			{`id="related-articles-heading">Related Articles</h2>`, `id=related-articles-heading>Related Articles</h2>`},
+		} {
+			if !containsAny(updatedHTML, snippets...) {
+				t.Fatalf("updated-story page missing one of %#v\n%s", snippets, updatedHTML)
+			}
+		}
+		if !containsAny(updatedHTML,
+			`href="../reference-guide/"`,
+			`href=../reference-guide/`,
+			`href="../roadmap/"`,
+			`href=../roadmap/`,
+		) {
+			t.Fatalf("updated-story page missing non-empty related articles list\n%s", updatedHTML)
+		}
+
+		assertVisibleBreadcrumbs(t, updatedHTML, []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "../"},
+			{Name: "notes", URL: "../notes/"},
+			{Name: "garden", URL: "../notes/garden/"},
+			{Name: "Updated Story"},
+		})
+
+		jsonLD := mustJSONLDPayloads(t, updatedHTML)
+		if !hasStructuredDataType(jsonLD, "Article") {
+			t.Fatalf("updated-story JSON-LD missing Article payload\n%s", mustScriptText(t, updatedHTML, func(node *xhtml.Node) bool {
+				return integrationHTMLAttrValue(node, "type") == "application/ld+json"
+			}, "application/ld+json"))
+		}
+		assertBreadcrumbListItems(t, jsonLD, []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "https://example.com/blog/"},
+			{Name: "notes", URL: "https://example.com/blog/notes/"},
+			{Name: "garden", URL: "https://example.com/blog/notes/garden/"},
+			{Name: "Updated Story", URL: "https://example.com/blog/updated-story/"},
+		})
+
+		sidebarTree := mustSidebarTree(t, updatedHTML)
+		notesNode := mustSidebarNode(t, sidebarTree, "notes")
+		if !notesNode.IsDir || notesNode.URL != "notes/" || notesNode.IsActive || len(notesNode.Children) == 0 {
+			t.Fatalf("sidebar notes node = %#v, want nested inactive directory at notes/", *notesNode)
+		}
+		gardenNode := mustSidebarNode(t, sidebarTree, "notes", "garden")
+		if !gardenNode.IsDir || gardenNode.URL != "notes/garden/" || gardenNode.IsActive || len(gardenNode.Children) < 3 {
+			t.Fatalf("sidebar garden node = %#v, want nested inactive directory with note children", *gardenNode)
+		}
+		updatedNode := mustSidebarNode(t, sidebarTree, "notes", "garden", "Updated Story")
+		if updatedNode.IsDir || updatedNode.URL != "updated-story/" || !updatedNode.IsActive {
+			t.Fatalf("sidebar updated-story node = %#v, want active note leaf", *updatedNode)
+		}
+		referenceNode := mustSidebarNode(t, sidebarTree, "notes", "garden", "Reference Guide")
+		if referenceNode.IsDir || referenceNode.IsActive {
+			t.Fatalf("sidebar reference-guide node = %#v, want inactive note sibling", *referenceNode)
+		}
+	})
+
+	t.Run("folders and pagination", func(t *testing.T) {
+		indexHTML := readBuildOutputFile(t, outputPath, "index.html")
+		if !containsAny(indexHTML,
+			`body class=kind-timeline`,
+			`class="page-shell timeline-page"`,
+			`class=page-shell timeline-page`,
+		) {
+			t.Fatalf("homepage missing timeline layout markers\n%s", indexHTML)
+		}
+		if containsAny(indexHTML,
+			`body class=kind-index`,
+			`class="page-shell landing-page"`,
+			`class=page-shell landing-page`,
+		) {
+			t.Fatalf("homepage unexpectedly rendered default index layout\n%s", indexHTML)
+		}
+		if !containsAny(indexHTML,
+			`href="page/2/" rel="next">Next</a>`,
+			`href=page/2/ rel=next>Next</a>`,
+			`<link rel="next" href="page/2/">`,
+			`<link rel=next href=page/2/>`,
+		) {
+			t.Fatalf("homepage missing pagination to page 2\n%s", indexHTML)
+		}
+
+		indexPageTwoHTML := readBuildOutputFile(t, outputPath, "page/2/index.html")
+		for _, snippets := range [][]string{
+			{`<link rel="prev" href="../../">`, `<link rel=prev href=../../>`},
+			{`<link rel="next" href="../3/">`, `<link rel=next href=../3/>`},
+			{`href="../../" rel="prev">Previous</a>`, `href=../../ rel=prev>Previous</a>`},
+			{`href="../3/" rel="next">Next</a>`, `href=../3/ rel=next>Next</a>`},
+		} {
+			if !containsAny(indexPageTwoHTML, snippets...) {
+				t.Fatalf("page/2 missing one of %#v\n%s", snippets, indexPageTwoHTML)
+			}
+		}
+
+		notesFolderHTML := readBuildOutputFile(t, outputPath, "notes/index.html")
+		if !containsAny(notesFolderHTML,
+			`data-e2e-custom-folder="notes"`,
+			`data-e2e-custom-folder=notes`,
+		) {
+			t.Fatalf("notes folder page missing override marker\n%s", notesFolderHTML)
+		}
+
+		gardenFolderHTML := readBuildOutputFile(t, outputPath, "notes/garden/index.html")
+		if !containsAny(gardenFolderHTML,
+			`data-e2e-custom-folder="notes/garden"`,
+			`data-e2e-custom-folder=notes/garden`,
+		) {
+			t.Fatalf("notes/garden folder page missing override marker\n%s", gardenFolderHTML)
+		}
+		if !containsAny(gardenFolderHTML,
+			`href="../../updated-story/"`,
+			`href=../../updated-story/`,
+		) {
+			t.Fatalf("notes/garden folder page missing updated-story link\n%s", gardenFolderHTML)
+		}
+
+		gardenPageTwoHTML := readBuildOutputFile(t, outputPath, "notes/garden/page/2/index.html")
+		for _, snippets := range [][]string{
+			{`data-e2e-custom-folder="notes/garden"`, `data-e2e-custom-folder=notes/garden`},
+			{`href="../../../../field-notes/"`, `href=../../../../field-notes/`},
+			{`href="../../" rel="prev">Previous</a>`, `href=../../ rel=prev>Previous</a>`},
+		} {
+			if !containsAny(gardenPageTwoHTML, snippets...) {
+				t.Fatalf("notes/garden/page/2 missing one of %#v\n%s", snippets, gardenPageTwoHTML)
+			}
+		}
+		assertVisibleBreadcrumbs(t, gardenPageTwoHTML, []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "../../../../"},
+			{Name: "notes", URL: "../../../"},
+			{Name: "garden"},
+		})
+		assertBreadcrumbListItems(t, mustJSONLDPayloads(t, gardenPageTwoHTML), []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "https://example.com/blog/"},
+			{Name: "notes", URL: "https://example.com/blog/notes/"},
+			{Name: "garden", URL: "https://example.com/blog/notes/garden/page/2/"},
+		})
+
+		tagPageTwoHTML := readBuildOutputFile(t, outputPath, "tags/field/page/2/index.html")
+		if !containsAny(tagPageTwoHTML,
+			`href="../../../../reference-guide/"`,
+			`href=../../../../reference-guide/`,
+			`href="../../../../field-notes/"`,
+			`href=../../../../field-notes/`,
+		) {
+			t.Fatalf("tags/field/page/2 missing paginated note links\n%s", tagPageTwoHTML)
+		}
+		assertVisibleBreadcrumbs(t, tagPageTwoHTML, []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "../../../../"},
+			{Name: "field"},
+		})
+		assertBreadcrumbListItems(t, mustJSONLDPayloads(t, tagPageTwoHTML), []internalmodel.Breadcrumb{
+			{Name: "Home", URL: "https://example.com/blog/"},
+			{Name: "field", URL: "https://example.com/blog/tags/field/page/2/"},
+		})
+
+		sitemapXML := readBuildOutputFile(t, outputPath, "sitemap.xml")
+		for _, want := range []string{
+			`https://example.com/blog/page/2/`,
+			`https://example.com/blog/page/3/`,
+			`https://example.com/blog/notes/`,
+			`https://example.com/blog/notes/garden/`,
+			`https://example.com/blog/notes/garden/page/2/`,
+			`https://example.com/blog/tags/field/page/2/`,
+		} {
+			if !bytes.Contains(sitemapXML, []byte(want)) {
+				t.Fatalf("sitemap.xml missing %q\n%s", want, sitemapXML)
+			}
+		}
+	})
+
+	t.Run("serve reachability", func(t *testing.T) {
+		handler := http.NewServeMux()
+		handler.Handle("/blog/", http.StripPrefix("/blog", http.FileServer(http.Dir(outputPath))))
+		deployed := httptest.NewServer(handler)
+		defer deployed.Close()
+
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/updated-story/", http.StatusOK, "Updated Story")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/page/2/", http.StatusOK, "Reference Guide")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/page/3/", http.StatusOK, "Archive")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, `data-e2e-custom-folder=notes`)
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/garden/page/2/", http.StatusOK, "Field Notes")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/tags/field/page/2/", http.StatusOK, "Field Notes")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/index.xml", http.StatusOK, "Updated Story")
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/_pagefind/pagefind-entry.json", http.StatusOK, `"page_count":1`)
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/custom.css", http.StatusOK, "outline: 3px solid")
+	})
+}
+
+func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := copyFixtureVault(t, "feature-vault")
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+
+	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	if err != nil {
+		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+	}
+	cfg.Search.Enabled = false
+	cfg.Timeline.Enabled = true
+	cfg.Timeline.AsHomepage = false
+	cfg.Timeline.Path = "timeline"
+
+	var diagnostics bytes.Buffer
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
+		concurrency:       2,
+		diagnosticsWriter: &diagnostics,
+	})
+	if err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("buildWithOptions() = nil result, want build result")
+	}
+	if result.NotePages != 5 {
+		t.Fatalf("result.NotePages = %d, want %d", result.NotePages, 5)
+	}
+	if strings.TrimSpace(diagnostics.String()) != "" {
+		t.Fatalf("diagnostics summary = %q, want empty summary for standalone timeline fixture", diagnostics.String())
+	}
+
+	indexHTML := readBuildOutputFile(t, outputPath, "index.html")
+	if !containsAny(indexHTML,
+		`body class=kind-index`,
+		`class="page-shell landing-page"`,
+		`class=page-shell landing-page`,
+	) {
+		t.Fatalf("homepage missing default index layout markers\n%s", indexHTML)
+	}
+	if containsAny(indexHTML,
+		`body class=kind-timeline`,
+		`class="page-shell timeline-page"`,
+		`class=page-shell timeline-page`,
+	) {
+		t.Fatalf("homepage unexpectedly rendered timeline layout\n%s", indexHTML)
+	}
+
+	timelineHTML := readBuildOutputFile(t, outputPath, "timeline/index.html")
+	if !containsAny(timelineHTML,
+		`body class=kind-timeline`,
+		`class="page-shell timeline-page"`,
+		`class=page-shell timeline-page`,
+	) {
+		t.Fatalf("timeline page missing timeline layout markers\n%s", timelineHTML)
+	}
+	for _, snippets := range [][]string{
+		{`href="../updated-story/"`, `href=../updated-story/`},
+		{`href="page/2/" rel="next">Next</a>`, `href=page/2/ rel=next>Next</a>`},
+		{`<link rel="next" href="page/2/">`, `<link rel=next href=page/2/>`},
+	} {
+		if !containsAny(timelineHTML, snippets...) {
+			t.Fatalf("timeline page missing one of %#v\n%s", snippets, timelineHTML)
+		}
+	}
+
+	timelinePageTwoHTML := readBuildOutputFile(t, outputPath, "timeline/page/2/index.html")
+	for _, snippets := range [][]string{
+		{`<link rel="prev" href="../../">`, `<link rel=prev href=../../>`},
+		{`<link rel="canonical" href="https://example.com/blog/timeline/page/2/">`, `<link rel=canonical href=https://example.com/blog/timeline/page/2/>`},
+		{`href="../../../reference-guide/"`, `href=../../../reference-guide/`},
+	} {
+		if !containsAny(timelinePageTwoHTML, snippets...) {
+			t.Fatalf("timeline/page/2 missing one of %#v\n%s", snippets, timelinePageTwoHTML)
+		}
+	}
+
+	notesFolderHTML := readBuildOutputFile(t, outputPath, "notes/index.html")
+	if !containsAny(notesFolderHTML,
+		`data-e2e-custom-folder="notes"`,
+		`data-e2e-custom-folder=notes`,
+	) {
+		t.Fatalf("notes folder page missing override marker while standalone timeline route exists\n%s", notesFolderHTML)
+	}
+
+	sitemapXML := readBuildOutputFile(t, outputPath, "sitemap.xml")
+	for _, want := range []string{
+		`https://example.com/blog/`,
+		`https://example.com/blog/timeline/`,
+		`https://example.com/blog/timeline/page/2/`,
+		`https://example.com/blog/notes/`,
+	} {
+		if !bytes.Contains(sitemapXML, []byte(want)) {
+			t.Fatalf("sitemap.xml missing %q\n%s", want, sitemapXML)
+		}
+	}
+
+	handler := http.NewServeMux()
+	handler.Handle("/blog/", http.StripPrefix("/blog", http.FileServer(http.Dir(outputPath))))
+	deployed := httptest.NewServer(handler)
+	defer deployed.Close()
+
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/", http.StatusOK, "Feature Garden")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/timeline/", http.StatusOK, "Updated Story")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/timeline/page/2/", http.StatusOK, "Reference Guide")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, `data-e2e-custom-folder=notes`)
 }
 
 func TestBuildIntegrationSlugConflictFixtureReportsFatalDiagnostics(t *testing.T) {
@@ -403,8 +878,8 @@ func TestBuildIntegrationSlugConflictFixtureReportsFatalDiagnostics(t *testing.T
 	if err == nil {
 		t.Fatal("buildWithOptions() error = nil, want slug conflict failure")
 	}
-	if !strings.Contains(err.Error(), `slug conflict for "shared"`) {
-		t.Fatalf("buildWithOptions() error = %v, want slug conflict", err)
+	if !strings.Contains(err.Error(), `slug conflict for "alpha"`) {
+		t.Fatalf("buildWithOptions() error = %v, want folder-vs-note slug conflict", err)
 	}
 	if result == nil {
 		t.Fatal("buildWithOptions() = nil result, want diagnostics-bearing result")
@@ -426,9 +901,9 @@ func TestBuildIntegrationSlugConflictFixtureReportsFatalDiagnostics(t *testing.T
 		t.Fatalf("diagnostics summary missing fatal section\n%s", summary)
 	}
 	for _, want := range []string{
-		`notes/alpha.md [slug_conflict] slug "shared" conflicts with notes/alpha.md, notes/beta.md`,
-		`notes/beta.md [slug_conflict] slug "shared" conflicts with notes/alpha.md, notes/beta.md`,
-		`build: build index: slug conflict for "shared" across notes/alpha.md, notes/beta.md`,
+		`alpha.md [slug_conflict] slug "alpha" conflicts with alpha.md, alpha/`,
+		`alpha/ [slug_conflict] slug "alpha" conflicts with alpha.md, alpha/`,
+		`build: build folder pages: slug conflict for "alpha" across alpha.md, alpha/`,
 	} {
 		if !strings.Contains(summary, want) {
 			t.Fatalf("diagnostics summary missing %q\n%s", want, summary)
@@ -545,6 +1020,266 @@ func mustRegexSubmatch(t *testing.T, data []byte, pattern string) string {
 		t.Fatalf("pattern %q did not match\n%s", pattern, data)
 	}
 	return string(matches[1])
+}
+
+type popoverPreviewPayload struct {
+	Title   string   `json:"title"`
+	Summary string   `json:"summary"`
+	Tags    []string `json:"tags"`
+}
+
+type structuredDataPayload struct {
+	Type            string               `json:"@type"`
+	ItemListElement []breadcrumbListItem `json:"itemListElement,omitempty"`
+}
+
+type breadcrumbListItem struct {
+	Type     string `json:"@type"`
+	Position int    `json:"position"`
+	Name     string `json:"name"`
+	Item     string `json:"item,omitempty"`
+}
+
+func mustUnmarshalJSON[T any](t *testing.T, data []byte) T {
+	t.Helper()
+
+	var value T
+	if err := json.Unmarshal(data, &value); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\n%s", err, data)
+	}
+
+	return value
+}
+
+func assertVisibleBreadcrumbs(t *testing.T, document []byte, want []internalmodel.Breadcrumb) {
+	t.Helper()
+
+	got := visibleBreadcrumbs(t, document)
+	if len(got) != len(want) {
+		t.Fatalf("len(visible breadcrumbs) = %d, want %d\n%#v", len(got), len(want), got)
+	}
+	for index := range want {
+		if got[index].Name != want[index].Name || got[index].URL != want[index].URL {
+			t.Fatalf("visible breadcrumbs[%d] = %#v, want %#v", index, got[index], want[index])
+		}
+	}
+}
+
+func visibleBreadcrumbs(t *testing.T, document []byte) []internalmodel.Breadcrumb {
+	t.Helper()
+
+	root := mustParseHTMLDocument(t, document)
+	nav := integrationFindHTMLNode(root, func(node *xhtml.Node) bool {
+		return node.Type == xhtml.ElementNode && node.Data == "nav" && integrationHTMLClassContains(node, "breadcrumbs")
+	})
+	if nav == nil {
+		t.Fatalf("document missing breadcrumbs nav\n%s", document)
+	}
+
+	ol := integrationFirstHTMLElementChild(nav, "ol")
+	if ol == nil {
+		t.Fatalf("breadcrumbs nav missing ordered list\n%s", document)
+	}
+
+	breadcrumbs := make([]internalmodel.Breadcrumb, 0, 4)
+	for child := ol.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type != xhtml.ElementNode || child.Data != "li" {
+			continue
+		}
+
+		if anchor := integrationFindHTMLNode(child, func(node *xhtml.Node) bool {
+			return node.Type == xhtml.ElementNode && node.Data == "a"
+		}); anchor != nil {
+			breadcrumbs = append(breadcrumbs, internalmodel.Breadcrumb{
+				Name: strings.TrimSpace(integrationHTMLNodeText(anchor)),
+				URL:  integrationHTMLAttrValue(anchor, "href"),
+			})
+			continue
+		}
+
+		current := integrationFindHTMLNode(child, func(node *xhtml.Node) bool {
+			return node.Type == xhtml.ElementNode && node.Data == "span" && integrationHTMLAttrValue(node, "aria-current") == "page"
+		})
+		if current == nil {
+			t.Fatalf("breadcrumb item missing link or current-page marker\n%s", document)
+		}
+
+		breadcrumbs = append(breadcrumbs, internalmodel.Breadcrumb{Name: strings.TrimSpace(integrationHTMLNodeText(current))})
+	}
+
+	return breadcrumbs
+}
+
+func mustJSONLDPayloads(t *testing.T, document []byte) []structuredDataPayload {
+	t.Helper()
+
+	raw := mustScriptText(t, document, func(node *xhtml.Node) bool {
+		return integrationHTMLAttrValue(node, "type") == "application/ld+json"
+	}, "application/ld+json")
+	return mustUnmarshalJSON[[]structuredDataPayload](t, []byte(raw))
+}
+
+func hasStructuredDataType(payloads []structuredDataPayload, want string) bool {
+	for _, payload := range payloads {
+		if payload.Type == want {
+			return true
+		}
+	}
+
+	return false
+}
+
+func assertBreadcrumbListItems(t *testing.T, payloads []structuredDataPayload, want []internalmodel.Breadcrumb) {
+	t.Helper()
+
+	var breadcrumb *structuredDataPayload
+	for index := range payloads {
+		if payloads[index].Type == "BreadcrumbList" {
+			breadcrumb = &payloads[index]
+			break
+		}
+	}
+	if breadcrumb == nil {
+		t.Fatalf("structured data missing BreadcrumbList: %#v", payloads)
+	}
+	if len(breadcrumb.ItemListElement) != len(want) {
+		t.Fatalf("len(BreadcrumbList.itemListElement) = %d, want %d", len(breadcrumb.ItemListElement), len(want))
+	}
+	for index, wantCrumb := range want {
+		got := breadcrumb.ItemListElement[index]
+		if got.Type != "ListItem" {
+			t.Fatalf("BreadcrumbList.itemListElement[%d].@type = %q, want %q", index, got.Type, "ListItem")
+		}
+		if got.Position != index+1 {
+			t.Fatalf("BreadcrumbList.itemListElement[%d].position = %d, want %d", index, got.Position, index+1)
+		}
+		if got.Name != wantCrumb.Name {
+			t.Fatalf("BreadcrumbList.itemListElement[%d].name = %q, want %q", index, got.Name, wantCrumb.Name)
+		}
+		if got.Item != wantCrumb.URL {
+			t.Fatalf("BreadcrumbList.itemListElement[%d].item = %q, want %q", index, got.Item, wantCrumb.URL)
+		}
+	}
+}
+
+func mustSidebarTree(t *testing.T, document []byte) []internalmodel.SidebarNode {
+	t.Helper()
+
+	raw := mustScriptText(t, document, func(node *xhtml.Node) bool {
+		return integrationHTMLAttrValue(node, "id") == "sidebar-data"
+	}, "sidebar-data")
+	return mustUnmarshalJSON[[]internalmodel.SidebarNode](t, []byte(raw))
+}
+
+func mustSidebarNode(t *testing.T, nodes []internalmodel.SidebarNode, names ...string) *internalmodel.SidebarNode {
+	t.Helper()
+
+	currentNodes := nodes
+	var current *internalmodel.SidebarNode
+	for _, name := range names {
+		current = nil
+		for index := range currentNodes {
+			if currentNodes[index].Name == name {
+				current = &currentNodes[index]
+				currentNodes = current.Children
+				break
+			}
+		}
+		if current == nil {
+			t.Fatalf("sidebar path %q not found in %#v", strings.Join(names, " -> "), nodes)
+		}
+	}
+
+	return current
+}
+
+func mustScriptText(t *testing.T, document []byte, match func(*xhtml.Node) bool, label string) string {
+	t.Helper()
+
+	root := mustParseHTMLDocument(t, document)
+	script := integrationFindHTMLNode(root, func(node *xhtml.Node) bool {
+		return node.Type == xhtml.ElementNode && node.Data == "script" && match(node)
+	})
+	if script == nil {
+		t.Fatalf("document missing script %q\n%s", label, document)
+	}
+
+	return integrationHTMLNodeText(script)
+}
+
+func mustParseHTMLDocument(t *testing.T, document []byte) *xhtml.Node {
+	t.Helper()
+
+	root, err := xhtml.Parse(bytes.NewReader(document))
+	if err != nil {
+		t.Fatalf("xhtml.Parse() error = %v\n%s", err, document)
+	}
+
+	return root
+}
+
+func integrationFirstHTMLElementChild(node *xhtml.Node, tag string) *xhtml.Node {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.ElementNode && child.Data == tag {
+			return child
+		}
+	}
+
+	return nil
+}
+
+func integrationFindHTMLNode(node *xhtml.Node, match func(*xhtml.Node) bool) *xhtml.Node {
+	if node == nil {
+		return nil
+	}
+	if match(node) {
+		return node
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if found := integrationFindHTMLNode(child, match); found != nil {
+			return found
+		}
+	}
+
+	return nil
+}
+
+func integrationHTMLAttrValue(node *xhtml.Node, key string) string {
+	for _, attr := range node.Attr {
+		if attr.Key == key {
+			return attr.Val
+		}
+	}
+
+	return ""
+}
+
+func integrationHTMLClassContains(node *xhtml.Node, className string) bool {
+	for _, candidate := range strings.Fields(integrationHTMLAttrValue(node, "class")) {
+		if candidate == className {
+			return true
+		}
+	}
+
+	return false
+}
+
+func integrationHTMLNodeText(node *xhtml.Node) string {
+	var builder strings.Builder
+	integrationCollectHTMLText(&builder, node)
+	return builder.String()
+}
+
+func integrationCollectHTMLText(builder *strings.Builder, node *xhtml.Node) {
+	if node == nil {
+		return
+	}
+	if node.Type == xhtml.TextNode {
+		builder.WriteString(node.Data)
+	}
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		integrationCollectHTMLText(builder, child)
+	}
 }
 
 func assertPathMissing(t *testing.T, targetPath string) {

@@ -1,0 +1,39 @@
+{{define "content-folder"}}
+<section class="page-shell folder-page">
+  <header class="page-header">
+    <p class="page-eyebrow">Folder</p>
+    <h1 class="page-title">{{if .Title}}{{.Title}}{{else}}Folder{{end}}</h1>
+    <p class="page-deck">Browse the published notes on this page filed under {{if .FolderPath}}{{.FolderPath}}{{else}}this folder{{end}}.</p>
+  </header>
+
+  <section class="support-panel" aria-labelledby="folder-notes-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Filed here</p>
+      <h2 id="folder-notes-heading">Notes</h2>
+    </div>
+    {{if .FolderChildren}}
+    <ol class="note-list">
+      {{range .FolderChildren}}
+      <li class="note-card">
+        <div class="note-card-main">
+          <h3><a href="{{.URL}}">{{.Title}}</a></h3>
+          {{if not .Date.IsZero}}<time datetime="{{.Date.Format "2006-01-02T15:04:05Z07:00"}}">{{.Date.Format "02 Jan 2006"}}</time>{{end}}
+        </div>
+        {{if .Tags}}
+        <div class="tag-row">
+          {{range .Tags}}
+          <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </li>
+      {{end}}
+    </ol>
+    {{else}}
+    <p class="empty-state">No published notes currently live in this folder.</p>
+    {{end}}
+  </section>
+
+  {{template "pagination-nav" .}}
+</section>
+{{end}}

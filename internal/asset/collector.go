@@ -13,13 +13,14 @@ import (
 // AssetCollector records pass-2 asset registrations and returns the site-relative
 // output path that renderers should use in generated HTML.
 type AssetCollector struct {
-	mu                sync.Mutex
-	vaultRoot         string
-	assets            map[string]*model.Asset
-	planned           map[string]string
-	seededByGroup     map[string][]string
-	inventoryByGroup  map[string][]string
-	scanInventoryHook func()
+	mu                 sync.Mutex
+	vaultRoot          string
+	assets             map[string]*model.Asset
+	planned            map[string]string
+	reservedOutputKeys map[string]struct{}
+	seededByGroup      map[string][]string
+	inventoryByGroup   map[string][]string
+	scanInventoryHook  func()
 }
 
 // NewCollector creates a collector for render-time asset registrations.
@@ -27,19 +28,29 @@ type AssetCollector struct {
 // render-only assets on plain assets/<basename> paths, and falls back to
 // deterministic content-hashed paths for unresolved or colliding registrations.
 func NewCollector(vaultRoot string, indexed map[string]*model.Asset) *AssetCollector {
-	return newCollector(vaultRoot, indexed, nil)
+	return NewCollectorWithReservedPaths(vaultRoot, indexed, nil)
+}
+
+// NewCollectorWithReservedPaths creates a collector that keeps reserved output paths unavailable to regular assets.
+func NewCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string) *AssetCollector {
+	return newCollectorWithReservedPaths(vaultRoot, indexed, reservedOutputPaths, nil)
 }
 
 func newCollector(vaultRoot string, indexed map[string]*model.Asset, scanInventoryHook func()) *AssetCollector {
+	return newCollectorWithReservedPaths(vaultRoot, indexed, nil, scanInventoryHook)
+}
+
+func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, scanInventoryHook func()) *AssetCollector {
 	collector := &AssetCollector{
-		vaultRoot:         vaultRoot,
-		assets:            make(map[string]*model.Asset),
-		planned:           make(map[string]string),
-		seededByGroup:     make(map[string][]string),
-		scanInventoryHook: scanInventoryHook,
+		vaultRoot:          vaultRoot,
+		assets:             make(map[string]*model.Asset),
+		planned:            make(map[string]string),
+		reservedOutputKeys: normalizeReservedOutputKeys(reservedOutputPaths),
+		seededByGroup:      make(map[string][]string),
+		scanInventoryHook:  scanInventoryHook,
 	}
 
-	for srcPath, dstPath := range planAssetDestinations(vaultRoot, indexed) {
+	for srcPath, dstPath := range planAssetDestinations(vaultRoot, indexed, collector.reservedOutputKeys) {
 		if srcPath == "" || dstPath == "" {
 			continue
 		}
@@ -161,7 +172,7 @@ func (c *AssetCollector) planGroupLocked(srcPath string) {
 		assets[candidate] = asset
 	}
 
-	for candidate, dstPath := range planAssetDestinations(c.vaultRoot, assets) {
+	for candidate, dstPath := range planAssetDestinations(c.vaultRoot, assets, c.reservedOutputKeys) {
 		if candidate == "" || dstPath == "" {
 			continue
 		}

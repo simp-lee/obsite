@@ -9,10 +9,12 @@ import (
 type PageKind string
 
 const (
-	PageNote  PageKind = "note"
-	PageTag   PageKind = "tag"
-	PageIndex PageKind = "index"
-	Page404   PageKind = "404"
+	PageNote     PageKind = "note"
+	PageTag      PageKind = "tag"
+	PageIndex    PageKind = "index"
+	Page404      PageKind = "404"
+	PageFolder   PageKind = "folder"
+	PageTimeline PageKind = "timeline"
 )
 
 // PageData is the shared template contract for all rendered pages.
@@ -28,19 +30,31 @@ type PageData struct {
 	Canonical   string
 	RelPath     string
 
-	Content      template.HTML
-	Date         time.Time
-	LastModified time.Time
-	Tags         []TagLink
-	Backlinks    []BacklinkEntry
-	HasMath      bool
-	HasMermaid   bool
+	Content         template.HTML
+	TOC             []TOCEntry
+	Date            time.Time
+	LastModified    time.Time
+	ReadingTime     string
+	WordCount       int
+	Tags            []TagLink
+	Backlinks       []BacklinkEntry
+	RelatedArticles []RelatedArticle
+	HasMath         bool
+	HasMermaid      bool
+	HasSearch       bool
+	HasCustomCSS    bool
+	HasRSS          bool
 
-	TagName   string
-	TagNotes  []NoteSummary
-	ChildTags []TagLink
+	TagName        string
+	TagNotes       []NoteSummary
+	ChildTags      []TagLink
+	FolderPath     string
+	FolderChildren []NoteSummary
 
-	RecentNotes []NoteSummary
+	RecentNotes   []NoteSummary
+	TimelineNotes []NoteSummary
+	Pagination    *PaginationData
+	SidebarTree   []SidebarNode
 
 	OG          OpenGraph
 	TwitterCard string
@@ -64,10 +78,51 @@ type BacklinkEntry struct {
 
 // NoteSummary is the compact note representation used in list pages.
 type NoteSummary struct {
-	Title string
-	URL   string
-	Date  time.Time
-	Tags  []TagLink
+	Title   string
+	Summary string
+	URL     string
+	Date    time.Time
+	Tags    []TagLink
+}
+
+// TOCEntry represents a nested table-of-contents item for a note page.
+type TOCEntry struct {
+	Text     string
+	ID       string
+	Children []TOCEntry
+}
+
+// PageLink represents a numbered pagination destination.
+type PageLink struct {
+	Number int
+	URL    string
+}
+
+// PaginationData contains page-navigation metadata for list pages.
+type PaginationData struct {
+	CurrentPage int
+	TotalPages  int
+	PrevURL     string
+	NextURL     string
+	Pages       []PageLink
+}
+
+// SidebarNode represents one node in the rendered sidebar file tree.
+type SidebarNode struct {
+	Name     string        `json:"name"`
+	URL      string        `json:"url"`
+	IsDir    bool          `json:"isDir"`
+	IsActive bool          `json:"isActive"`
+	Children []SidebarNode `json:"children,omitempty"`
+}
+
+// RelatedArticle contains precomputed related-content metadata for a note page.
+type RelatedArticle struct {
+	Title   string
+	URL     string
+	Summary string
+	Score   float64
+	Tags    []TagLink
 }
 
 // Breadcrumb represents one navigation breadcrumb item.

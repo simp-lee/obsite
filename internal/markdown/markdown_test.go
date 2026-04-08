@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/callout"
 	internalhighlight "github.com/simp-lee/obsite/internal/markdown/highlight"
@@ -95,6 +96,30 @@ func TestNewParserParsesWikilinkNodes(t *testing.T) {
 	}
 	if got := string(wikilinks[0].Target); got != "Page Title" {
 		t.Fatalf("wikilink target = %q, want %q", got, "Page Title")
+	}
+}
+
+func TestNewParserDoesNotRegisterFigureNodes(t *testing.T) {
+	t.Parallel()
+
+	md := NewParser(diag.NewCollector())
+	source := []byte("![Hero](../images/hero.png)\nCaption text.\n")
+	doc := md.Parser().Parse(text.NewReader(source))
+
+	err := gast.Walk(doc, func(node gast.Node, entering bool) (gast.WalkStatus, error) {
+		if !entering {
+			return gast.WalkContinue, nil
+		}
+
+		switch node.Kind() {
+		case figureast.KindFigure, figureast.KindFigureImage, figureast.KindFigureCaption:
+			t.Fatalf("NewParser() unexpectedly registered figure node kind %s", node.Kind())
+		}
+
+		return gast.WalkContinue, nil
+	})
+	if err != nil {
+		t.Fatalf("Walk() error = %v", err)
 	}
 }
 
@@ -256,6 +281,440 @@ func TestNewMarkdownRewritesImagesRegistersAssetsAndLazyLoadsAfterFirst(t *testi
 	wantRegistered := []string{"images/hero.png", "images/chart.png"}
 	if !reflect.DeepEqual(sink.registered, wantRegistered) {
 		t.Fatalf("registered = %#v, want %#v", sink.registered, wantRegistered)
+	}
+}
+
+func TestNewMarkdownRendersSupportedVideoImageDestinationsAsResponsiveEmbeds(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		source       string
+		wantEmbedURL string
+	}{
+		{
+			name:         "youtube watch url",
+			source:       "![Launch video](https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=shared)\n",
+			wantEmbedURL: "https://www.youtube.com/embed/dQw4w9WgXcQ",
+		},
+		{
+			name:         "youtube short url",
+			source:       "![Launch video](https://youtu.be/dQw4w9WgXcQ?t=43)\n",
+			wantEmbedURL: "https://www.youtube.com/embed/dQw4w9WgXcQ",
+		},
+		{
+			name:         "vimeo url",
+			source:       "![Talk recording](https://vimeo.com/76979871)\n",
+			wantEmbedURL: "https://player.vimeo.com/video/76979871",
+		},
+		{
+			name:         "vimeo player url",
+			source:       "![Talk recording](https://player.vimeo.com/video/76979871?autoplay=1)\n",
+			wantEmbedURL: "https://player.vimeo.com/video/76979871",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(tt.source), &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+
+			html := buf.String()
+			if !strings.Contains(html, `class="video-embed"`) {
+				t.Fatalf("HTML = %q, want responsive video wrapper", html)
+			}
+			if !strings.Contains(html, `<iframe src="`+tt.wantEmbedURL+`"`) {
+				t.Fatalf("HTML = %q, want iframe src %q", html, tt.wantEmbedURL)
+			}
+			if !strings.Contains(html, `loading="lazy"`) {
+				t.Fatalf("HTML = %q, want lazy-loaded iframe", html)
+			}
+			if !strings.Contains(html, `allowfullscreen`) {
+				t.Fatalf("HTML = %q, want allowfullscreen iframe", html)
+			}
+			if strings.Contains(html, `<img `) {
+				t.Fatalf("HTML = %q, want video URL rendered without <img>", html)
+			}
+		})
+	}
+}
+
+func TestNewMarkdownRendersVideoEmbedsOnlyForStandaloneImageBlocks(t *testing.T) {
+	t.Parallel()
+
+	t.Run("standalone image paragraph upgrades to embed without paragraph wrapper", func(t *testing.T) {
+		t.Parallel()
+
+		note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+		md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+		var buf bytes.Buffer
+		if err := md.Convert([]byte("![Launch video](https://youtu.be/dQw4w9WgXcQ)\n"), &buf); err != nil {
+			t.Fatalf("Convert() error = %v", err)
+		}
+
+		html := buf.String()
+		if !strings.Contains(html, `class="video-embed"`) {
+			t.Fatalf("HTML = %q, want standalone video image upgraded to embed", html)
+		}
+		if !strings.Contains(html, `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"`) {
+			t.Fatalf("HTML = %q, want standalone video image iframe", html)
+		}
+		if strings.Contains(html, `<p><div class="video-embed"`) || strings.Contains(html, `</div></p>`) {
+			t.Fatalf("HTML = %q, want standalone video embed emitted without invalid paragraph wrapper", html)
+		}
+	})
+
+	t.Run("inline image fallback stays a normal image inside paragraph text", func(t *testing.T) {
+		t.Parallel()
+
+		note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+		md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+		var buf bytes.Buffer
+		if err := md.Convert([]byte("Watch this ![Launch video](https://youtu.be/dQw4w9WgXcQ) now.\n"), &buf); err != nil {
+			t.Fatalf("Convert() error = %v", err)
+		}
+
+		html := buf.String()
+		if strings.Contains(html, `class="video-embed"`) {
+			t.Fatalf("HTML = %q, want inline video image to avoid block video wrapper", html)
+		}
+		if strings.Contains(html, `<iframe `) {
+			t.Fatalf("HTML = %q, want inline video image to avoid iframe output", html)
+		}
+		if !strings.Contains(html, `<p>Watch this <img src="https://youtu.be/dQw4w9WgXcQ" alt="Launch video"> now.</p>`) {
+			t.Fatalf("HTML = %q, want inline video image to fall back to normal image output inside paragraph", html)
+		}
+	})
+}
+
+func TestNewMarkdownFallsBackToImagesForMalformedYouTubeVideoDestinations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		source       string
+		wantImageSrc string
+	}{
+		{
+			name:         "watch url with malformed video id",
+			source:       "![Launch video](https://www.youtube.com/watch?v=dQw4w9WgXcQ/extra)\n",
+			wantImageSrc: "https://www.youtube.com/watch?v=dQw4w9WgXcQ/extra",
+		},
+		{
+			name:         "watch url with encoded query content in video id",
+			source:       "![Launch video](https://www.youtube.com/watch?v=dQw4w9WgXcQ%26list%3DPL123)\n",
+			wantImageSrc: "https://www.youtube.com/watch?v=dQw4w9WgXcQ%26list%3DPL123",
+		},
+		{
+			name:         "short url with non canonical path",
+			source:       "![Launch video](https://youtu.be/watch/dQw4w9WgXcQ)\n",
+			wantImageSrc: "https://youtu.be/watch/dQw4w9WgXcQ",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(tt.source), &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+
+			html := buf.String()
+			if strings.Contains(html, `class="video-embed"`) {
+				t.Fatalf("HTML = %q, want malformed YouTube URL to avoid video embed wrapper", html)
+			}
+			if strings.Contains(html, `<iframe `) {
+				t.Fatalf("HTML = %q, want malformed YouTube URL to avoid iframe output", html)
+			}
+			if !strings.Contains(html, `<img src="`+tt.wantImageSrc+`" alt="Launch video">`) {
+				t.Fatalf("HTML = %q, want malformed YouTube URL to fall back to normal image %q", html, tt.wantImageSrc)
+			}
+		})
+	}
+}
+
+func TestNewMarkdownFallsBackToImagesForUnsupportedVimeoVideoDestinations(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		source       string
+		wantImageSrc string
+	}{
+		{
+			name:         "direct url with extra path segment",
+			source:       "![Talk recording](https://vimeo.com/76979871/preview)\n",
+			wantImageSrc: "https://vimeo.com/76979871/preview",
+		},
+		{
+			name:         "player url with non canonical path",
+			source:       "![Talk recording](https://player.vimeo.com/videos/76979871)\n",
+			wantImageSrc: "https://player.vimeo.com/videos/76979871",
+		},
+		{
+			name:         "non permalink path with trailing numeric segment",
+			source:       "![Talk recording](https://vimeo.com/channels/staffpicks/not-a-video/12345/preview)\n",
+			wantImageSrc: "https://vimeo.com/channels/staffpicks/not-a-video/12345/preview",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(tt.source), &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+
+			html := buf.String()
+			if strings.Contains(html, `class="video-embed"`) {
+				t.Fatalf("HTML = %q, want unsupported Vimeo URL to avoid video embed wrapper", html)
+			}
+			if strings.Contains(html, `<iframe `) {
+				t.Fatalf("HTML = %q, want unsupported Vimeo URL to avoid iframe output", html)
+			}
+			if !strings.Contains(html, `<img src="`+tt.wantImageSrc+`" alt="Talk recording">`) {
+				t.Fatalf("HTML = %q, want unsupported Vimeo URL to fall back to normal image %q", html, tt.wantImageSrc)
+			}
+		})
+	}
+}
+
+func TestNewMarkdownVideoEmbedsDoNotAlterNonVideoImageRewritePath(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingAssetSink{
+		paths: map[string]string{
+			"images/hero.png": "assets/hero.123.png",
+		},
+	}
+	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/hero.png": {SrcPath: "images/hero.png"},
+		},
+	}
+	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("![Launch video](https://youtu.be/dQw4w9WgXcQ)\n\n![Hero](../images/hero.png)\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"`) {
+		t.Fatalf("HTML = %q, want YouTube iframe embed", html)
+	}
+	if !strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero">`) {
+		t.Fatalf("HTML = %q, want normal asset rewrite for non-video image", html)
+	}
+	if strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero" loading="lazy">`) {
+		t.Fatalf("HTML = %q, want first non-video image to remain eager-loaded", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"images/hero.png"}) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/hero.png"})
+	}
+}
+
+func TestNewMarkdownWrapsStandaloneImageParagraphsInFigureWithoutFigcaption(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingAssetSink{
+		paths: map[string]string{
+			"images/hero.png": "assets/hero.123.png",
+		},
+	}
+	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/hero.png": {SrcPath: "images/hero.png"},
+		},
+	}
+	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("![Hero](../images/hero.png)\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "<figure>") {
+		t.Fatalf("HTML = %q, want standalone image wrapped in <figure>", html)
+	}
+	if !strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero">`) {
+		t.Fatalf("HTML = %q, want rewritten image inside figure", html)
+	}
+	if strings.Contains(html, "<figcaption>") {
+		t.Fatalf("HTML = %q, want no figcaption when only alt text is present", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"images/hero.png"}) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/hero.png"})
+	}
+	if note.HasMath {
+		t.Fatal("note.HasMath = true, want source note to remain unchanged")
+	}
+	if note.HasMermaid {
+		t.Fatal("note.HasMermaid = true, want source note to remain unchanged")
+	}
+}
+
+func TestNewMarkdownRendersFigureFigcaptionWhenCaptionTextFollowsImage(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingAssetSink{
+		paths: map[string]string{
+			"images/hero.png": "assets/hero.123.png",
+		},
+	}
+	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/hero.png": {SrcPath: "images/hero.png"},
+		},
+	}
+	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("![Hero](../images/hero.png)\nCaption with **bold** text.\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "<figure>") {
+		t.Fatalf("HTML = %q, want figure wrapper", html)
+	}
+	if !strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero">`) {
+		t.Fatalf("HTML = %q, want rewritten image inside figure", html)
+	}
+	if !strings.Contains(html, `<figcaption><p>Caption with <strong>bold</strong> text.</p></figcaption>`) {
+		t.Fatalf("HTML = %q, want explicit caption rendered as figcaption", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"images/hero.png"}) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/hero.png"})
+	}
+}
+
+func TestNewMarkdownWrapsStandaloneImageEmbedsInFigureWithoutFigcaption(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingAssetSink{
+		paths: map[string]string{
+			"images/diagram.png": "assets/diagram.123.png",
+		},
+	}
+	note := &model.Note{
+		Slug:    "notes/current",
+		RelPath: "notes/current.md",
+		Embeds: []model.EmbedRef{{
+			Target:  "../images/diagram.png",
+			IsImage: true,
+			Line:    1,
+		}},
+	}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/diagram.png": {SrcPath: "images/diagram.png"},
+		},
+	}
+	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("![[../images/diagram.png|Shown Label]]\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "<figure>") {
+		t.Fatalf("HTML = %q, want standalone image embed wrapped in <figure>", html)
+	}
+	if !strings.Contains(html, `<img src="../../assets/diagram.123.png" alt="Shown Label">`) {
+		t.Fatalf("HTML = %q, want rewritten image embed inside figure with alt label", html)
+	}
+	if strings.Contains(html, "<figcaption>") {
+		t.Fatalf("HTML = %q, want no figcaption when only image alt text is present", html)
+	}
+	if strings.Contains(html, "<p><figure>") || strings.Contains(html, "</figure></p>") {
+		t.Fatalf("HTML = %q, want figure emitted without invalid paragraph wrapper", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"images/diagram.png"}) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/diagram.png"})
+	}
+	if note.HasMath {
+		t.Fatal("note.HasMath = true, want source note to remain unchanged")
+	}
+	if note.HasMermaid {
+		t.Fatal("note.HasMermaid = true, want source note to remain unchanged")
+	}
+}
+
+func TestNewMarkdownRendersFigureFigcaptionForImageEmbedsWhenCaptionTextFollows(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingAssetSink{
+		paths: map[string]string{
+			"images/diagram.png": "assets/diagram.123.png",
+		},
+	}
+	note := &model.Note{
+		Slug:    "notes/current",
+		RelPath: "notes/current.md",
+		Embeds: []model.EmbedRef{{
+			Target:  "../images/diagram.png",
+			IsImage: true,
+			Line:    1,
+		}},
+	}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/diagram.png": {SrcPath: "images/diagram.png"},
+		},
+	}
+	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("![[../images/diagram.png]]\nCaption with **bold** text.\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, "<figure>") {
+		t.Fatalf("HTML = %q, want standalone image embed wrapped in <figure>", html)
+	}
+	if !strings.Contains(html, `<img src="../../assets/diagram.123.png" alt="diagram">`) {
+		t.Fatalf("HTML = %q, want rewritten image embed inside figure", html)
+	}
+	if !strings.Contains(html, `<figcaption><p>Caption with <strong>bold</strong> text.</p></figcaption>`) {
+		t.Fatalf("HTML = %q, want explicit caption rendered as figcaption for image embed", html)
+	}
+	if strings.Contains(html, "<p><figure>") || strings.Contains(html, "</figure></p>") {
+		t.Fatalf("HTML = %q, want figure emitted without invalid paragraph wrapper", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"images/diagram.png"}) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/diagram.png"})
 	}
 }
 

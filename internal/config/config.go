@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/model"
@@ -14,6 +15,13 @@ import (
 
 const (
 	defaultLanguage = "en"
+
+	defaultPagefindPath       = "pagefind_extended"
+	defaultPagefindVersion    = "1.4.0"
+	defaultPaginationPageSize = 20
+	defaultRelatedCount       = 5
+	defaultTimelinePath       = "notes"
+	defaultCustomCSSName      = "custom.css"
 
 	defaultKaTeXVersion   = "0.16.44"
 	defaultMermaidVersion = "11.14.0"
@@ -33,21 +41,62 @@ type Overrides struct {
 	Language       string
 	DefaultImg     string
 	DefaultPublish *bool
+	VaultPath      string
 }
 
 type fileConfig struct {
-	Title          string `yaml:"title"`
-	BaseURL        string `yaml:"baseURL"`
-	Author         string `yaml:"author"`
-	Description    string `yaml:"description"`
-	Language       string `yaml:"language"`
-	DefaultImg     string `yaml:"defaultImg"`
-	DefaultPublish *bool  `yaml:"defaultPublish"`
+	Title          string               `yaml:"title"`
+	BaseURL        string               `yaml:"baseURL"`
+	Author         string               `yaml:"author"`
+	Description    string               `yaml:"description"`
+	Language       string               `yaml:"language"`
+	DefaultImg     string               `yaml:"defaultImg"`
+	DefaultPublish *bool                `yaml:"defaultPublish"`
+	TemplateDir    string               `yaml:"templateDir"`
+	CustomCSS      string               `yaml:"customCSS"`
+	Search         searchFileConfig     `yaml:"search"`
+	Pagination     paginationFileConfig `yaml:"pagination"`
+	Sidebar        enabledFileConfig    `yaml:"sidebar"`
+	Popover        enabledFileConfig    `yaml:"popover"`
+	Related        relatedFileConfig    `yaml:"related"`
+	RSS            enabledFileConfig    `yaml:"rss"`
+	Timeline       timelineFileConfig   `yaml:"timeline"`
+}
+
+type enabledFileConfig struct {
+	Enabled *bool `yaml:"enabled"`
+}
+
+type searchFileConfig struct {
+	Enabled         *bool  `yaml:"enabled"`
+	PagefindPath    string `yaml:"pagefindPath"`
+	PagefindVersion string `yaml:"pagefindVersion"`
+}
+
+type paginationFileConfig struct {
+	PageSize *int `yaml:"pageSize"`
+}
+
+type relatedFileConfig struct {
+	Enabled *bool `yaml:"enabled"`
+	Count   *int  `yaml:"count"`
+}
+
+type timelineFileConfig struct {
+	Enabled    *bool  `yaml:"enabled"`
+	AsHomepage *bool  `yaml:"asHomepage"`
+	Path       string `yaml:"path"`
+}
+
+type loadPaths struct {
+	configDir string
+	vaultRoot string
 }
 
 // Load reads obsite.yaml, applies CLI overrides, normalizes values, and validates the result.
 func Load(path string, overrides Overrides) (model.SiteConfig, error) {
 	cfg := defaultSiteConfig()
+	paths := resolveLoadPaths(path, overrides)
 
 	if path != "" {
 		data, err := os.ReadFile(path)
@@ -58,6 +107,10 @@ func Load(path string, overrides Overrides) (model.SiteConfig, error) {
 		parsed, err := parseFileConfig(data)
 		if err != nil {
 			return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", path, err)
+		}
+
+		if err := validateParsedFileConfig(parsed); err != nil {
+			return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
 		}
 
 		cfg = applyFileConfig(cfg, parsed)
@@ -72,6 +125,15 @@ func Load(path string, overrides Overrides) (model.SiteConfig, error) {
 		}
 
 		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
+	}
+
+	normalized, err = applyLoadPathDefaults(normalized, paths)
+	if err != nil {
+		if path == "" {
+			return model.SiteConfig{}, fmt.Errorf("resolve config paths: %w", err)
+		}
+
+		return model.SiteConfig{}, fmt.Errorf("resolve config paths for %q: %w", path, err)
 	}
 
 	return normalized, nil
@@ -90,8 +152,18 @@ func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 
 func defaultSiteConfig() model.SiteConfig {
 	return model.SiteConfig{
-		Language:           defaultLanguage,
-		DefaultPublish:     true,
+		Language:       defaultLanguage,
+		DefaultPublish: true,
+		Search: model.SearchConfig{
+			PagefindPath:    defaultPagefindPath,
+			PagefindVersion: defaultPagefindVersion,
+		},
+		Pagination: model.PaginationConfig{PageSize: defaultPaginationPageSize},
+		Related:    model.RelatedConfig{Count: defaultRelatedCount},
+		RSS:        model.RSSConfig{Enabled: true},
+		Timeline: model.TimelineConfig{
+			Path: defaultTimelinePath,
+		},
 		KaTeXCSSURL:        defaultKaTeXCSSURL,
 		KaTeXJSURL:         defaultKaTeXJSURL,
 		KaTeXAutoRenderURL: defaultKaTeXAutoRenderURL,
@@ -107,6 +179,29 @@ func applyRuntimeDefaults(cfg model.SiteConfig) model.SiteConfig {
 	}
 	if !cfg.DefaultPublishSet {
 		cfg.DefaultPublish = defaults.DefaultPublish
+	}
+
+	if value := strings.TrimSpace(cfg.Search.PagefindPath); value != "" {
+		cfg.Search.PagefindPath = value
+	} else {
+		cfg.Search.PagefindPath = defaults.Search.PagefindPath
+	}
+	if value := strings.TrimSpace(cfg.Search.PagefindVersion); value != "" {
+		cfg.Search.PagefindVersion = value
+	} else {
+		cfg.Search.PagefindVersion = defaults.Search.PagefindVersion
+	}
+	if cfg.Pagination.PageSize == 0 {
+		cfg.Pagination.PageSize = defaults.Pagination.PageSize
+	}
+	if cfg.Related.Count == 0 {
+		cfg.Related.Count = defaults.Related.Count
+	}
+	if !cfg.RSS.EnabledSet {
+		cfg.RSS.Enabled = defaults.RSS.Enabled
+	}
+	if strings.TrimSpace(cfg.Timeline.Path) == "" {
+		cfg.Timeline.Path = defaults.Timeline.Path
 	}
 
 	if value := strings.TrimSpace(cfg.KaTeXCSSURL); value != "" {
@@ -133,6 +228,19 @@ func applyRuntimeDefaults(cfg model.SiteConfig) model.SiteConfig {
 	return cfg
 }
 
+func resolveLoadPaths(configPath string, overrides Overrides) loadPaths {
+	paths := loadPaths{}
+
+	if trimmedConfigPath := strings.TrimSpace(configPath); trimmedConfigPath != "" {
+		paths.configDir = filepath.Clean(filepath.Dir(trimmedConfigPath))
+	}
+	if trimmedVaultPath := strings.TrimSpace(overrides.VaultPath); trimmedVaultPath != "" {
+		paths.vaultRoot = filepath.Clean(trimmedVaultPath)
+	}
+
+	return paths
+}
+
 func parseFileConfig(data []byte) (fileConfig, error) {
 	var cfg fileConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
@@ -142,6 +250,17 @@ func parseFileConfig(data []byte) (fileConfig, error) {
 	}
 
 	return cfg, nil
+}
+
+func validateParsedFileConfig(parsed fileConfig) error {
+	if parsed.Pagination.PageSize != nil && *parsed.Pagination.PageSize <= 0 {
+		return fmt.Errorf("pagination.pageSize must be greater than 0")
+	}
+	if parsed.Related.Count != nil && *parsed.Related.Count <= 0 {
+		return fmt.Errorf("related.count must be greater than 0")
+	}
+
+	return nil
 }
 
 func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
@@ -166,6 +285,49 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	if parsed.DefaultPublish != nil {
 		cfg.DefaultPublish = *parsed.DefaultPublish
 		cfg.DefaultPublishSet = true
+	}
+	if value := strings.TrimSpace(parsed.TemplateDir); value != "" {
+		cfg.TemplateDir = value
+	}
+	if value := strings.TrimSpace(parsed.CustomCSS); value != "" {
+		cfg.CustomCSS = value
+	}
+	if parsed.Search.Enabled != nil {
+		cfg.Search.Enabled = *parsed.Search.Enabled
+	}
+	if value := strings.TrimSpace(parsed.Search.PagefindPath); value != "" {
+		cfg.Search.PagefindPath = value
+	}
+	if value := strings.TrimSpace(parsed.Search.PagefindVersion); value != "" {
+		cfg.Search.PagefindVersion = value
+	}
+	if parsed.Pagination.PageSize != nil {
+		cfg.Pagination.PageSize = *parsed.Pagination.PageSize
+	}
+	if parsed.Sidebar.Enabled != nil {
+		cfg.Sidebar.Enabled = *parsed.Sidebar.Enabled
+	}
+	if parsed.Popover.Enabled != nil {
+		cfg.Popover.Enabled = *parsed.Popover.Enabled
+	}
+	if parsed.Related.Enabled != nil {
+		cfg.Related.Enabled = *parsed.Related.Enabled
+	}
+	if parsed.Related.Count != nil {
+		cfg.Related.Count = *parsed.Related.Count
+	}
+	if parsed.RSS.Enabled != nil {
+		cfg.RSS.Enabled = *parsed.RSS.Enabled
+		cfg.RSS.EnabledSet = true
+	}
+	if parsed.Timeline.Enabled != nil {
+		cfg.Timeline.Enabled = *parsed.Timeline.Enabled
+	}
+	if parsed.Timeline.AsHomepage != nil {
+		cfg.Timeline.AsHomepage = *parsed.Timeline.AsHomepage
+	}
+	if value := strings.TrimSpace(parsed.Timeline.Path); value != "" {
+		cfg.Timeline.Path = value
 	}
 
 	return cfg
@@ -217,8 +379,98 @@ func validate(cfg *model.SiteConfig) error {
 		cfg.Language = defaultLanguage
 	}
 	cfg.DefaultImg = strings.TrimSpace(cfg.DefaultImg)
+	cfg.TemplateDir = strings.TrimSpace(cfg.TemplateDir)
+	cfg.CustomCSS = strings.TrimSpace(cfg.CustomCSS)
+	cfg.Search.PagefindPath = strings.TrimSpace(cfg.Search.PagefindPath)
+	cfg.Search.PagefindVersion = strings.TrimSpace(cfg.Search.PagefindVersion)
+	if cfg.Pagination.PageSize < 0 {
+		return fmt.Errorf("pagination.pageSize must be greater than 0")
+	}
+	if cfg.Related.Count < 0 {
+		return fmt.Errorf("related.count must be greater than 0")
+	}
+
+	timelinePath, err := normalizeTimelinePath(cfg.Timeline.Path)
+	if err != nil {
+		return err
+	}
+	cfg.Timeline.Path = timelinePath
 
 	return nil
+}
+
+func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths) (model.SiteConfig, error) {
+	baseDir := paths.configDir
+	if baseDir == "" {
+		baseDir = paths.vaultRoot
+	}
+
+	cfg.TemplateDir = resolveConfiguredPath(cfg.TemplateDir, baseDir)
+	cfg.CustomCSS = resolveConfiguredPath(cfg.CustomCSS, baseDir)
+	if cfg.CustomCSS != "" {
+		return cfg, nil
+	}
+
+	detectedCSS, err := detectCustomCSS(paths.vaultRoot)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	cfg.CustomCSS = detectedCSS
+
+	return cfg, nil
+}
+
+func resolveConfiguredPath(raw string, baseDir string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if filepath.IsAbs(trimmed) || strings.TrimSpace(baseDir) == "" {
+		return filepath.Clean(trimmed)
+	}
+
+	return filepath.Clean(filepath.Join(baseDir, trimmed))
+}
+
+func detectCustomCSS(vaultRoot string) (string, error) {
+	trimmedVaultRoot := strings.TrimSpace(vaultRoot)
+	if trimmedVaultRoot == "" {
+		return "", nil
+	}
+
+	candidate := filepath.Join(trimmedVaultRoot, defaultCustomCSSName)
+	info, err := os.Stat(candidate)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+
+		return "", fmt.Errorf("stat auto-detected custom CSS %q: %w", candidate, err)
+	}
+	if info.IsDir() {
+		return "", nil
+	}
+
+	return filepath.Clean(candidate), nil
+}
+
+func normalizeTimelinePath(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return defaultTimelinePath, nil
+	}
+
+	cleaned := path.Clean(trimmed)
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("timeline.path must stay within the site root")
+	}
+
+	normalized := strings.Trim(cleaned, "/")
+	if normalized == "" || normalized == "." {
+		return "", fmt.Errorf("timeline.path must not be empty")
+	}
+
+	return normalized, nil
 }
 
 func normalizeBaseURL(raw string) (string, error) {

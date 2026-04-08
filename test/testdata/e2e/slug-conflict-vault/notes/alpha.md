@@ -1,8 +1,9 @@
 ---
-title: Alpha
-slug: shared
+title: Archived Alpha
+slug: archived-alpha
+publish: false
 date: 2026-04-06
 ---
-# Alpha
+# Archived Alpha
 
-Alpha body.
+Archived note kept unpublished so the folder-vs-note fixture stays focused.

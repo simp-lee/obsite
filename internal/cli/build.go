@@ -15,6 +15,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	var vaultPath string
 	var outputPath string
 	var configPath string
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:   "build",
@@ -39,12 +40,12 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 				return err
 			}
 
-			cfg, err := deps.loadConfig(resolvedConfigPath, internalconfig.Overrides{})
+			cfg, err := deps.loadConfig(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			if _, err := deps.buildSite(cfg, normalizedVaultPath, trimmedOutputPath); err != nil {
+			if _, err := deps.buildSiteWithOptions(cfg, normalizedVaultPath, trimmedOutputPath, internalbuild.Options{Force: force}); err != nil {
 				return fmt.Errorf("build site: %w", err)
 			}
 
@@ -56,6 +57,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault")
 	flags.StringVar(&outputPath, "output", "", "Path to write the generated site")
 	flags.StringVar(&configPath, "config", "", "Path to obsite.yaml (defaults to <vault>/obsite.yaml)")
+	flags.BoolVar(&force, "force", false, "Ignore the incremental cache and rebuild all note pages")
 	_ = cmd.MarkFlagRequired("vault")
 	_ = cmd.MarkFlagRequired("output")
 

@@ -21,19 +21,50 @@ const (
 	minHashSuffixLen = 12
 )
 
+// ErrUnsupportedRegularFileSource indicates that a source path is not a regular non-symlink file.
+var ErrUnsupportedRegularFileSource = errors.New("source must be a regular non-symlink file")
+
 var errUnsupportedAssetSource = errors.New("asset source must be a regular non-symlink file inside the vault")
+
+// InspectRegularNonSymlinkFile resolves filePath to an absolute path and ensures the final entry is a regular non-symlink file.
+func InspectRegularNonSymlinkFile(filePath string) (string, os.FileInfo, error) {
+	trimmedPath := strings.TrimSpace(filePath)
+	if trimmedPath == "" {
+		return "", nil, os.ErrNotExist
+	}
+
+	absPath, err := filepath.Abs(trimmedPath)
+	if err != nil {
+		return "", nil, err
+	}
+
+	info, err := os.Lstat(absPath)
+	if err != nil {
+		return "", nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return "", nil, ErrUnsupportedRegularFileSource
+	}
+
+	return absPath, info, nil
+}
 
 // MergeAssets combines pass-1 indexed assets with pass-2 collector assets.
 // Assets are deduped by vault-relative source path and their reference counts
 // are added together.
 func MergeAssets(vaultRoot string, indexed map[string]*model.Asset, collector *AssetCollector) map[string]*model.Asset {
+	return MergeAssetsWithReservedPaths(vaultRoot, indexed, collector, nil)
+}
+
+// MergeAssetsWithReservedPaths combines assets while keeping reserved output destinations unavailable.
+func MergeAssetsWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, collector *AssetCollector, reservedOutputPaths []string) map[string]*model.Asset {
 	merged := make(map[string]*model.Asset, len(indexed))
 	mergeAssetMap(merged, indexed)
 	if collector != nil {
 		mergeAssetMap(merged, collector.Snapshot())
 	}
 
-	assigned := planAssetDestinations(vaultRoot, merged)
+	assigned := planAssetDestinations(vaultRoot, merged, normalizeReservedOutputKeys(reservedOutputPaths))
 	for srcPath, asset := range merged {
 		if asset == nil {
 			continue
@@ -49,11 +80,17 @@ func MergeAssets(vaultRoot string, indexed map[string]*model.Asset, collector *A
 // CopyAssets copies merged assets from the vault into the output directory.
 // Missing or unsupported asset sources are downgraded to unresolved-asset diagnostics so the build can continue.
 func CopyAssets(vaultRoot string, outputRoot string, assets map[string]*model.Asset, diagCollector *diag.Collector) error {
+	return CopyAssetsWithReservedPaths(vaultRoot, outputRoot, assets, diagCollector, nil)
+}
+
+// CopyAssetsWithReservedPaths copies merged assets while preserving reserved output destinations for non-asset writers.
+func CopyAssetsWithReservedPaths(vaultRoot string, outputRoot string, assets map[string]*model.Asset, diagCollector *diag.Collector, reservedOutputPaths []string) error {
 	if len(assets) == 0 {
 		return nil
 	}
 
-	assigned := planAssetDestinations(vaultRoot, assets)
+	reservedOutputKeys := normalizeReservedOutputKeys(reservedOutputPaths)
+	assigned := planAssetDestinations(vaultRoot, assets, reservedOutputKeys)
 	lookup := make(map[string]*model.Asset, len(assets))
 	ordered := make([]string, 0, len(assets))
 	for key, asset := range assets {
@@ -74,6 +111,9 @@ func CopyAssets(vaultRoot string, outputRoot string, assets map[string]*model.As
 		}
 
 		dstPath := outputSitePath(asset.DstPath)
+		if isReservedOutputKey(outputSiteKey(dstPath), reservedOutputKeys) {
+			dstPath = ""
+		}
 		if dstPath == "" {
 			dstPath = assigned[srcPath]
 			asset.DstPath = dstPath
@@ -148,7 +188,7 @@ func mergeAssetMap(dst map[string]*model.Asset, src map[string]*model.Asset) {
 	}
 }
 
-func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset) map[string]string {
+func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, reservedOutputKeys map[string]struct{}) map[string]string {
 	assigned := make(map[string]string, len(assets))
 	grouped := make(map[string][]string)
 
@@ -179,8 +219,10 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset) map
 
 		if len(sources) == 1 {
 			srcPath := sources[0]
-			if dstPath := assigned[srcPath]; dstPath != "" {
+			if dstPath := assigned[srcPath]; dstPath != "" && !isReservedOutputKey(outputSiteKey(dstPath), reservedOutputKeys) {
 				planned[srcPath] = dstPath
+			} else if isReservedOutputKey(groupKey, reservedOutputKeys) {
+				planned[srcPath] = hashCollisionPaths(vaultRoot, groupKey, sources)[srcPath]
 			} else {
 				planned[srcPath] = plainAssetPath(srcPath)
 			}
@@ -188,13 +230,17 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset) map
 		}
 
 		hasMultipleAvailableSources := groupHasMultipleAvailableSources(vaultRoot, sources)
+		reservedPlainPath := isReservedOutputKey(groupKey, reservedOutputKeys)
 		plainAssignedSrc := ""
 		assignedCounts := make(map[string]int, len(sources))
 		for _, srcPath := range sources {
 			if dstPath := assigned[srcPath]; dstPath != "" {
-				assignedCounts[outputSiteKey(dstPath)]++
+				dstKey := outputSiteKey(dstPath)
+				if !isReservedOutputKey(dstKey, reservedOutputKeys) {
+					assignedCounts[dstKey]++
+				}
 			}
-			if !hasMultipleAvailableSources && assigned[srcPath] == plainAssetPath(srcPath) {
+			if !reservedPlainPath && !hasMultipleAvailableSources && assigned[srcPath] == plainAssetPath(srcPath) {
 				plainAssignedSrc = srcPath
 				break
 			}
@@ -206,10 +252,10 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset) map
 			if dstPath := assigned[srcPath]; dstPath != "" {
 				dstKey := outputSiteKey(dstPath)
 				switch {
-				case !hasMultipleAvailableSources && plainAssignedSrc != "" && srcPath == plainAssignedSrc:
+				case !reservedPlainPath && !hasMultipleAvailableSources && plainAssignedSrc != "" && srcPath == plainAssignedSrc:
 					planned[srcPath] = dstPath
 					continue
-				case dstKey != "" && dstKey != groupKey && assignedCounts[dstKey] == 1:
+				case dstKey != "" && !isReservedOutputKey(dstKey, reservedOutputKeys) && dstKey != groupKey && assignedCounts[dstKey] == 1:
 					planned[srcPath] = dstPath
 					continue
 				}
@@ -380,6 +426,12 @@ func normalizePublishableAssetPath(value string) string {
 	return normalized
 }
 
+// IsPublishableAssetPath reports whether value is a vault-relative path that the
+// asset pipeline accepts as a publishable input.
+func IsPublishableAssetPath(value string) bool {
+	return normalizePublishableAssetPath(value) != ""
+}
+
 func outputSitePath(value string) string {
 	normalized := normalizePath(value)
 	if normalized == "" || isOutsideVaultPath(normalized) {
@@ -399,6 +451,33 @@ func outputSiteKey(value string) string {
 	}
 
 	return strings.ToLower(normalized)
+}
+
+func normalizeReservedOutputKeys(reservedOutputPaths []string) map[string]struct{} {
+	if len(reservedOutputPaths) == 0 {
+		return nil
+	}
+
+	reserved := make(map[string]struct{}, len(reservedOutputPaths))
+	for _, reservedOutputPath := range reservedOutputPaths {
+		if key := outputSiteKey(reservedOutputPath); key != "" {
+			reserved[key] = struct{}{}
+		}
+	}
+	if len(reserved) == 0 {
+		return nil
+	}
+
+	return reserved
+}
+
+func isReservedOutputKey(outputKey string, reservedOutputKeys map[string]struct{}) bool {
+	if outputKey == "" || len(reservedOutputKeys) == 0 {
+		return false
+	}
+
+	_, ok := reservedOutputKeys[outputKey]
+	return ok
 }
 
 func plainAssetKey(srcPath string) string {
@@ -495,11 +574,15 @@ func assetSourceInfo(vaultRoot string, srcPath string) (string, os.FileInfo, err
 			continue
 		}
 
-		if info.IsDir() || !info.Mode().IsRegular() {
-			return "", nil, errUnsupportedAssetSource
+		validatedPath, validatedInfo, validateErr := InspectRegularNonSymlinkFile(currentPath)
+		if validateErr != nil {
+			if errors.Is(validateErr, ErrUnsupportedRegularFileSource) {
+				return "", nil, errUnsupportedAssetSource
+			}
+			return "", nil, validateErr
 		}
 
-		return currentPath, info, nil
+		return validatedPath, validatedInfo, nil
 	}
 
 	return "", nil, errUnsupportedAssetSource

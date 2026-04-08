@@ -127,9 +127,153 @@ func TestParseFrontmatterCapturesSourceFileLastModifiedInUTC(t *testing.T) {
 	}
 
 	note := got.PublicNotes[0]
+	if !note.Frontmatter.Updated.IsZero() {
+		t.Fatalf("Frontmatter.Updated = %v, want zero time", note.Frontmatter.Updated)
+	}
 	wantLastModified := rawLastModified.UTC().Truncate(time.Second)
 	if !note.LastModified.Equal(wantLastModified) {
 		t.Fatalf("LastModified = %v, want %v", note.LastModified, wantLastModified)
+	}
+}
+
+func TestParseFrontmatterParsesUpdatedFieldUsingSupportedDateFormats(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		frontUpdated string
+		want         time.Time
+	}{
+		{
+			name:         "iso8601 with timezone",
+			frontUpdated: "2026-04-05T09:30:45+08:00",
+			want:         time.Date(2026, time.April, 5, 1, 30, 45, 0, time.UTC),
+		},
+		{
+			name:         "iso8601 minute precision with timezone offset",
+			frontUpdated: "2026-04-05T09:30+08:00",
+			want:         time.Date(2026, time.April, 5, 1, 30, 0, 0, time.UTC),
+		},
+		{
+			name:         "iso8601 minute precision with z suffix",
+			frontUpdated: "2026-04-05T09:30Z",
+			want:         time.Date(2026, time.April, 5, 9, 30, 0, 0, time.UTC),
+		},
+		{
+			name:         "common local datetime",
+			frontUpdated: "2026-04-05 09:30:45",
+			want:         time.Date(2026, time.April, 5, 9, 30, 45, 0, time.UTC),
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vaultPath := t.TempDir()
+			writeVaultFile(t, vaultPath, "notes/updated.md", "---\nupdated: "+tt.frontUpdated+"\npublish: true\n---\nbody\n")
+
+			scanResult, err := Scan(vaultPath)
+			if err != nil {
+				t.Fatalf("Scan() error = %v", err)
+			}
+
+			got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: true})
+			if err != nil {
+				t.Fatalf("ParseFrontmatter() error = %v", err)
+			}
+
+			if len(got.PublicNotes) != 1 {
+				t.Fatalf("len(PublicNotes) = %d, want 1", len(got.PublicNotes))
+			}
+
+			note := got.PublicNotes[0]
+			if !note.Frontmatter.Updated.Equal(tt.want) {
+				t.Fatalf("Frontmatter.Updated = %v, want %v", note.Frontmatter.Updated, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseFrontmatterUpdatedOverridesSourceFileLastModified(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	relPath := "notes/post.md"
+	writeVaultFile(t, vaultPath, relPath, "---\nupdated: 2026-04-07T09:30:45+08:00\npublish: true\n---\nbody\n")
+
+	sourcePath := filepath.Join(vaultPath, filepath.FromSlash(relPath))
+	rawLastModified := time.Date(2026, time.April, 5, 14, 15, 16, 0, time.UTC)
+	if err := os.Chtimes(sourcePath, rawLastModified, rawLastModified); err != nil {
+		t.Fatalf("Chtimes(%q) error = %v", sourcePath, err)
+	}
+
+	scanResult, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: true})
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+
+	if len(got.PublicNotes) != 1 {
+		t.Fatalf("len(PublicNotes) = %d, want 1", len(got.PublicNotes))
+	}
+
+	note := got.PublicNotes[0]
+	wantUpdated := time.Date(2026, time.April, 7, 1, 30, 45, 0, time.UTC)
+	if !note.Frontmatter.Updated.Equal(wantUpdated) {
+		t.Fatalf("Frontmatter.Updated = %v, want %v", note.Frontmatter.Updated, wantUpdated)
+	}
+	if !note.LastModified.Equal(wantUpdated) {
+		t.Fatalf("LastModified = %v, want updated time %v", note.LastModified, wantUpdated)
+	}
+}
+
+func TestParseFrontmatterDateRemainsIndependentFromLastModified(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	relPath := "notes/post.md"
+	writeVaultFile(t, vaultPath, relPath, "---\ndate: 2026-04-01\npublish: true\n---\nbody\n")
+
+	sourcePath := filepath.Join(vaultPath, filepath.FromSlash(relPath))
+	rawLastModified := time.Date(2026, time.April, 6, 18, 45, 12, 0, time.FixedZone("UTC+8", 8*60*60))
+	if err := os.Chtimes(sourcePath, rawLastModified, rawLastModified); err != nil {
+		t.Fatalf("Chtimes(%q) error = %v", sourcePath, err)
+	}
+
+	scanResult, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: true})
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+
+	if len(got.PublicNotes) != 1 {
+		t.Fatalf("len(PublicNotes) = %d, want 1", len(got.PublicNotes))
+	}
+
+	note := got.PublicNotes[0]
+	wantDate := time.Date(2026, time.April, 1, 0, 0, 0, 0, time.UTC)
+	if !note.Frontmatter.Date.Equal(wantDate) {
+		t.Fatalf("Frontmatter.Date = %v, want %v", note.Frontmatter.Date, wantDate)
+	}
+	if !note.Frontmatter.Updated.IsZero() {
+		t.Fatalf("Frontmatter.Updated = %v, want zero time", note.Frontmatter.Updated)
+	}
+	wantLastModified := rawLastModified.UTC().Truncate(time.Second)
+	if !note.LastModified.Equal(wantLastModified) {
+		t.Fatalf("LastModified = %v, want filesystem time %v", note.LastModified, wantLastModified)
+	}
+	if note.LastModified.Equal(note.Frontmatter.Date) {
+		t.Fatalf("LastModified = %v, want distinct from Frontmatter.Date %v", note.LastModified, note.Frontmatter.Date)
 	}
 }
 

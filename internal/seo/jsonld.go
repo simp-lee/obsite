@@ -70,14 +70,14 @@ func BuildJSONLD(page model.PageData, note *model.Note) (template.JS, error) {
 }
 
 func buildJSONLD(page model.PageData, note *model.Note, metadata Metadata) (template.JS, error) {
-	if page.Kind != model.PageNote {
-		return "", nil
-	}
-
 	payload := make([]any, 0, 2)
-	article, articleErr := buildArticleJSONLD(page, note, metadata)
-	if article != nil {
-		payload = append(payload, article)
+	var articleErr error
+	if page.Kind == model.PageNote {
+		article, err := buildArticleJSONLD(page, note, metadata)
+		if article != nil {
+			payload = append(payload, article)
+		}
+		articleErr = err
 	}
 	if breadcrumb := buildBreadcrumbListJSONLD(page, metadata); breadcrumb != nil {
 		payload = append(payload, breadcrumb)
@@ -189,7 +189,7 @@ func normalizeBreadcrumbs(page model.PageData, metadata Metadata) []normalizedBr
 
 		normalized = append(normalized, normalizedBreadcrumb{
 			Name: name,
-			URL:  absolutizeBreadcrumbURL(page.Site.BaseURL, breadcrumb.URL),
+			URL:  absolutizeBreadcrumbURL(page.Site.BaseURL, metadata.Canonical, breadcrumb.URL),
 		})
 	}
 
@@ -246,12 +246,43 @@ func comparableAbsoluteURL(raw string) string {
 	return parsed.String()
 }
 
-func absolutizeBreadcrumbURL(baseURL string, raw string) string {
+func absolutizeBreadcrumbURL(baseURL string, currentPageURL string, raw string) string {
 	if strings.TrimSpace(raw) == "" {
 		return ""
 	}
 
-	return absolutePageURL(baseURL, raw)
+	trimmed := strings.TrimSpace(raw)
+	parsed, err := url.Parse(trimmed)
+	if err == nil && parsed.IsAbs() && parsed.Host != "" {
+		return parsed.String()
+	}
+
+	if strings.HasPrefix(trimmed, "./") || strings.HasPrefix(trimmed, "../") {
+		if resolved := resolveRelativeBreadcrumbURL(currentPageURL, trimmed); resolved != "" {
+			return resolved
+		}
+	}
+
+	return absolutePageURL(baseURL, trimmed)
+}
+
+func resolveRelativeBreadcrumbURL(currentPageURL string, raw string) string {
+	trimmedPageURL := strings.TrimSpace(currentPageURL)
+	if trimmedPageURL == "" {
+		return ""
+	}
+
+	base, err := url.Parse(trimmedPageURL)
+	if err != nil {
+		return ""
+	}
+
+	reference, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+
+	return base.ResolveReference(reference).String()
 }
 
 func publishedAt(page model.PageData, note *model.Note) time.Time {

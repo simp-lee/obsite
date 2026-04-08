@@ -8,13 +8,16 @@ import (
 	"strconv"
 	"strings"
 
+	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	"github.com/simp-lee/obsite/internal/diag"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
 )
@@ -80,9 +83,78 @@ func New(
 }
 
 func (e *extender) Extend(md goldmark.Markdown) {
+	md.Parser().AddOptions(parser.WithParagraphTransformers(
+		util.Prioritized(newImageEmbedFigureParagraphTransformer(e.renderer.currentNote, e.renderer.index), 119),
+	))
 	md.Renderer().AddOptions(renderer.WithNodeRenderers(
 		util.Prioritized(e.renderer, 198),
 	))
+}
+
+type imageEmbedFigureParagraphTransformer struct {
+	currentNote *model.Note
+	index       *model.VaultIndex
+}
+
+func newImageEmbedFigureParagraphTransformer(currentNote *model.Note, index *model.VaultIndex) parser.ParagraphTransformer {
+	return &imageEmbedFigureParagraphTransformer{currentNote: currentNote, index: index}
+}
+
+func (t *imageEmbedFigureParagraphTransformer) Transform(node *gast.Paragraph, reader text.Reader, _ parser.Context) {
+	lines := node.Lines()
+	if lines.Len() == 0 {
+		return
+	}
+
+	source := reader.Source()
+	firstLine := lines.At(0)
+	if !t.isImageEmbedFigureLine(firstLine.Value(source)) {
+		return
+	}
+
+	parent := node.Parent()
+	if parent == nil {
+		return
+	}
+
+	figure := figureast.NewFigure()
+	parent.ReplaceChild(parent, node, figure)
+
+	currentLine := 0
+	for currentLine < lines.Len() {
+		segment := lines.At(currentLine)
+		if !t.isImageEmbedFigureLine(segment.Value(source)) {
+			break
+		}
+
+		figureImage := figureast.NewFigureImage()
+		figureImage.Lines().Append(segment)
+		figure.AppendChild(figure, figureImage)
+		currentLine++
+	}
+
+	if currentLine >= lines.Len() {
+		return
+	}
+
+	figureCaption := figureast.NewFigureCaption()
+	for i := currentLine; i < lines.Len(); i++ {
+		segment := lines.At(i)
+		if i == lines.Len()-1 && segment.Stop > segment.Start && source[segment.Stop-1] == '\n' {
+			segment.Stop--
+		}
+		figureCaption.Lines().Append(segment)
+	}
+	figure.AppendChild(figure, figureCaption)
+}
+
+func (t *imageEmbedFigureParagraphTransformer) isImageEmbedFigureLine(line []byte) bool {
+	target, ok := parseImageEmbedFigureTarget(line)
+	if !ok {
+		return false
+	}
+
+	return resolveImageAssetPath(t.currentNote, t.index, target) != ""
 }
 
 type wikilinkHTMLRenderer struct {
@@ -309,8 +381,12 @@ func (r *wikilinkHTMLRenderer) consumeEmbed(rawTarget string) *model.EmbedRef {
 }
 
 func (r *wikilinkHTMLRenderer) resolveImageAssetPath(target string) string {
-	for _, candidate := range imageAssetCandidates(r.currentNote, r.index, target) {
-		if r.index != nil && r.index.Assets[candidate] != nil {
+	return resolveImageAssetPath(r.currentNote, r.index, target)
+}
+
+func resolveImageAssetPath(note *model.Note, idx *model.VaultIndex, target string) string {
+	for _, candidate := range imageAssetCandidates(note, idx, target) {
+		if idx != nil && idx.Assets[candidate] != nil {
 			return candidate
 		}
 	}
@@ -583,6 +659,36 @@ func normalizeSitePath(value string) string {
 	}
 
 	return cleaned
+}
+
+func parseImageEmbedFigureTarget(line []byte) (string, bool) {
+	trimmed := strings.TrimSpace(string(line))
+	if !strings.HasPrefix(trimmed, "![[") || !strings.HasSuffix(trimmed, "]]") {
+		return "", false
+	}
+
+	inner := strings.TrimSpace(trimmed[len("![[") : len(trimmed)-len("]]")])
+	if inner == "" {
+		return "", false
+	}
+
+	target, _, _ := strings.Cut(inner, "|")
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return "", false
+	}
+
+	targetPath, _, _ := strings.Cut(target, "#")
+	targetPath = strings.TrimSpace(targetPath)
+	if targetPath == "" {
+		return "", false
+	}
+
+	if !internalasset.HasImageExtension(targetPath) {
+		return "", false
+	}
+
+	return targetPath, true
 }
 
 func looksLikeImageTarget(value string) bool {

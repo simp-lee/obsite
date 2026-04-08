@@ -7,11 +7,18 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 // DefaultPort is the default local preview port for obsite serve.
 const DefaultPort = 8080
+
+const liveReloadEndpoint = "/_livereload"
+
+var liveReloadScript = []byte(`<script data-obsite-livereload>(function(){if(!window.EventSource){return;}var source=new EventSource("/_livereload");source.onmessage=function(event){if(event.data==="reload"){source.close();window.location.reload();}};})();</script>`)
 
 // Server serves a generated Obsite output directory over HTTP.
 type Server struct {
@@ -19,6 +26,18 @@ type Server struct {
 	port         int
 	fileServer   http.Handler
 	notFoundPath string
+	liveReload   *liveReloadHub
+}
+
+type liveReloadHub struct {
+	mu      sync.Mutex
+	clients map[chan string]struct{}
+}
+
+type bufferedResponseWriter struct {
+	header     http.Header
+	body       bytes.Buffer
+	statusCode int
 }
 
 // New validates the generated output directory and constructs a preview server.
@@ -64,10 +83,33 @@ func (s *Server) ListenAndServe() error {
 	return http.ListenAndServe(s.Addr(), s)
 }
 
+// EnableLiveReload turns on the SSE endpoint and HTML script injection used by watch mode.
+func (s *Server) EnableLiveReload() {
+	if s == nil || s.liveReload != nil {
+		return
+	}
+
+	s.liveReload = newLiveReloadHub()
+}
+
+// NotifyReload broadcasts a livereload event to connected preview clients.
+func (s *Server) NotifyReload() {
+	if s == nil || s.liveReload == nil {
+		return
+	}
+
+	s.liveReload.Reload()
+}
+
 // ServeHTTP handles clean-URL fallbacks before delegating to the underlying file server.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s == nil {
 		http.Error(w, "server is nil", http.StatusInternalServerError)
+		return
+	}
+
+	if cleanPath, _ := cleanRequestPath(r.URL.Path); cleanPath == liveReloadEndpoint && s.liveReload != nil {
+		s.serveLiveReload(w, r)
 		return
 	}
 
@@ -81,9 +123,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if servePath != "" {
-		req := r.Clone(r.Context())
-		req.URL.Path = servePath
-		s.fileServer.ServeHTTP(w, req)
+		s.serveOutput(w, r, servePath)
 		return
 	}
 
@@ -132,19 +172,106 @@ func (s *Server) serveNotFound(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	body = injectPreviewBaseHref(body)
+	if s.liveReload != nil {
+		body = injectLiveReloadScript(body)
+	}
 	if len(body) == 0 {
 		http.NotFound(w, r)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(http.StatusNotFound)
 	if r.Method == http.MethodHead {
 		return
 	}
 
 	_, _ = w.Write(body)
+}
+
+func (s *Server) serveLiveReload(w http.ResponseWriter, r *http.Request) {
+	if s.liveReload == nil {
+		http.Error(w, "live reload is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	s.liveReload.ServeHTTP(w, r)
+}
+
+func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, servePath string) {
+	req := r.Clone(r.Context())
+	req.URL.Path = servePath
+	if s.liveReload == nil || !shouldBufferInjectedResponse(req, servePath) {
+		s.fileServer.ServeHTTP(w, req)
+		return
+	}
+
+	s.serveInjectedResponse(w, req, func(recorder http.ResponseWriter, request *http.Request) {
+		s.fileServer.ServeHTTP(recorder, request)
+	})
+}
+
+func shouldBufferInjectedResponse(r *http.Request, servePath string) bool {
+	if r == nil || r.Method != http.MethodGet || requestHasRange(r) {
+		return false
+	}
+
+	return isHTMLCandidatePath(servePath)
+}
+
+func isHTMLCandidatePath(servePath string) bool {
+	if servePath == "" {
+		return false
+	}
+	if strings.HasSuffix(servePath, "/") {
+		return true
+	}
+
+	return strings.EqualFold(path.Ext(servePath), ".html")
+}
+
+func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, serve func(http.ResponseWriter, *http.Request)) {
+	recorder := newBufferedResponseWriter()
+	serve(recorder, r)
+
+	statusCode := recorder.statusCode
+	if statusCode == 0 {
+		statusCode = http.StatusOK
+	}
+
+	body := recorder.body.Bytes()
+	headers := cloneHeaders(recorder.Header())
+	if statusCode != http.StatusPartialContent && !requestHasRange(r) && shouldInjectLiveReload(headers, body) {
+		body = injectLiveReloadScript(body)
+		headers.Set("Content-Length", strconv.Itoa(len(body)))
+		clearRangeHeaders(headers)
+	}
+
+	copyHeaders(w.Header(), headers)
+	w.WriteHeader(statusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+
+	_, _ = w.Write(body)
+}
+
+func requestHasRange(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+
+	return strings.TrimSpace(r.Header.Get("Range")) != ""
+}
+
+func clearRangeHeaders(headers http.Header) {
+	if headers == nil {
+		return
+	}
+
+	headers.Del("Accept-Ranges")
+	headers.Del("Content-Range")
 }
 
 func normalizeOutputPath(outputPath string) (string, error) {
@@ -219,6 +346,80 @@ func injectPreviewBaseHref(body []byte) []byte {
 	return withBase
 }
 
+func injectLiveReloadScript(body []byte) []byte {
+	if len(body) == 0 {
+		return body
+	}
+
+	lowerBody := bytes.ToLower(body)
+	if containsLiveReloadScriptTag(lowerBody) {
+		return body
+	}
+
+	insertAt := bytes.LastIndex(lowerBody, []byte("</body>"))
+	if insertAt == -1 {
+		insertAt = bytes.LastIndex(lowerBody, []byte("</html>"))
+	}
+	if insertAt == -1 {
+		insertAt = len(body)
+	}
+
+	withScript := make([]byte, 0, len(body)+len(liveReloadScript)+1)
+	withScript = append(withScript, body[:insertAt]...)
+	if insertAt > 0 && body[insertAt-1] != '\n' {
+		withScript = append(withScript, '\n')
+	}
+	withScript = append(withScript, liveReloadScript...)
+	if insertAt < len(body) {
+		withScript = append(withScript, body[insertAt:]...)
+	}
+
+	return withScript
+}
+
+func containsLiveReloadScriptTag(lowerBody []byte) bool {
+	const liveReloadAttribute = "data-obsite-livereload"
+
+	searchStart := 0
+	for {
+		attributeOffset := bytes.Index(lowerBody[searchStart:], []byte(liveReloadAttribute))
+		if attributeOffset == -1 {
+			return false
+		}
+		attributeOffset += searchStart
+
+		tagStart := bytes.LastIndexByte(lowerBody[:attributeOffset], '<')
+		if tagStart == -1 {
+			searchStart = attributeOffset + len(liveReloadAttribute)
+			continue
+		}
+		if bytes.LastIndexByte(lowerBody[:attributeOffset], '>') > tagStart {
+			searchStart = attributeOffset + len(liveReloadAttribute)
+			continue
+		}
+
+		tagPrefix := bytes.TrimSpace(lowerBody[tagStart+1 : attributeOffset])
+		if bytes.HasPrefix(tagPrefix, []byte("script")) {
+			return true
+		}
+
+		searchStart = attributeOffset + len(liveReloadAttribute)
+	}
+}
+
+func shouldInjectLiveReload(headers http.Header, body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+
+	contentType := strings.ToLower(strings.TrimSpace(headers.Get("Content-Type")))
+	if contentType == "" {
+		contentType = strings.ToLower(http.DetectContentType(body))
+	}
+
+	return strings.HasPrefix(contentType, "text/html")
+}
+
 func cleanRequestPath(requestPath string) (cleanPath string, hasTrailingSlash bool) {
 	if requestPath == "" {
 		return "/", true
@@ -252,4 +453,124 @@ func ensureTrailingSlash(path string) string {
 func hasIndexFile(dir string) bool {
 	info, err := os.Stat(filepath.Join(dir, "index.html"))
 	return err == nil && !info.IsDir()
+}
+
+func newLiveReloadHub() *liveReloadHub {
+	return &liveReloadHub{clients: make(map[chan string]struct{})}
+}
+
+func (h *liveReloadHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming is unsupported", http.StatusInternalServerError)
+		return
+	}
+
+	client := make(chan string, 1)
+	h.register(client)
+	defer h.unregister(client)
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	_, _ = fmt.Fprint(w, ": connected\n\n")
+	flusher.Flush()
+
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case message := <-client:
+			if _, err := fmt.Fprintf(w, "data: %s\n\n", message); err != nil {
+				return
+			}
+			flusher.Flush()
+		case <-pingTicker.C:
+			if _, err := fmt.Fprint(w, ": ping\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func (h *liveReloadHub) Reload() {
+	h.broadcast("reload")
+}
+
+func (h *liveReloadHub) register(client chan string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.clients[client] = struct{}{}
+}
+
+func (h *liveReloadHub) unregister(client chan string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if _, ok := h.clients[client]; !ok {
+		return
+	}
+	delete(h.clients, client)
+	close(client)
+}
+
+func (h *liveReloadHub) broadcast(message string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for client := range h.clients {
+		select {
+		case client <- message:
+		default:
+		}
+	}
+}
+
+func newBufferedResponseWriter() *bufferedResponseWriter {
+	return &bufferedResponseWriter{header: make(http.Header)}
+}
+
+func (w *bufferedResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *bufferedResponseWriter) Write(body []byte) (int, error) {
+	if w.statusCode == 0 {
+		w.statusCode = http.StatusOK
+	}
+	return w.body.Write(body)
+}
+
+func (w *bufferedResponseWriter) WriteHeader(statusCode int) {
+	if w.statusCode != 0 {
+		return
+	}
+	w.statusCode = statusCode
+}
+
+func copyHeaders(dst http.Header, src http.Header) {
+	for key, values := range src {
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func cloneHeaders(src http.Header) http.Header {
+	if src == nil {
+		return make(http.Header)
+	}
+
+	cloned := make(http.Header, len(src))
+	copyHeaders(cloned, src)
+	return cloned
 }

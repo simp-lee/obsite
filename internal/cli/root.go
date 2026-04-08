@@ -19,12 +19,16 @@ const defaultConfigFilename = "obsite.yaml"
 
 type previewServer interface {
 	ListenAndServe() error
+	EnableLiveReload()
+	NotifyReload()
 }
 
 type commandDependencies struct {
-	loadConfig       func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error)
-	buildSite        func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error)
-	newPreviewServer func(outputPath string, port int) (previewServer, error)
+	loadConfig           func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error)
+	buildSite            func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error)
+	buildSiteWithOptions func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
+	newPreviewServer     func(outputPath string, port int) (previewServer, error)
+	newFileWatcher       func() (fileWatcher, error)
 }
 
 // Execute is the single CLI entrypoint used by main.
@@ -47,11 +51,13 @@ func executeWithDeps(args []string, deps commandDependencies, stdout io.Writer, 
 
 func defaultCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadConfig: internalconfig.Load,
-		buildSite:  internalbuild.Build,
+		loadConfig:           internalconfig.Load,
+		buildSite:            internalbuild.Build,
+		buildSiteWithOptions: internalbuild.BuildWithOptions,
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {
 			return internalserver.New(outputPath, port)
 		},
+		newFileWatcher: newFSNotifyWatcher,
 	}
 }
 

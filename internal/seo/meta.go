@@ -172,6 +172,10 @@ func pickOGType(page model.PageData) string {
 }
 
 func pagePath(page model.PageData, note *model.Note) (string, bool) {
+	if rel, ok := paginatedRelPath(page); ok {
+		return rel, true
+	}
+
 	if slug := cleanPathValue(firstNonEmpty(page.Slug)); slug != "" {
 		return slug + "/", true
 	}
@@ -195,8 +199,26 @@ func pagePath(page model.PageData, note *model.Note) (string, bool) {
 	if rel := relPathToCleanPath(page.RelPath); rel != "" {
 		return rel, true
 	}
+	if isRootIndexRelPath(page.RelPath) {
+		return "", true
+	}
 
 	if page.Kind == model.PageIndex {
+		return "", true
+	}
+
+	return "", false
+}
+
+func paginatedRelPath(page model.PageData) (string, bool) {
+	if page.Pagination == nil || page.Pagination.CurrentPage <= 1 {
+		return "", false
+	}
+
+	if rel := relPathToCleanPath(page.RelPath); rel != "" {
+		return rel, true
+	}
+	if isRootIndexRelPath(page.RelPath) {
 		return "", true
 	}
 
@@ -226,6 +248,15 @@ func relPathToCleanPath(relPath string) string {
 	}
 
 	return clean + "/"
+}
+
+func isRootIndexRelPath(relPath string) bool {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(relPath, `\`, "/"))
+	if trimmed == "" {
+		return false
+	}
+
+	return path.Clean(trimmed) == "index.html"
 }
 
 func noteFilename(relPath string) string {

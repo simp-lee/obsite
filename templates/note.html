@@ -1,3 +1,14 @@
+{{define "toc-list"}}
+<ol class="toc-list">
+  {{range .}}
+  <li>
+    <a href="#{{.ID}}">{{.Text}}</a>
+    {{with .Children}}{{template "toc-list" .}}{{end}}
+  </li>
+  {{end}}
+</ol>
+{{end}}
+
 {{define "content-note"}}
 <article class="page-shell article-page">
   <header class="page-header">
@@ -6,6 +17,18 @@
     {{with .Description}}<p class="page-deck">{{.}}</p>{{end}}
 
     <div class="meta-strip" aria-label="Article metadata">
+      {{with .ReadingTime}}
+      <p>
+        <span class="meta-label">Read</span>
+        <span>{{.}}</span>
+      </p>
+      {{end}}
+      {{if gt .WordCount 0}}
+      <p>
+        <span class="meta-label">Words / chars</span>
+        <span>{{.WordCount}}</span>
+      </p>
+      {{end}}
       {{if not .Date.IsZero}}
       <p>
         <span class="meta-label">Published</span>
@@ -32,6 +55,14 @@
   </header>
 
   <section class="article-sheet">
+    {{if .TOC}}
+    <nav class="toc-nav" aria-label="Contents">
+      <p class="page-eyebrow">On this page</p>
+      <h2>Contents</h2>
+      {{template "toc-list" .TOC}}
+    </nav>
+    {{end}}
+
     <div class="entry-content" data-page-content>
       {{.Content}}
     </div>
@@ -45,6 +76,20 @@
     </div>
     <ul class="linked-list">
       {{range .Backlinks}}
+      <li><a href="{{.URL}}">{{.Title}}</a></li>
+      {{end}}
+    </ul>
+  </aside>
+  {{end}}
+
+  {{if .RelatedArticles}}
+  <aside class="support-panel" aria-labelledby="related-articles-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Continue reading</p>
+      <h2 id="related-articles-heading">Related Articles</h2>
+    </div>
+    <ul class="linked-list">
+      {{range .RelatedArticles}}
       <li><a href="{{.URL}}">{{.Title}}</a></li>
       {{end}}
     </ul>

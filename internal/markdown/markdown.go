@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	figure "github.com/mangoumbrella/goldmark-figure"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/callout"
 	internalembed "github.com/simp-lee/obsite/internal/markdown/embed"
@@ -131,6 +132,7 @@ func newMarkdownWithState(
 	}
 	extensions := append(
 		newCoreExtensions(resolver),
+		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
 		newImageExtender(sourceNote, outputNote, idx, assetSink, imageCount),

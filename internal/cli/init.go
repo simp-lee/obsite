@@ -28,6 +28,47 @@ language: en
 
 # defaultPublish controls notes that omit frontmatter publish.
 defaultPublish: true
+
+# search controls optional Pagefind indexing. Keep it disabled until pagefind_extended is installed.
+search:
+  enabled: false
+  # pagefindPath points to the pagefind_extended executable used during build.
+  pagefindPath: pagefind_extended
+  # pagefindVersion must match the installed pagefind_extended version when search is enabled.
+  pagefindVersion: 1.4.0
+
+# pagination controls list pages such as the homepage, tags, and folders.
+pagination:
+  pageSize: 20
+
+# sidebar enables the collapsible file tree navigation.
+sidebar:
+  enabled: false
+
+# popover enables async internal-link previews.
+popover:
+  enabled: false
+
+# related enables related-article blocks on note pages.
+related:
+  enabled: false
+  count: 5
+
+# rss controls generation of the site feed.
+rss:
+  enabled: true
+
+# timeline controls the recent-notes page and optional homepage override.
+timeline:
+  enabled: false
+  asHomepage: false
+  path: notes
+
+# templateDir optionally points to a directory that overrides embedded templates.
+templateDir:
+
+# customCSS optionally points to a CSS file. When omitted, obsite auto-detects custom.css in the vault root.
+customCSS:
 `
 
 func newInitCommand() *cobra.Command {

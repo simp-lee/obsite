@@ -65,8 +65,14 @@ func testCommandDependencies() commandDependencies {
 		buildSite: func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
 			return nil, fmt.Errorf("unexpected buildSite call")
 		},
+		buildSiteWithOptions: func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+			return nil, fmt.Errorf("unexpected buildSiteWithOptions call")
+		},
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {
 			return nil, fmt.Errorf("unexpected newPreviewServer call")
+		},
+		newFileWatcher: func() (fileWatcher, error) {
+			return nil, fmt.Errorf("unexpected newFileWatcher call")
 		},
 	}
 }

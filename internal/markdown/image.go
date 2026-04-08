@@ -2,10 +2,12 @@ package markdown
 
 import (
 	"bytes"
+	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
 
+	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/math"
@@ -89,6 +91,11 @@ func (r *imageHTMLRenderer) renderImage(
 	}
 
 	n := node.(*gast.Image)
+	if embed, ok := videoEmbedDestination(string(n.Destination)); ok && canRenderVideoEmbed(node) {
+		r.renderVideoEmbed(w, source, n, embed)
+		return gast.WalkSkipChildren, nil
+	}
+
 	imageIndex := r.nextImageIndex()
 	rewritten := r.rewriteDestination(string(n.Destination))
 
@@ -126,6 +133,24 @@ func (r *imageHTMLRenderer) renderImage(
 	return gast.WalkSkipChildren, nil
 }
 
+func (r *imageHTMLRenderer) renderVideoEmbed(w util.BufWriter, source []byte, node *gast.Image, embed videoEmbed) {
+	_, _ = w.WriteString(`<div class="video-embed"><iframe src="`)
+	_, _ = w.Write(util.EscapeHTML([]byte(embed.src)))
+	_, _ = w.WriteString(`" title="`)
+	_, _ = w.Write(util.EscapeHTML([]byte(r.videoEmbedTitle(source, node, embed.defaultTitle))))
+	_, _ = w.WriteString(`" loading="lazy" allowfullscreen></iframe></div>`)
+}
+
+func canRenderVideoEmbed(node gast.Node) bool {
+	for parent := node.Parent(); parent != nil; parent = parent.Parent() {
+		if parent.Kind() == figureast.KindFigureImage {
+			return true
+		}
+	}
+
+	return false
+}
+
 func (r *imageHTMLRenderer) nextImageIndex() int {
 	if r.imageCount == nil {
 		return 1
@@ -133,6 +158,19 @@ func (r *imageHTMLRenderer) nextImageIndex() int {
 
 	(*r.imageCount)++
 	return *r.imageCount
+}
+
+func (r *imageHTMLRenderer) videoEmbedTitle(source []byte, node *gast.Image, fallback string) string {
+	if node != nil {
+		if title := strings.TrimSpace(string(node.Title)); title != "" {
+			return title
+		}
+		if alt := strings.TrimSpace(plainAltText(source, node)); alt != "" {
+			return alt
+		}
+	}
+
+	return fallback
 }
 
 func (r *imageHTMLRenderer) writeAltText(w util.BufWriter, source []byte, node gast.Node) {
@@ -156,6 +194,36 @@ func (r *imageHTMLRenderer) writeAltText(w util.BufWriter, source []byte, node g
 			}
 		default:
 			r.writeAltText(w, source, child)
+		}
+	}
+}
+
+func plainAltText(source []byte, node gast.Node) string {
+	if node == nil {
+		return ""
+	}
+
+	var builder strings.Builder
+	appendPlainAltText(&builder, source, node)
+	return strings.Join(strings.Fields(builder.String()), " ")
+}
+
+func appendPlainAltText(builder *strings.Builder, source []byte, node gast.Node) {
+	if builder == nil || node == nil {
+		return
+	}
+
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		switch current := child.(type) {
+		case *gast.Text:
+			_, _ = builder.Write(bytes.TrimRight(current.Value(source), "\r\n"))
+			if current.SoftLineBreak() || current.HardLineBreak() {
+				_ = builder.WriteByte(' ')
+			}
+		case *gast.String:
+			_, _ = builder.Write(current.Value)
+		default:
+			appendPlainAltText(builder, source, child)
 		}
 	}
 }
@@ -457,6 +525,187 @@ func splitDestinationSuffix(value string) (string, string) {
 	}
 
 	return value[:index], value[index:]
+}
+
+type videoEmbed struct {
+	src          string
+	defaultTitle string
+}
+
+const youtubeCanonicalVideoIDLength = 11
+
+func videoEmbedDestination(rawDestination string) (videoEmbed, bool) {
+	trimmed := strings.TrimSpace(rawDestination)
+	if trimmed == "" {
+		return videoEmbed{}, false
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return videoEmbed{}, false
+	}
+	if parsed == nil || !isVideoURLScheme(parsed.Scheme) {
+		return videoEmbed{}, false
+	}
+
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	switch {
+	case matchesVideoHost(host, "youtube.com"):
+		return youtubeWatchEmbed(parsed)
+	case matchesVideoHost(host, "youtu.be"):
+		return youtubeShortEmbed(parsed)
+	case matchesVideoHost(host, "vimeo.com"):
+		return vimeoEmbed(parsed)
+	default:
+		return videoEmbed{}, false
+	}
+}
+
+func isVideoURLScheme(scheme string) bool {
+	switch strings.ToLower(strings.TrimSpace(scheme)) {
+	case "http", "https":
+		return true
+	default:
+		return false
+	}
+}
+
+func matchesVideoHost(host string, want string) bool {
+	host = strings.TrimSpace(strings.ToLower(host))
+	want = strings.TrimSpace(strings.ToLower(want))
+	if host == "" || want == "" {
+		return false
+	}
+
+	return host == want || strings.HasSuffix(host, "."+want)
+}
+
+func youtubeWatchEmbed(parsed *url.URL) (videoEmbed, bool) {
+	if parsed == nil || strings.Trim(strings.ToLower(parsed.Path), "/") != "watch" {
+		return videoEmbed{}, false
+	}
+
+	videoID, ok := canonicalYouTubeVideoID(parsed.Query().Get("v"))
+	if !ok {
+		return videoEmbed{}, false
+	}
+
+	return videoEmbed{
+		src:          "https://www.youtube.com/embed/" + videoID,
+		defaultTitle: "YouTube video",
+	}, true
+}
+
+func youtubeShortEmbed(parsed *url.URL) (videoEmbed, bool) {
+	if parsed == nil {
+		return videoEmbed{}, false
+	}
+
+	segments := trimmedPathSegments(parsed.Path)
+	if len(segments) != 1 {
+		return videoEmbed{}, false
+	}
+
+	videoID, ok := canonicalYouTubeVideoID(segments[0])
+	if !ok {
+		return videoEmbed{}, false
+	}
+
+	return videoEmbed{
+		src:          "https://www.youtube.com/embed/" + videoID,
+		defaultTitle: "YouTube video",
+	}, true
+}
+
+func canonicalYouTubeVideoID(value string) (string, bool) {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) != youtubeCanonicalVideoIDLength {
+		return "", false
+	}
+
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '-', r == '_':
+		default:
+			return "", false
+		}
+	}
+
+	return trimmed, true
+}
+
+func vimeoEmbed(parsed *url.URL) (videoEmbed, bool) {
+	if parsed == nil {
+		return videoEmbed{}, false
+	}
+
+	videoID, ok := vimeoVideoID(parsed)
+	if !ok {
+		return videoEmbed{}, false
+	}
+
+	return videoEmbed{
+		src:          "https://player.vimeo.com/video/" + videoID,
+		defaultTitle: "Vimeo video",
+	}, true
+}
+
+func vimeoVideoID(parsed *url.URL) (string, bool) {
+	if parsed == nil {
+		return "", false
+	}
+
+	host := strings.TrimSpace(strings.ToLower(parsed.Hostname()))
+	segments := trimmedPathSegments(parsed.Path)
+	switch host {
+	case "vimeo.com", "www.vimeo.com":
+		if len(segments) != 1 || !isDigitsOnly(segments[0]) {
+			return "", false
+		}
+		return segments[0], true
+	case "player.vimeo.com":
+		if len(segments) != 2 || !strings.EqualFold(segments[0], "video") || !isDigitsOnly(segments[1]) {
+			return "", false
+		}
+		return segments[1], true
+	default:
+		return "", false
+	}
+}
+
+func trimmedPathSegments(value string) []string {
+	trimmed := strings.Trim(strings.TrimSpace(value), "/")
+	if trimmed == "" {
+		return nil
+	}
+
+	parts := strings.Split(trimmed, "/")
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		cleaned := strings.TrimSpace(part)
+		if cleaned != "" {
+			segments = append(segments, cleaned)
+		}
+	}
+
+	return segments
+}
+
+func isDigitsOnly(value string) bool {
+	if value == "" {
+		return false
+	}
+
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 type nodeRendererFuncRegisterer struct {

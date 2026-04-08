@@ -66,17 +66,22 @@ func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
 
 	deps := testCommandDependencies()
 	var gotConfigPath string
+	var gotOverrides internalconfig.Overrides
 	var gotVaultPath string
 	var gotOutputPath string
 	var gotConfig model.SiteConfig
 	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
 		gotConfigPath = path
+		gotOverrides = overrides
 		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
 	}
-	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		gotConfig = cfg
 		gotVaultPath = vaultPath
 		gotOutputPath = outputPath
+		if options.Force {
+			t.Fatalf("build options = %#v, want non-force default build", options)
+		}
 		return &internalbuild.BuildResult{}, nil
 	}
 
@@ -92,6 +97,9 @@ func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
 	}
 	if gotConfigPath != configPath {
 		t.Fatalf("loadConfig path = %q, want %q", gotConfigPath, configPath)
+	}
+	if gotOverrides.VaultPath != vaultPath {
+		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
 	}
 	if gotVaultPath != vaultPath {
 		t.Fatalf("build vaultPath = %q, want %q", gotVaultPath, vaultPath)
@@ -115,11 +123,16 @@ func TestBuildCommandAllowsConfigOverride(t *testing.T) {
 
 	deps := testCommandDependencies()
 	var gotConfigPath string
+	var gotOverrides internalconfig.Overrides
 	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
 		gotConfigPath = path
+		gotOverrides = overrides
 		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
 	}
-	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		if options.Force {
+			t.Fatalf("build options = %#v, want non-force config override build", options)
+		}
 		return &internalbuild.BuildResult{}, nil
 	}
 
@@ -134,6 +147,9 @@ func TestBuildCommandAllowsConfigOverride(t *testing.T) {
 	}
 	if gotConfigPath != overrideConfigPath {
 		t.Fatalf("loadConfig path = %q, want %q", gotConfigPath, overrideConfigPath)
+	}
+	if gotOverrides.VaultPath != vaultPath {
+		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
 	}
 }
 
@@ -207,7 +223,7 @@ func TestBuildCommandPropagatesBuildFailure(t *testing.T) {
 	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
 		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
 	}
-	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -221,5 +237,39 @@ func TestBuildCommandPropagatesBuildFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "build site: boom") {
 		t.Fatalf("error = %q, want wrapped build failure", err.Error())
+	}
+}
+
+func TestBuildCommandPassesForceOption(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	}
+	gotOptions := internalbuild.Options{}
+	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		gotOptions = options
+		return &internalbuild.BuildResult{}, nil
+	}
+
+	_, _, err := executeForTest(t, deps, []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", outputPath,
+		"--force",
+	})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if !gotOptions.Force {
+		t.Fatalf("build options = %#v, want force enabled", gotOptions)
 	}
 }

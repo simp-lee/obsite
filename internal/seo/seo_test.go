@@ -380,13 +380,83 @@ func TestApplyCopiesPreSerializedJSONLDIntoPageData(t *testing.T) {
 	}
 }
 
-func TestBuildJSONLDOmitsNonNotePages(t *testing.T) {
+func TestBuildJSONLDIncludesBreadcrumbListForNonNotePagesWithBreadcrumbs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		page model.PageData
+		want []model.Breadcrumb
+	}{
+		{
+			name: "tag page",
+			page: model.PageData{
+				Kind:  model.PageTag,
+				Site:  model.SiteConfig{BaseURL: "https://example.com/blog/"},
+				Title: "field",
+				Slug:  "tags/field",
+				Breadcrumbs: []model.Breadcrumb{
+					{Name: "Home", URL: "../../"},
+					{Name: "field"},
+				},
+			},
+			want: []model.Breadcrumb{
+				{Name: "Home", URL: "https://example.com/blog/"},
+				{Name: "field", URL: "https://example.com/blog/tags/field/"},
+			},
+		},
+		{
+			name: "paginated folder page",
+			page: model.PageData{
+				Kind:       model.PageFolder,
+				Site:       model.SiteConfig{BaseURL: "https://example.com/blog/"},
+				Title:      "garden",
+				RelPath:    "notes/garden/page/2/index.html",
+				Pagination: &model.PaginationData{CurrentPage: 2},
+				Breadcrumbs: []model.Breadcrumb{
+					{Name: "Home", URL: "../../../../"},
+					{Name: "notes", URL: "../../../"},
+					{Name: "garden"},
+				},
+			},
+			want: []model.Breadcrumb{
+				{Name: "Home", URL: "https://example.com/blog/"},
+				{Name: "notes", URL: "https://example.com/blog/notes/"},
+				{Name: "garden", URL: "https://example.com/blog/notes/garden/page/2/"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			jsonld, err := BuildJSONLD(tt.page, nil)
+			if err != nil {
+				t.Fatalf("BuildJSONLD() error = %v", err)
+			}
+
+			payload := decodeJSONLD(t, jsonld)
+			if len(payload) != 1 {
+				t.Fatalf("len(BuildJSONLD()) = %d, want %d", len(payload), 1)
+			}
+			assertStructuredDataMissing(t, payload, "Article")
+			breadcrumb := findStructuredData(t, payload, "BreadcrumbList")
+			items := breadcrumbItems(t, breadcrumb)
+			if len(items) != len(tt.want) {
+				t.Fatalf("len(breadcrumb.itemListElement) = %d, want %d", len(items), len(tt.want))
+			}
+			for index, want := range tt.want {
+				assertBreadcrumbItem(t, items[index], index+1, want.Name, want.URL)
+			}
+		})
+	}
+}
+
+func TestBuildJSONLDOmitsPagesWithoutStructuredData(t *testing.T) {
 	t.Parallel()
 
 	got, err := BuildJSONLD(model.PageData{
-		Kind:        model.PageIndex,
-		Site:        model.SiteConfig{BaseURL: "https://example.com/blog/"},
-		Breadcrumbs: []model.Breadcrumb{{Name: "Home", URL: "/"}},
+		Kind: model.PageIndex,
+		Site: model.SiteConfig{BaseURL: "https://example.com/blog/"},
 	}, nil)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)

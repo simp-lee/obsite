@@ -56,13 +56,26 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		"author: Your Name",
 		"description: Notes published with obsite.",
 		"defaultPublish: true",
+		"search:",
+		"pagefindPath: pagefind_extended",
+		"pagefindVersion: 1.4.0",
+		"pagination:",
+		"pageSize: 20",
+		"related:",
+		"count: 5",
+		"rss:",
+		"enabled: true",
+		"timeline:",
+		"path: notes",
+		"templateDir:",
+		"customCSS:",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated config missing %q\n%s", want, content)
 		}
 	}
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{})
+	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
 		t.Fatalf("config.Load(%q) error = %v", configPath, err)
 	}
@@ -80,6 +93,21 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 	}
 	if !cfg.DefaultPublish {
 		t.Fatal("cfg.DefaultPublish = false, want true")
+	}
+	if cfg.Search.PagefindPath != "pagefind_extended" || cfg.Search.PagefindVersion != "1.4.0" {
+		t.Fatalf("cfg.Search = %#v, want default Pagefind settings", cfg.Search)
+	}
+	if cfg.Pagination.PageSize != 20 {
+		t.Fatalf("cfg.Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 20)
+	}
+	if cfg.Related.Count != 5 {
+		t.Fatalf("cfg.Related.Count = %d, want %d", cfg.Related.Count, 5)
+	}
+	if !cfg.RSS.Enabled {
+		t.Fatal("cfg.RSS.Enabled = false, want true")
+	}
+	if cfg.Timeline.Enabled || cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
+		t.Fatalf("cfg.Timeline = %#v, want disabled timeline defaults", cfg.Timeline)
 	}
 }
 

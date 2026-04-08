@@ -58,11 +58,15 @@ func ParseFrontmatter(scanResult ScanResult, cfg model.SiteConfig) (FrontmatterR
 		if err != nil {
 			return FrontmatterResult{}, fmt.Errorf("parse frontmatter %q: %w", relPath, err)
 		}
+		effectiveLastModified := lastModified
+		if !frontmatter.Updated.IsZero() {
+			effectiveLastModified = frontmatter.Updated
+		}
 
 		note := &model.Note{
 			RelPath:       relPath,
 			Frontmatter:   frontmatter,
-			LastModified:  lastModified,
+			LastModified:  effectiveLastModified,
 			Aliases:       cloneStrings(frontmatter.Aliases),
 			Tags:          cloneStrings(frontmatter.Tags),
 			Publish:       frontmatter.Publish,
@@ -260,6 +264,12 @@ func parseFrontmatter(data []byte, present bool) (model.Frontmatter, error) {
 				return model.Frontmatter{}, err
 			}
 			frontmatter.Date = value
+		case "updated":
+			value, err := decodeTimeField(key, valueNode)
+			if err != nil {
+				return model.Frontmatter{}, err
+			}
+			frontmatter.Updated = value
 		case "tags":
 			value, err := decodeStringListField(key, valueNode)
 			if err != nil {
@@ -385,6 +395,7 @@ func decodeTimeField(name string, node *yaml.Node) (time.Time, error) {
 		time.RFC3339Nano,
 		time.RFC3339,
 		"2006-01-02",
+		"2006-01-02T15:04Z07:00",
 		"2006-01-02T15:04",
 		"2006-01-02T15:04:05",
 		"2006-01-02 15:04",

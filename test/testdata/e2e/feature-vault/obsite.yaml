@@ -1,0 +1,26 @@
+baseURL: https://example.com/blog/
+title: Feature Garden
+author: Alice Example
+description: Integration coverage for advanced site features.
+language: en
+defaultPublish: true
+search:
+  enabled: true
+  pagefindPath: pagefind_extended
+  pagefindVersion: 1.4.0
+pagination:
+  pageSize: 2
+sidebar:
+  enabled: true
+popover:
+  enabled: true
+related:
+  enabled: true
+  count: 2
+rss:
+  enabled: true
+timeline:
+  enabled: true
+  asHomepage: true
+  path: notes
+templateDir: templates

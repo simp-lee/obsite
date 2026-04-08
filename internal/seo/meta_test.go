@@ -177,6 +177,23 @@ func TestBuildIndexWithoutSlugUsesSiteRootCanonical(t *testing.T) {
 	}
 }
 
+func TestBuildNonIndexRootRelPathUsesSiteRootCanonical(t *testing.T) {
+	t.Parallel()
+
+	got := Build(model.PageData{
+		Kind:    model.PageTimeline,
+		Site:    model.SiteConfig{BaseURL: "https://example.com/blog/"},
+		RelPath: "index.html",
+	}, nil)
+
+	if got.Canonical != "https://example.com/blog/" {
+		t.Fatalf("Build(...).Canonical = %q, want %q", got.Canonical, "https://example.com/blog/")
+	}
+	if got.OG.URL != got.Canonical {
+		t.Fatalf("Build(...).OG.URL = %q, want canonical %q", got.OG.URL, got.Canonical)
+	}
+}
+
 func TestBuildNoteWithoutSlugDoesNotFallbackToMarkdownPath(t *testing.T) {
 	t.Parallel()
 
@@ -318,8 +335,12 @@ func TestApplyKeepsPageMetadataAndBreadcrumbJSONLDWhenArticleJSONLDIsIncomplete(
 		Site: model.SiteConfig{
 			BaseURL: "https://example.com/blog/",
 		},
-		Slug:        "notes/guide",
-		Breadcrumbs: []model.Breadcrumb{{Name: "Home", URL: "/"}},
+		Slug: "guide",
+		Breadcrumbs: []model.Breadcrumb{
+			{Name: "Home", URL: "../"},
+			{Name: "notes", URL: "../notes/"},
+			{Name: "guides", URL: "../notes/guides/"},
+		},
 	}
 
 	meta, err := Apply(&page, &model.Note{
@@ -336,8 +357,8 @@ func TestApplyKeepsPageMetadataAndBreadcrumbJSONLDWhenArticleJSONLDIsIncomplete(
 	if meta.Title != "Guide" {
 		t.Fatalf("meta.Title = %q, want %q", meta.Title, "Guide")
 	}
-	if meta.Canonical != "https://example.com/blog/notes/guide/" {
-		t.Fatalf("meta.Canonical = %q, want %q", meta.Canonical, "https://example.com/blog/notes/guide/")
+	if meta.Canonical != "https://example.com/blog/guide/" {
+		t.Fatalf("meta.Canonical = %q, want %q", meta.Canonical, "https://example.com/blog/guide/")
 	}
 	if page.Title != meta.Title {
 		t.Fatalf("page.Title = %q, want metadata value %q", page.Title, meta.Title)
@@ -368,11 +389,13 @@ func TestApplyKeepsPageMetadataAndBreadcrumbJSONLDWhenArticleJSONLDIsIncomplete(
 	assertStructuredDataMissing(t, payload, "Article")
 	breadcrumb := findStructuredData(t, payload, "BreadcrumbList")
 	items := breadcrumbItems(t, breadcrumb)
-	if len(items) != 2 {
-		t.Fatalf("len(breadcrumb.itemListElement) = %d, want %d", len(items), 2)
+	if len(items) != 4 {
+		t.Fatalf("len(breadcrumb.itemListElement) = %d, want %d", len(items), 4)
 	}
 	assertBreadcrumbItem(t, items[0], 1, "Home", "https://example.com/blog/")
-	assertBreadcrumbItem(t, items[1], 2, "Guide", "https://example.com/blog/notes/guide/")
+	assertBreadcrumbItem(t, items[1], 2, "notes", "https://example.com/blog/notes/")
+	assertBreadcrumbItem(t, items[2], 3, "guides", "https://example.com/blog/notes/guides/")
+	assertBreadcrumbItem(t, items[3], 4, "Guide", "https://example.com/blog/guide/")
 }
 
 func TestFuncMapExposesTemplateHelpers(t *testing.T) {
