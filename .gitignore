@@ -1,4 +1,7 @@
 .agents-work/
+/memories/
+/tools/pagefind_extended
+/test/testdata/e2e/feature-vault/tools/pagefind_extended
 
 # Go build and test outputs
 bin/
