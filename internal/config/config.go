@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"gopkg.in/yaml.v3"
 )
@@ -16,23 +18,21 @@ import (
 const (
 	defaultLanguage = "en"
 
-	defaultPagefindPath       = "pagefind_extended"
-	defaultPagefindVersion    = "1.4.0"
+	defaultPagefindPath       = "tools/pagefind_extended"
+	defaultPagefindVersion    = "1.5.2"
 	defaultPaginationPageSize = 20
 	defaultRelatedCount       = 5
 	defaultTimelinePath       = "notes"
 	defaultCustomCSSName      = "custom.css"
 
-	defaultKaTeXVersion   = "0.16.44"
-	defaultMermaidVersion = "11.14.0"
-
-	defaultKaTeXCSSURL        = "https://cdn.jsdelivr.net/npm/katex@" + defaultKaTeXVersion + "/dist/katex.min.css"
-	defaultKaTeXJSURL         = "https://cdn.jsdelivr.net/npm/katex@" + defaultKaTeXVersion + "/dist/katex.min.js"
-	defaultKaTeXAutoRenderURL = "https://cdn.jsdelivr.net/npm/katex@" + defaultKaTeXVersion + "/dist/contrib/auto-render.min.js"
-	defaultMermaidJSURL       = "https://cdn.jsdelivr.net/npm/mermaid@" + defaultMermaidVersion + "/dist/mermaid.esm.min.mjs"
+	defaultKaTeXCSSURL        = "assets/obsite-runtime/katex.min.css"
+	defaultKaTeXJSURL         = "assets/obsite-runtime/katex.min.js"
+	defaultKaTeXAutoRenderURL = "assets/obsite-runtime/auto-render.min.js"
+	defaultMermaidJSURL       = "assets/obsite-runtime/mermaid.esm.min.mjs"
 )
 
-// Overrides carries CLI-provided values. Empty strings mean the flag was not provided.
+// Overrides carries caller-provided values. Empty strings and nil booleans mean
+// the field was not provided.
 type Overrides struct {
 	Title          string
 	BaseURL        string
@@ -42,6 +42,13 @@ type Overrides struct {
 	DefaultImg     string
 	DefaultPublish *bool
 	VaultPath      string
+}
+
+// LoadedSiteConfig carries the normalized site config plus build-only policy
+// that should not leak into the shared model.SiteConfig contract.
+type LoadedSiteConfig struct {
+	Config                model.SiteConfig
+	AllowMissingCustomCSS bool
 }
 
 type fileConfig struct {
@@ -93,24 +100,25 @@ type loadPaths struct {
 	vaultRoot string
 }
 
-// Load reads obsite.yaml, applies CLI overrides, normalizes values, and validates the result.
-func Load(path string, overrides Overrides) (model.SiteConfig, error) {
+// LoadForBuild reads obsite.yaml and returns the normalized site config plus
+// build-only policy derived during loading.
+func LoadForBuild(path string, overrides Overrides) (LoadedSiteConfig, error) {
 	cfg := defaultSiteConfig()
 	paths := resolveLoadPaths(path, overrides)
 
 	if path != "" {
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return model.SiteConfig{}, fmt.Errorf("read config %q: %w", path, err)
+			return LoadedSiteConfig{}, fmt.Errorf("read config %q: %w", path, err)
 		}
 
 		parsed, err := parseFileConfig(data)
 		if err != nil {
-			return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", path, err)
+			return LoadedSiteConfig{}, fmt.Errorf("parse config %q: %w", path, err)
 		}
 
 		if err := validateParsedFileConfig(parsed); err != nil {
-			return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
+			return LoadedSiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
 		}
 
 		cfg = applyFileConfig(cfg, parsed)
@@ -118,30 +126,43 @@ func Load(path string, overrides Overrides) (model.SiteConfig, error) {
 
 	cfg = applyOverrides(cfg, overrides)
 
-	normalized, err := NormalizeSiteConfig(cfg)
+	normalized, err := ValidateLoadedSiteConfig(cfg)
 	if err != nil {
 		if path == "" {
-			return model.SiteConfig{}, fmt.Errorf("validate config: %w", err)
+			return LoadedSiteConfig{}, fmt.Errorf("validate config: %w", err)
 		}
 
-		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
+		return LoadedSiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
 	}
 
-	normalized, err = applyLoadPathDefaults(normalized, paths)
+	loaded, err := applyLoadPathDefaults(normalized, paths)
 	if err != nil {
 		if path == "" {
-			return model.SiteConfig{}, fmt.Errorf("resolve config paths: %w", err)
+			return LoadedSiteConfig{}, fmt.Errorf("resolve config paths: %w", err)
 		}
 
-		return model.SiteConfig{}, fmt.Errorf("resolve config paths for %q: %w", path, err)
+		return LoadedSiteConfig{}, fmt.Errorf("resolve config paths for %q: %w", path, err)
 	}
 
-	return normalized, nil
+	return loaded, nil
 }
 
-// NormalizeSiteConfig applies runtime defaults for omitted fields, then validates
-// and normalizes the caller-provided site config.
+// NormalizeSiteConfig applies the documented shared product defaults to a
+// caller-provided site config, then validates and normalizes it.
+//
+// Callers that already resolved explicit policy booleans through config loading
+// should use ValidateLoadedSiteConfig to avoid re-defaulting false values for
+// defaultPublish and rss.enabled.
 func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
+	cfg = applySharedDefaults(cfg)
+
+	return ValidateLoadedSiteConfig(cfg)
+}
+
+// ValidateLoadedSiteConfig validates and normalizes a config that already has
+// loader or caller-resolved boolean policy. Unlike NormalizeSiteConfig, it
+// preserves explicit false values for defaultPublish and rss.enabled.
+func ValidateLoadedSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 	cfg = applyRuntimeDefaults(cfg)
 	if err := validate(&cfg); err != nil {
 		return model.SiteConfig{}, err
@@ -150,17 +171,36 @@ func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 	return cfg, nil
 }
 
+func applySharedDefaults(cfg model.SiteConfig) model.SiteConfig {
+	defaults := defaultSiteConfig()
+
+	if !cfg.DefaultPublishSet {
+		cfg.DefaultPublish = defaults.EffectiveDefaultPublish()
+		cfg.DefaultPublishSet = true
+	}
+	if !cfg.RSS.EnabledSet {
+		cfg.RSS.Enabled = defaults.EffectiveRSSEnabled()
+		cfg.RSS.EnabledSet = true
+	}
+
+	return cfg
+}
+
 func defaultSiteConfig() model.SiteConfig {
 	return model.SiteConfig{
-		Language:       defaultLanguage,
-		DefaultPublish: true,
+		Language:          defaultLanguage,
+		DefaultPublish:    true,
+		DefaultPublishSet: true,
 		Search: model.SearchConfig{
 			PagefindPath:    defaultPagefindPath,
 			PagefindVersion: defaultPagefindVersion,
 		},
 		Pagination: model.PaginationConfig{PageSize: defaultPaginationPageSize},
 		Related:    model.RelatedConfig{Count: defaultRelatedCount},
-		RSS:        model.RSSConfig{Enabled: true},
+		RSS: model.RSSConfig{
+			Enabled:    true,
+			EnabledSet: true,
+		},
 		Timeline: model.TimelineConfig{
 			Path: defaultTimelinePath,
 		},
@@ -176,9 +216,6 @@ func applyRuntimeDefaults(cfg model.SiteConfig) model.SiteConfig {
 
 	if strings.TrimSpace(cfg.Language) == "" {
 		cfg.Language = defaults.Language
-	}
-	if !cfg.DefaultPublishSet {
-		cfg.DefaultPublish = defaults.DefaultPublish
 	}
 
 	if value := strings.TrimSpace(cfg.Search.PagefindPath); value != "" {
@@ -196,9 +233,6 @@ func applyRuntimeDefaults(cfg model.SiteConfig) model.SiteConfig {
 	}
 	if cfg.Related.Count == 0 {
 		cfg.Related.Count = defaults.Related.Count
-	}
-	if !cfg.RSS.EnabledSet {
-		cfg.RSS.Enabled = defaults.RSS.Enabled
 	}
 	if strings.TrimSpace(cfg.Timeline.Path) == "" {
 		cfg.Timeline.Path = defaults.Timeline.Path
@@ -399,7 +433,7 @@ func validate(cfg *model.SiteConfig) error {
 	return nil
 }
 
-func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths) (model.SiteConfig, error) {
+func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths) (LoadedSiteConfig, error) {
 	baseDir := paths.configDir
 	if baseDir == "" {
 		baseDir = paths.vaultRoot
@@ -407,17 +441,18 @@ func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths) (model.SiteCon
 
 	cfg.TemplateDir = resolveConfiguredPath(cfg.TemplateDir, baseDir)
 	cfg.CustomCSS = resolveConfiguredPath(cfg.CustomCSS, baseDir)
+	cfg.Search.PagefindPath = resolvePagefindPath(cfg.Search.PagefindPath, baseDir)
 	if cfg.CustomCSS != "" {
-		return cfg, nil
+		return LoadedSiteConfig{Config: cfg}, nil
 	}
 
-	detectedCSS, err := detectCustomCSS(paths.vaultRoot)
+	detectedCSS, err := detectCustomCSS(paths.configDir, paths.vaultRoot)
 	if err != nil {
-		return model.SiteConfig{}, err
+		return LoadedSiteConfig{}, err
 	}
 	cfg.CustomCSS = detectedCSS
 
-	return cfg, nil
+	return LoadedSiteConfig{Config: cfg, AllowMissingCustomCSS: detectedCSS != ""}, nil
 }
 
 func resolveConfiguredPath(raw string, baseDir string) string {
@@ -432,26 +467,56 @@ func resolveConfiguredPath(raw string, baseDir string) string {
 	return filepath.Clean(filepath.Join(baseDir, trimmed))
 }
 
-func detectCustomCSS(vaultRoot string) (string, error) {
-	trimmedVaultRoot := strings.TrimSpace(vaultRoot)
-	if trimmedVaultRoot == "" {
-		return "", nil
+func resolvePagefindPath(raw string, baseDir string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if filepath.IsAbs(trimmed) {
+		return filepath.Clean(trimmed)
+	}
+	if baseDir == "" || !looksLikeFilesystemPath(trimmed) {
+		return trimmed
 	}
 
-	candidate := filepath.Join(trimmedVaultRoot, defaultCustomCSSName)
-	info, err := os.Stat(candidate)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return "", nil
+	return filepath.Clean(filepath.Join(baseDir, trimmed))
+}
+
+func looksLikeFilesystemPath(raw string) bool {
+	return strings.Contains(raw, "/") || strings.Contains(raw, "\\")
+}
+
+func detectCustomCSS(roots ...string) (string, error) {
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		trimmedRoot := strings.TrimSpace(root)
+		if trimmedRoot == "" {
+			continue
 		}
 
-		return "", fmt.Errorf("stat auto-detected custom CSS %q: %w", candidate, err)
-	}
-	if info.IsDir() {
-		return "", nil
+		cleanRoot := filepath.Clean(trimmedRoot)
+		if _, ok := seen[cleanRoot]; ok {
+			continue
+		}
+		seen[cleanRoot] = struct{}{}
+
+		candidate := filepath.Join(cleanRoot, defaultCustomCSSName)
+		resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(candidate)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+				return "", fmt.Errorf("auto-detected custom CSS %q must be a regular non-symlink file", candidate)
+			}
+
+			return "", fmt.Errorf("inspect auto-detected custom CSS %q: %w", candidate, err)
+		}
+
+		return resolvedPath, nil
 	}
 
-	return filepath.Clean(candidate), nil
+	return "", nil
 }
 
 func normalizeTimelinePath(raw string) (string, error) {
@@ -460,7 +525,15 @@ func normalizeTimelinePath(raw string) (string, error) {
 		return defaultTimelinePath, nil
 	}
 
-	cleaned := path.Clean(trimmed)
+	normalizedSlashes := strings.ReplaceAll(trimmed, `\`, "/")
+	if strings.ContainsAny(normalizedSlashes, "?#") {
+		return "", fmt.Errorf("timeline.path must not include query or fragment")
+	}
+	if strings.HasPrefix(normalizedSlashes, "//") || hasWindowsDrivePrefix(normalizedSlashes) {
+		return "", fmt.Errorf("timeline.path must be a site-relative path")
+	}
+
+	cleaned := path.Clean(normalizedSlashes)
 	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("timeline.path must stay within the site root")
 	}
@@ -471,6 +544,19 @@ func normalizeTimelinePath(raw string) (string, error) {
 	}
 
 	return normalized, nil
+}
+
+func hasWindowsDrivePrefix(raw string) bool {
+	if len(raw) < 3 || raw[1] != ':' {
+		return false
+	}
+
+	first := raw[0]
+	if (first < 'A' || first > 'Z') && (first < 'a' || first > 'z') {
+		return false
+	}
+
+	return raw[2] == '/'
 }
 
 func normalizeBaseURL(raw string) (string, error) {
@@ -490,6 +576,9 @@ func normalizeBaseURL(raw string) (string, error) {
 	scheme := strings.ToLower(parsed.Scheme)
 	if scheme != "http" && scheme != "https" {
 		return "", fmt.Errorf("baseURL must use http or https")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("baseURL must not include user info")
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("baseURL must not include query or fragment")

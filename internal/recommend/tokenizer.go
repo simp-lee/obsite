@@ -10,9 +10,13 @@ import (
 )
 
 var (
-	defaultSegmenterOnce sync.Once
-	defaultSegmenter     gse.Segmenter
-	defaultSegmenterErr  error
+	defaultSegmenterOnce  sync.Once
+	defaultSegmenter      gse.Segmenter
+	defaultSegmenterErr   error
+	loadEmbeddedSegmenter = func(segmenter *gse.Segmenter) error {
+		segmenter.SkipLog = true
+		return segmenter.LoadDictEmbed()
+	}
 )
 
 // Tokenize splits mixed-language note content into normalized terms.
@@ -23,27 +27,41 @@ func Tokenize(text string) ([]string, error) {
 		return nil, nil
 	}
 
-	segmenter, err := defaultTokenizerSegmenter()
-	if err != nil {
-		return nil, err
-	}
-
 	tokens := make([]string, 0, 32)
 	var latin strings.Builder
 	var cjk strings.Builder
+	var segmenter *gse.Segmenter
 
 	flushLatin := func() {
 		appendNormalizedToken(&tokens, latin.String())
 		latin.Reset()
 	}
-	flushCJK := func() {
-		if cjk.Len() == 0 {
-			return
+	ensureSegmenter := func() (*gse.Segmenter, error) {
+		if segmenter != nil {
+			return segmenter, nil
 		}
-		for _, token := range segmenter.Cut(cjk.String(), true) {
+
+		loaded, err := defaultTokenizerSegmenter()
+		if err != nil {
+			return nil, err
+		}
+		segmenter = loaded
+		return segmenter, nil
+	}
+	flushCJK := func() error {
+		if cjk.Len() == 0 {
+			return nil
+		}
+
+		loaded, err := ensureSegmenter()
+		if err != nil {
+			return err
+		}
+		for _, token := range loaded.Cut(cjk.String(), true) {
 			appendNormalizedToken(&tokens, token)
 		}
 		cjk.Reset()
+		return nil
 	}
 
 	for _, r := range text {
@@ -52,15 +70,21 @@ func Tokenize(text string) ([]string, error) {
 			flushLatin()
 			cjk.WriteRune(r)
 		case isWordRune(r):
-			flushCJK()
+			if err := flushCJK(); err != nil {
+				return nil, err
+			}
 			latin.WriteRune(unicode.ToLower(r))
 		default:
-			flushCJK()
+			if err := flushCJK(); err != nil {
+				return nil, err
+			}
 			flushLatin()
 		}
 	}
 
-	flushCJK()
+	if err := flushCJK(); err != nil {
+		return nil, err
+	}
 	flushLatin()
 
 	return tokens, nil
@@ -68,8 +92,7 @@ func Tokenize(text string) ([]string, error) {
 
 func defaultTokenizerSegmenter() (*gse.Segmenter, error) {
 	defaultSegmenterOnce.Do(func() {
-		defaultSegmenter.SkipLog = true
-		defaultSegmenterErr = defaultSegmenter.LoadDictEmbed()
+		defaultSegmenterErr = loadEmbeddedSegmenter(&defaultSegmenter)
 	})
 	if defaultSegmenterErr != nil {
 		return nil, fmt.Errorf("load gse dictionary: %w", defaultSegmenterErr)

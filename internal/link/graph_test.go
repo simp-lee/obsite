@@ -1,11 +1,14 @@
 package link
 
 import (
+	"bytes"
 	"path"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/simp-lee/obsite/internal/diag"
+	internalmarkdown "github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -119,6 +122,84 @@ func TestBuildGraphIgnoresUnresolvedRenderOutLinks(t *testing.T) {
 
 	if got := graph.Forward[current.RelPath]; !reflect.DeepEqual(got, []string{target.RelPath}) {
 		t.Fatalf("graph.Forward[%q] = %#v, want only resolved edges", current.RelPath, got)
+	}
+}
+
+// AC-R035: FR-9、FR-17 graph 层不得重复产出 resolver/render 已经负责的 deadlink、ambiguous、unpublished 诊断
+func TestBuildGraphDoesNotDuplicateResolutionDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	// REG-035
+	// Ledger Key: link.graph / duplicates-resolution-diagnostics-owned-by-render
+	current := testNote("notes/current.md", "notes/current")
+	current.OutLinks = []model.LinkRef{
+		{RawTarget: "Missing", Line: 1},
+		{RawTarget: "Docs", Line: 2},
+		{RawTarget: "Private", Line: 3},
+	}
+	alpha := testNote("alpha/docs.md", "alpha/docs", withAliases("Docs"))
+	beta := testNote("beta/docs.md", "beta/docs", withAliases("Docs"))
+	private := testNote("private/secret.md", "private/secret", withAliases("Private"))
+
+	idx := buildIndex([]*model.Note{current, alpha, beta}, []*model.Note{private})
+	collector := diag.NewCollector()
+	md, renderResult := internalmarkdown.NewMarkdown(idx, current, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("[[Missing]]\n[[Docs]]\n[[Private]]\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	gotOutLinks := renderResult.OutLinks()
+	if len(gotOutLinks) != 3 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 3", len(gotOutLinks))
+	}
+	if gotOutLinks[0].ResolvedRelPath != "" {
+		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want empty for deadlink", gotOutLinks[0].ResolvedRelPath)
+	}
+	if gotOutLinks[1].ResolvedRelPath != alpha.RelPath {
+		t.Fatalf("renderResult.OutLinks()[1].ResolvedRelPath = %q, want %q", gotOutLinks[1].ResolvedRelPath, alpha.RelPath)
+	}
+	if gotOutLinks[2].ResolvedRelPath != "" {
+		t.Fatalf("renderResult.OutLinks()[2].ResolvedRelPath = %q, want empty for unpublished link", gotOutLinks[2].ResolvedRelPath)
+	}
+
+	wantDiagnostics := []diag.Diagnostic{
+		{
+			Severity: diag.SeverityWarning,
+			Kind:     diag.KindDeadLink,
+			Location: diag.Location{Path: current.RelPath, Line: 1},
+			Message:  `wikilink "Missing" could not be resolved`,
+		},
+		{
+			Severity: diag.SeverityWarning,
+			Kind:     diag.Kind("ambiguous_wikilink"),
+			Location: diag.Location{Path: current.RelPath, Line: 2},
+			Message:  `wikilink "Docs" matched multiple notes at the same path distance (alpha/docs.md, beta/docs.md); choosing "alpha/docs.md"`,
+		},
+		{
+			Severity: diag.SeverityWarning,
+			Kind:     diag.Kind("unpublished_wikilink"),
+			Location: diag.Location{Path: current.RelPath, Line: 3},
+			Message:  `wikilink "Private" points to unpublished note "private/secret.md"; rendering as plain text`,
+		},
+	}
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, wantDiagnostics) {
+		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, wantDiagnostics)
+	}
+
+	graph := BuildGraph(idx, map[string][]model.LinkRef{current.RelPath: gotOutLinks})
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, wantDiagnostics) {
+		t.Fatalf("collector.Diagnostics() after BuildGraph = %#v, want %#v", got, wantDiagnostics)
+	}
+	if got := graph.Forward[current.RelPath]; !reflect.DeepEqual(got, []string{alpha.RelPath}) {
+		t.Fatalf("graph.Forward[%q] = %#v, want only the resolved ambiguous target", current.RelPath, got)
+	}
+	if got := graph.Backward[alpha.RelPath]; !reflect.DeepEqual(got, []string{current.RelPath}) {
+		t.Fatalf("graph.Backward[%q] = %#v, want backlink from current note", alpha.RelPath, got)
+	}
+	if got := graph.Backward[beta.RelPath]; !reflect.DeepEqual(got, []string{}) {
+		t.Fatalf("graph.Backward[%q] = %#v, want no backlink for unchosen ambiguous target", beta.RelPath, got)
 	}
 }
 

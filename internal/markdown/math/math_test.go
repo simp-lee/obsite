@@ -74,14 +74,12 @@ func TestParseMarksDocumentAndPreservesRawLatex(t *testing.T) {
 	}
 
 	note := model.Note{}
-	if got := MarkNoteHasMath(&note, doc); !got {
-		t.Fatal("expected MarkNoteHasMath() to return true")
-	}
+	note.HasMath = HasMath(doc)
 	if !note.HasMath {
 		t.Fatal("expected note.HasMath to be set")
 	}
-	if got := MarkNoteHasMath(nil, doc); !got {
-		t.Fatal("expected MarkNoteHasMath(nil, doc) to report true")
+	if !HasMath(doc) {
+		t.Fatal("expected HasMath(doc) to report true")
 	}
 
 	metaValue, ok := doc.Meta()[DocumentMetaHasMath]
@@ -127,16 +125,17 @@ func TestParseMarksDocumentAndPreservesRawLatex(t *testing.T) {
 	}
 }
 
-func TestMarkNoteHasMathClearsFlagWhenASTContainsNoMath(t *testing.T) {
+func TestHasMathAllowsCallerToClearNoteFlagWhenASTContainsNoMath(t *testing.T) {
 	t.Parallel()
 
 	md := goldmark.New(goldmark.WithExtensions(Extension))
 	doc := md.Parser().Parse(text.NewReader([]byte("plain text only\n"))).(*gast.Document)
 
 	note := model.Note{HasMath: true}
-	if got := MarkNoteHasMath(&note, doc); got {
-		t.Fatal("expected MarkNoteHasMath() to return false")
+	if HasMath(doc) {
+		t.Fatal("expected HasMath() to return false")
 	}
+	note.HasMath = HasMath(doc)
 	if note.HasMath {
 		t.Fatal("expected note.HasMath to be cleared")
 	}

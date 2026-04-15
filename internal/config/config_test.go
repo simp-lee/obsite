@@ -26,7 +26,7 @@ customCSS: styles/custom.css
 search:
   enabled: true
   pagefindPath: /usr/local/bin/pagefind_extended
-  pagefindVersion: 1.4.0
+  pagefindVersion: 1.5.2
 pagination:
   pageSize: 30
 sidebar:
@@ -44,10 +44,11 @@ timeline:
   path: timeline
 `)
 
-	cfg, err := Load(configPath, Overrides{})
+	loaded, err := LoadForBuild(configPath, Overrides{})
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
+	cfg := loaded.Config
 
 	if cfg.Title != "Garden Notes" {
 		t.Fatalf("Title = %q, want %q", cfg.Title, "Garden Notes")
@@ -76,14 +77,17 @@ timeline:
 	if cfg.CustomCSS != filepath.Join(configDir, "styles", "custom.css") {
 		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, filepath.Join(configDir, "styles", "custom.css"))
 	}
+	if loaded.AllowMissingCustomCSS {
+		t.Fatal("AllowMissingCustomCSS = true, want false for explicit customCSS")
+	}
 	if !cfg.Search.Enabled {
 		t.Fatal("Search.Enabled = false, want true")
 	}
 	if cfg.Search.PagefindPath != "/usr/local/bin/pagefind_extended" {
 		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, "/usr/local/bin/pagefind_extended")
 	}
-	if cfg.Search.PagefindVersion != "1.4.0" {
-		t.Fatalf("Search.PagefindVersion = %q, want %q", cfg.Search.PagefindVersion, "1.4.0")
+	if cfg.Search.PagefindVersion != "1.5.2" {
+		t.Fatalf("Search.PagefindVersion = %q, want %q", cfg.Search.PagefindVersion, "1.5.2")
 	}
 	if cfg.Pagination.PageSize != 30 {
 		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 30)
@@ -143,6 +147,22 @@ baseURL: https://example.com/blog?ref=1
 `,
 			wantErr: "baseURL must not include query or fragment",
 		},
+		{
+			name: "username in baseURL",
+			content: `
+title: Garden Notes
+baseURL: https://alice@example.com/blog
+`,
+			wantErr: "baseURL must not include user info",
+		},
+		{
+			name: "username and password in baseURL",
+			content: `
+title: Garden Notes
+baseURL: https://alice:secret@example.com/blog
+`,
+			wantErr: "baseURL must not include user info",
+		},
 	}
 
 	for _, tt := range testCases {
@@ -151,12 +171,12 @@ baseURL: https://example.com/blog?ref=1
 			t.Parallel()
 
 			configPath := writeConfigFile(t, caseData.content)
-			_, err := Load(configPath, Overrides{})
+			_, err := LoadForBuild(configPath, Overrides{})
 			if err == nil {
-				t.Fatal("Load() error = nil, want non-nil")
+				t.Fatal("LoadForBuild() error = nil, want non-nil")
 			}
 			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("Load() error = %q, want substring %q", err.Error(), caseData.wantErr)
+				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
 			}
 		})
 	}
@@ -197,12 +217,12 @@ search:
 			t.Parallel()
 
 			configPath := writeConfigFile(t, caseData.content)
-			_, err := Load(configPath, Overrides{})
+			_, err := LoadForBuild(configPath, Overrides{})
 			if err == nil {
-				t.Fatal("Load() error = nil, want non-nil")
+				t.Fatal("LoadForBuild() error = nil, want non-nil")
 			}
 			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("Load() error = %q, want substring %q", err.Error(), caseData.wantErr)
+				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
 			}
 		})
 	}
@@ -244,18 +264,18 @@ related:
 			t.Parallel()
 
 			configPath := writeConfigFile(t, caseData.content)
-			_, err := Load(configPath, Overrides{})
+			_, err := LoadForBuild(configPath, Overrides{})
 			if err == nil {
-				t.Fatal("Load() error = nil, want non-nil")
+				t.Fatal("LoadForBuild() error = nil, want non-nil")
 			}
 			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("Load() error = %q, want substring %q", err.Error(), caseData.wantErr)
+				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
 			}
 		})
 	}
 }
 
-func TestLoadAppliesCLIOverrides(t *testing.T) {
+func TestLoadAppliesExplicitOverrides(t *testing.T) {
 	t.Parallel()
 
 	configPath := writeConfigFile(t, `
@@ -267,15 +287,16 @@ language: fr
 defaultPublish: false
 `)
 
-	cfg, err := Load(configPath, Overrides{
+	loaded, err := LoadForBuild(configPath, Overrides{
 		Title:          "CLI Title",
 		BaseURL:        "https://cli.example.com/docs",
 		Author:         "CLI Author",
 		DefaultPublish: boolPtr(true),
 	})
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
+	cfg := loaded.Config
 
 	if cfg.Title != "CLI Title" {
 		t.Fatalf("Title = %q, want %q", cfg.Title, "CLI Title")
@@ -300,13 +321,14 @@ defaultPublish: false
 func TestLoadAppliesDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := Load("", Overrides{
+	loaded, err := LoadForBuild("", Overrides{
 		Title:   "Garden Notes",
 		BaseURL: "https://example.com",
 	})
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
+	cfg := loaded.Config
 
 	if cfg.BaseURL != "https://example.com/" {
 		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/")
@@ -375,16 +397,20 @@ baseURL: https://example.com
 		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
 	}
 
-	cfg, err := Load(configPath, Overrides{VaultPath: vaultPath})
+	loaded, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
+	cfg := loaded.Config
 	if cfg.CustomCSS != customCSSPath {
 		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
 	}
+	if !loaded.AllowMissingCustomCSS {
+		t.Fatal("AllowMissingCustomCSS = false, want true for auto-detected vault custom.css")
+	}
 }
 
-func TestLoadDoesNotAutoDetectCustomCSSFromConfigDirWithoutVaultPath(t *testing.T) {
+func TestLoadAutoDetectsCustomCSSFromConfigDirWithoutVaultPath(t *testing.T) {
 	t.Parallel()
 
 	configDir := t.TempDir()
@@ -397,16 +423,128 @@ baseURL: https://example.com
 		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
 	}
 
-	cfg, err := Load(configPath, Overrides{})
+	loaded, err := LoadForBuild(configPath, Overrides{})
 	if err != nil {
-		t.Fatalf("Load() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	if cfg.CustomCSS != "" {
-		t.Fatalf("CustomCSS = %q, want empty string when VaultPath is not provided", cfg.CustomCSS)
+	cfg := loaded.Config
+	if cfg.CustomCSS != customCSSPath {
+		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
+	}
+	if !loaded.AllowMissingCustomCSS {
+		t.Fatal("AllowMissingCustomCSS = false, want true for auto-detected config-dir custom.css")
 	}
 }
 
-func TestNormalizeSiteConfigAppliesRuntimeDefaultsForUnsetFields(t *testing.T) {
+func TestLoadPrefersConfigDirCustomCSSOverVaultRoot(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configDir := t.TempDir()
+	configPath := writeConfigFileAt(t, configDir, `
+title: Garden Notes
+baseURL: https://example.com
+`)
+	configCustomCSSPath := filepath.Join(configDir, defaultCustomCSSName)
+	vaultCustomCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
+	if err := os.WriteFile(configCustomCSSPath, []byte("body { color: tomato; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configCustomCSSPath, err)
+	}
+	if err := os.WriteFile(vaultCustomCSSPath, []byte("body { color: royalblue; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", vaultCustomCSSPath, err)
+	}
+
+	loaded, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
+	if err != nil {
+		t.Fatalf("LoadForBuild() error = %v", err)
+	}
+	cfg := loaded.Config
+	if cfg.CustomCSS != configCustomCSSPath {
+		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, configCustomCSSPath)
+	}
+	if !loaded.AllowMissingCustomCSS {
+		t.Fatal("AllowMissingCustomCSS = false, want true for auto-detected config-dir custom.css")
+	}
+}
+
+func TestLoadRejectsInvalidAutoDetectedCustomCSSInConfigDir(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configDir := t.TempDir()
+	configPath := writeConfigFileAt(t, configDir, `
+title: Garden Notes
+baseURL: https://example.com
+`)
+	configCustomCSSPath := filepath.Join(configDir, defaultCustomCSSName)
+	vaultCustomCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
+	symlinkTargetPath := filepath.Join(t.TempDir(), "linked.css")
+
+	if err := os.WriteFile(symlinkTargetPath, []byte("body { color: tomato; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", symlinkTargetPath, err)
+	}
+	if err := os.Symlink(symlinkTargetPath, configCustomCSSPath); err != nil {
+		t.Skipf("os.Symlink(%q, %q) error = %v", symlinkTargetPath, configCustomCSSPath, err)
+	}
+	if err := os.WriteFile(vaultCustomCSSPath, []byte("body { color: royalblue; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", vaultCustomCSSPath, err)
+	}
+
+	_, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
+	if err == nil {
+		t.Fatal("LoadForBuild() error = nil, want explicit invalid auto-detected custom CSS error")
+	}
+	if !strings.Contains(err.Error(), `auto-detected custom CSS "`+configCustomCSSPath+`" must be a regular non-symlink file`) {
+		t.Fatalf("LoadForBuild() error = %q, want invalid config-dir custom CSS path error", err.Error())
+	}
+}
+
+func TestLoadRejectsInvalidAutoDetectedCustomCSSInVaultRoot(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configDir := t.TempDir()
+	configPath := writeConfigFileAt(t, configDir, `
+title: Garden Notes
+baseURL: https://example.com
+`)
+	vaultCustomCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
+	if err := os.Mkdir(vaultCustomCSSPath, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q) error = %v", vaultCustomCSSPath, err)
+	}
+
+	_, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
+	if err == nil {
+		t.Fatal("LoadForBuild() error = nil, want explicit invalid auto-detected custom CSS error")
+	}
+	if !strings.Contains(err.Error(), `auto-detected custom CSS "`+vaultCustomCSSPath+`" must be a regular non-symlink file`) {
+		t.Fatalf("LoadForBuild() error = %q, want invalid vault-root custom CSS path error", err.Error())
+	}
+}
+
+func TestLoadResolvesRelativePagefindPathAgainstConfigDir(t *testing.T) {
+	t.Parallel()
+
+	configDir := t.TempDir()
+	configPath := writeConfigFileAt(t, configDir, `
+title: Garden Notes
+baseURL: https://example.com
+search:
+  enabled: true
+  pagefindPath: tools/pagefind_extended
+`)
+
+	loaded, err := LoadForBuild(configPath, Overrides{})
+	if err != nil {
+		t.Fatalf("LoadForBuild() error = %v", err)
+	}
+	cfg := loaded.Config
+	if cfg.Search.PagefindPath != filepath.Join(configDir, "tools", "pagefind_extended") {
+		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, filepath.Join(configDir, "tools", "pagefind_extended"))
+	}
+}
+
+func TestNormalizeSiteConfigAppliesDocumentedDefaults(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := NormalizeSiteConfig(model.SiteConfig{
@@ -424,7 +562,7 @@ func TestNormalizeSiteConfigAppliesRuntimeDefaultsForUnsetFields(t *testing.T) {
 		t.Fatalf("Language = %q, want %q", cfg.Language, defaultLanguage)
 	}
 	if !cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = false, want true")
+		t.Fatal("DefaultPublish = false, want documented default true")
 	}
 	if cfg.Search.PagefindPath != defaultPagefindPath {
 		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, defaultPagefindPath)
@@ -439,7 +577,7 @@ func TestNormalizeSiteConfigAppliesRuntimeDefaultsForUnsetFields(t *testing.T) {
 		t.Fatalf("Related.Count = %d, want %d", cfg.Related.Count, defaultRelatedCount)
 	}
 	if !cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = false, want true")
+		t.Fatal("RSS.Enabled = false, want documented default true")
 	}
 	if cfg.Timeline.Path != defaultTimelinePath {
 		t.Fatalf("Timeline.Path = %q, want %q", cfg.Timeline.Path, defaultTimelinePath)
@@ -458,7 +596,7 @@ func TestNormalizeSiteConfigAppliesRuntimeDefaultsForUnsetFields(t *testing.T) {
 	}
 }
 
-func TestNormalizeSiteConfigPreservesExplicitDefaultPublishFalse(t *testing.T) {
+func TestNormalizeSiteConfigPreservesExplicitDefaultPoliciesWhenMarkedSet(t *testing.T) {
 	t.Parallel()
 
 	cfg, err := NormalizeSiteConfig(model.SiteConfig{
@@ -466,6 +604,10 @@ func TestNormalizeSiteConfigPreservesExplicitDefaultPublishFalse(t *testing.T) {
 		BaseURL:           "https://example.com/blog",
 		DefaultPublish:    false,
 		DefaultPublishSet: true,
+		RSS: model.RSSConfig{
+			Enabled:    false,
+			EnabledSet: true,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NormalizeSiteConfig() error = %v", err)
@@ -473,12 +615,32 @@ func TestNormalizeSiteConfigPreservesExplicitDefaultPublishFalse(t *testing.T) {
 	if cfg.DefaultPublish {
 		t.Fatal("DefaultPublish = true, want explicit false to be preserved")
 	}
+	if cfg.RSS.Enabled {
+		t.Fatal("RSS.Enabled = true, want explicit false to be preserved")
+	}
 }
 
-func TestNormalizeSiteConfigPreservesExplicitRSSFalse(t *testing.T) {
+func TestValidateLoadedSiteConfigPreservesExplicitDefaultPublishFalse(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := NormalizeSiteConfig(model.SiteConfig{
+	cfg, err := ValidateLoadedSiteConfig(model.SiteConfig{
+		Title:             "Garden Notes",
+		BaseURL:           "https://example.com/blog",
+		DefaultPublish:    false,
+		DefaultPublishSet: true,
+	})
+	if err != nil {
+		t.Fatalf("ValidateLoadedSiteConfig() error = %v", err)
+	}
+	if cfg.DefaultPublish {
+		t.Fatal("DefaultPublish = true, want explicit false to be preserved")
+	}
+}
+
+func TestValidateLoadedSiteConfigPreservesExplicitRSSFalse(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := ValidateLoadedSiteConfig(model.SiteConfig{
 		Title:   "Garden Notes",
 		BaseURL: "https://example.com/blog",
 		RSS: model.RSSConfig{
@@ -487,7 +649,7 @@ func TestNormalizeSiteConfigPreservesExplicitRSSFalse(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("NormalizeSiteConfig() error = %v", err)
+		t.Fatalf("ValidateLoadedSiteConfig() error = %v", err)
 	}
 	if cfg.RSS.Enabled {
 		t.Fatal("RSS.Enabled = true, want explicit false to be preserved")
@@ -497,18 +659,87 @@ func TestNormalizeSiteConfigPreservesExplicitRSSFalse(t *testing.T) {
 func TestNormalizeSiteConfigRejectsTimelinePathTraversal(t *testing.T) {
 	t.Parallel()
 
-	_, err := NormalizeSiteConfig(model.SiteConfig{
+	tests := []struct {
+		name         string
+		timelinePath string
+	}{
+		{name: "slash separated", timelinePath: "../notes"},
+		{name: "backslash separated", timelinePath: `..\notes`},
+		{name: "mixed separators", timelinePath: `..\/notes`},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NormalizeSiteConfig(model.SiteConfig{
+				Title:   "Garden Notes",
+				BaseURL: "https://example.com/blog",
+				Timeline: model.TimelineConfig{
+					Path: tt.timelinePath,
+				},
+			})
+			if err == nil {
+				t.Fatal("NormalizeSiteConfig() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), "timeline.path") {
+				t.Fatalf("NormalizeSiteConfig() error = %q, want timeline.path validation", err.Error())
+			}
+		})
+	}
+}
+
+func TestNormalizeSiteConfigRejectsNonSiteRelativeTimelinePath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		timelinePath string
+	}{
+		{name: "windows drive", timelinePath: `C:\notes`},
+		{name: "unc path", timelinePath: `\\server\share`},
+		{name: "query", timelinePath: "notes?draft=1"},
+		{name: "fragment", timelinePath: "notes#archive"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NormalizeSiteConfig(model.SiteConfig{
+				Title:   "Garden Notes",
+				BaseURL: "https://example.com/blog",
+				Timeline: model.TimelineConfig{
+					Path: tt.timelinePath,
+				},
+			})
+			if err == nil {
+				t.Fatal("NormalizeSiteConfig() error = nil, want non-nil")
+			}
+			if !strings.Contains(err.Error(), "timeline.path") {
+				t.Fatalf("NormalizeSiteConfig() error = %q, want timeline.path validation", err.Error())
+			}
+		})
+	}
+}
+
+func TestNormalizeSiteConfigNormalizesTimelinePathSeparators(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := NormalizeSiteConfig(model.SiteConfig{
 		Title:   "Garden Notes",
 		BaseURL: "https://example.com/blog",
 		Timeline: model.TimelineConfig{
-			Path: "../notes",
+			Path: `journal\2026`,
 		},
 	})
-	if err == nil {
-		t.Fatal("NormalizeSiteConfig() error = nil, want non-nil")
+	if err != nil {
+		t.Fatalf("NormalizeSiteConfig() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "timeline.path") {
-		t.Fatalf("NormalizeSiteConfig() error = %q, want timeline.path validation", err.Error())
+	if cfg.Timeline.Path != "journal/2026" {
+		t.Fatalf("Timeline.Path = %q, want %q", cfg.Timeline.Path, "journal/2026")
 	}
 }
 

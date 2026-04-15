@@ -3,8 +3,10 @@ package recommend
 
 import (
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/simp-lee/obsite/internal/model"
 )
@@ -22,8 +24,9 @@ type RankedNote struct {
 
 type documentProfile struct {
 	note       *model.Note
-	queryTerms map[string]int
+	queryTerms []bm25QueryTerm
 	tags       map[string]struct{}
+	candidates []string
 }
 
 // Recommender holds the prebuilt corpus and note metadata used for ranking.
@@ -33,6 +36,7 @@ type Recommender struct {
 	bm25   *BM25
 	docMap map[string]documentProfile
 	paths  []string
+	mutual map[string]map[string]struct{}
 }
 
 // Build computes the top-N related notes for every public note in the index.
@@ -46,13 +50,47 @@ func Build(idx *model.VaultIndex, graph *model.LinkGraph, limit int) (map[string
 		return nil, err
 	}
 
+	relatedByIndex := make([][]RankedNote, len(recommender.paths))
+	workerCount := buildWorkerCount(len(recommender.paths))
+	if workerCount == 1 {
+		for pathIndex, relPath := range recommender.paths {
+			note := idx.Notes[relPath]
+			if note == nil {
+				continue
+			}
+			relatedByIndex[pathIndex] = recommender.Related(note, limit)
+		}
+	} else {
+		jobs := make(chan int)
+		var waitGroup sync.WaitGroup
+		for worker := 0; worker < workerCount; worker++ {
+			waitGroup.Add(1)
+			go func() {
+				defer waitGroup.Done()
+				for pathIndex := range jobs {
+					relPath := recommender.paths[pathIndex]
+					note := idx.Notes[relPath]
+					if note == nil {
+						continue
+					}
+					relatedByIndex[pathIndex] = recommender.Related(note, limit)
+				}
+			}()
+		}
+
+		for pathIndex := range recommender.paths {
+			jobs <- pathIndex
+		}
+		close(jobs)
+		waitGroup.Wait()
+	}
+
 	relatedByPath := make(map[string][]RankedNote, len(recommender.paths))
-	for _, relPath := range recommender.paths {
-		note := idx.Notes[relPath]
-		if note == nil {
+	for pathIndex, relPath := range recommender.paths {
+		if idx.Notes[relPath] == nil {
 			continue
 		}
-		relatedByPath[relPath] = recommender.Related(note, limit)
+		relatedByPath[relPath] = relatedByIndex[pathIndex]
 	}
 
 	return relatedByPath, nil
@@ -64,7 +102,7 @@ func New(idx *model.VaultIndex, graph *model.LinkGraph) (*Recommender, error) {
 		return &Recommender{
 			idx:    idx,
 			graph:  graph,
-			bm25:   newBM25(nil),
+			bm25:   newBM25(nil, nil),
 			docMap: map[string]documentProfile{},
 		}, nil
 	}
@@ -84,45 +122,34 @@ func New(idx *model.VaultIndex, graph *model.LinkGraph) (*Recommender, error) {
 		}
 
 		tokenLists[relPath] = tokens
+		tags := tagSet(note.Tags)
 		docMap[relPath] = documentProfile{
 			note:       note,
-			queryTerms: termFrequency(tokens),
-			tags:       tagSet(note.Tags),
+			queryTerms: queryTerms(tokens),
+			tags:       tags,
 		}
+	}
+
+	bm25 := newBM25(paths, tokenLists)
+	mutual := mutualWikilinkSet(paths, graph)
+	tagPaths := sharedTagPathIndex(paths, docMap)
+	for _, relPath := range paths {
+		profile, ok := docMap[relPath]
+		if !ok {
+			continue
+		}
+		profile.candidates = buildCandidatePaths(profile, bm25, tagPaths, mutual)
+		docMap[relPath] = profile
 	}
 
 	return &Recommender{
 		idx:    idx,
 		graph:  graph,
-		bm25:   newBM25(tokenLists),
+		bm25:   bm25,
 		docMap: docMap,
 		paths:  paths,
+		mutual: mutual,
 	}, nil
-}
-
-// Score returns the unified relatedness score for one query note and candidate note.
-func (r *Recommender) Score(queryNote *model.Note, candidateNote *model.Note) float64 {
-	if r == nil || queryNote == nil || candidateNote == nil {
-		return 0
-	}
-	if strings.TrimSpace(queryNote.RelPath) == "" || strings.TrimSpace(candidateNote.RelPath) == "" {
-		return 0
-	}
-	if queryNote.RelPath == candidateNote.RelPath {
-		return 0
-	}
-
-	queryProfile, ok := r.docMap[queryNote.RelPath]
-	if !ok {
-		return 0
-	}
-
-	candidateProfile, ok := r.docMap[candidateNote.RelPath]
-	if !ok {
-		return 0
-	}
-
-	return r.scoreProfiles(queryProfile, candidateProfile)
 }
 
 // Related ranks other public notes for a given source note.
@@ -131,12 +158,20 @@ func (r *Recommender) Related(note *model.Note, limit int) []RankedNote {
 		return nil
 	}
 
-	if _, ok := r.docMap[note.RelPath]; !ok {
+	queryProfile, ok := r.docMap[note.RelPath]
+	if !ok {
 		return nil
 	}
 
-	ranked := make([]RankedNote, 0, len(r.paths))
-	for _, candidatePath := range r.paths {
+	capacity := len(r.paths) - 1
+	if capacity > limit {
+		capacity = limit
+	}
+	if capacity < 0 {
+		capacity = 0
+	}
+	ranked := make([]RankedNote, 0, capacity)
+	for _, candidatePath := range r.relatedCandidatePaths(queryProfile) {
 		if candidatePath == note.RelPath {
 			continue
 		}
@@ -146,30 +181,12 @@ func (r *Recommender) Related(note *model.Note, limit int) []RankedNote {
 			continue
 		}
 
-		score := r.Score(note, candidateProfile.note)
+		score := r.scoreProfiles(queryProfile, candidateProfile)
 		if score <= 0 {
 			continue
 		}
 
-		ranked = append(ranked, RankedNote{Note: candidateProfile.note, Score: score})
-	}
-
-	sort.SliceStable(ranked, func(i int, j int) bool {
-		if ranked[i].Score != ranked[j].Score {
-			return ranked[i].Score > ranked[j].Score
-		}
-
-		leftKey := rankedNoteSortKey(ranked[i].Note)
-		rightKey := rankedNoteSortKey(ranked[j].Note)
-		if leftKey != rightKey {
-			return leftKey < rightKey
-		}
-
-		return rankedNoteDisplayTitle(ranked[i].Note) < rankedNoteDisplayTitle(ranked[j].Note)
-	})
-
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
+		ranked = insertRankedNote(ranked, RankedNote{Note: candidateProfile.note, Score: score}, limit)
 	}
 
 	return ranked
@@ -180,9 +197,9 @@ func (r *Recommender) scoreProfiles(queryProfile documentProfile, candidateProfi
 		return 0
 	}
 
-	score := r.bm25.Score(queryProfile.queryTerms, candidateProfile.note.RelPath)
+	score := r.bm25.scoreQueryTerms(queryProfile.queryTerms, candidateProfile.note.RelPath)
 	score += sharedTagBoost(queryProfile.tags, candidateProfile.tags)
-	if hasMutualWikilink(r.graph, queryProfile.note.RelPath, candidateProfile.note.RelPath) {
+	if hasMutualWikilink(r.mutual, queryProfile.note.RelPath, candidateProfile.note.RelPath) {
 		score += mutualWikilinkBoost
 	}
 	if score <= 0 {
@@ -190,6 +207,69 @@ func (r *Recommender) scoreProfiles(queryProfile documentProfile, candidateProfi
 	}
 
 	return score
+}
+
+func (r *Recommender) relatedCandidatePaths(queryProfile documentProfile) []string {
+	if r == nil || queryProfile.note == nil || len(queryProfile.candidates) == 0 {
+		return nil
+	}
+
+	return queryProfile.candidates
+}
+
+func insertRankedNote(ranked []RankedNote, candidate RankedNote, limit int) []RankedNote {
+	if limit <= 0 {
+		return ranked
+	}
+
+	insertAt := len(ranked)
+	for index, existing := range ranked {
+		if compareRankedNotes(candidate, existing) > 0 {
+			insertAt = index
+			break
+		}
+	}
+	if len(ranked) == limit && insertAt == len(ranked) {
+		return ranked
+	}
+
+	ranked = append(ranked, RankedNote{})
+	copy(ranked[insertAt+1:], ranked[insertAt:])
+	ranked[insertAt] = candidate
+	if len(ranked) > limit {
+		ranked = ranked[:limit]
+	}
+
+	return ranked
+}
+
+func compareRankedNotes(left RankedNote, right RankedNote) int {
+	if left.Score != right.Score {
+		if left.Score > right.Score {
+			return 1
+		}
+		return -1
+	}
+
+	leftKey := rankedNoteSortKey(left.Note)
+	rightKey := rankedNoteSortKey(right.Note)
+	if leftKey != rightKey {
+		if leftKey < rightKey {
+			return 1
+		}
+		return -1
+	}
+
+	leftTitle := rankedNoteDisplayTitle(left.Note)
+	rightTitle := rankedNoteDisplayTitle(right.Note)
+	if leftTitle < rightTitle {
+		return 1
+	}
+	if leftTitle > rightTitle {
+		return -1
+	}
+
+	return 0
 }
 
 func sortedPublicNotePaths(idx *model.VaultIndex) []string {
@@ -202,6 +282,87 @@ func sortedPublicNotePaths(idx *model.VaultIndex) []string {
 		paths = append(paths, relPath)
 	}
 	sort.Strings(paths)
+	return paths
+}
+
+func buildWorkerCount(pathCount int) int {
+	if pathCount <= 1 {
+		return 1
+	}
+
+	workerCount := runtime.GOMAXPROCS(0)
+	if workerCount < 1 {
+		return 1
+	}
+	if workerCount > pathCount {
+		return pathCount
+	}
+
+	return workerCount
+}
+
+func sharedTagPathIndex(paths []string, docMap map[string]documentProfile) map[string][]string {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	tagPaths := make(map[string][]string)
+	for _, relPath := range paths {
+		profile, ok := docMap[relPath]
+		if !ok {
+			continue
+		}
+		for tag := range profile.tags {
+			tagPaths[tag] = append(tagPaths[tag], relPath)
+		}
+	}
+	if len(tagPaths) == 0 {
+		return nil
+	}
+
+	return tagPaths
+}
+
+func buildCandidatePaths(profile documentProfile, bm25 *BM25, tagPaths map[string][]string, mutual map[string]map[string]struct{}) []string {
+	if profile.note == nil {
+		return nil
+	}
+
+	estimate := 0
+	if bm25 != nil {
+		estimate += bm25.candidateEstimate(profile.queryTerms)
+	}
+	for tag := range profile.tags {
+		estimate += len(tagPaths[tag])
+	}
+	estimate += len(mutual[profile.note.RelPath])
+	if estimate == 0 {
+		return nil
+	}
+
+	candidates := make(map[string]struct{}, estimate)
+	if bm25 != nil {
+		bm25.collectCandidateIDs(profile.queryTerms, candidates)
+	}
+	for tag := range profile.tags {
+		for _, candidatePath := range tagPaths[tag] {
+			candidates[candidatePath] = struct{}{}
+		}
+	}
+	for candidatePath := range mutual[profile.note.RelPath] {
+		candidates[candidatePath] = struct{}{}
+	}
+	delete(candidates, profile.note.RelPath)
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	paths := make([]string, 0, len(candidates))
+	for candidatePath := range candidates {
+		paths = append(paths, candidatePath)
+	}
+	sort.Strings(paths)
+
 	return paths
 }
 
@@ -242,21 +403,74 @@ func sharedTagBoost(left map[string]struct{}, right map[string]struct{}) float64
 	return (float64(intersection) / float64(union)) * sharedTagBoostWeight
 }
 
-func hasMutualWikilink(graph *model.LinkGraph, source string, candidate string) bool {
-	if graph == nil {
+func hasMutualWikilink(mutual map[string]map[string]struct{}, source string, candidate string) bool {
+	if len(mutual) == 0 {
 		return false
 	}
 
-	return containsString(graph.Forward[source], candidate) && containsString(graph.Forward[candidate], source)
+	candidates := mutual[source]
+	if len(candidates) == 0 {
+		return false
+	}
+
+	_, ok := candidates[candidate]
+	return ok
 }
 
-func containsString(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
+func mutualWikilinkSet(paths []string, graph *model.LinkGraph) map[string]map[string]struct{} {
+	if len(paths) == 0 || graph == nil || len(graph.Forward) == 0 {
+		return nil
+	}
+
+	publicPaths := make(map[string]struct{}, len(paths))
+	for _, relPath := range paths {
+		publicPaths[relPath] = struct{}{}
+	}
+
+	forwardSets := make(map[string]map[string]struct{}, len(paths))
+	for _, source := range paths {
+		targets := graph.Forward[source]
+		if len(targets) == 0 {
+			continue
+		}
+
+		set := make(map[string]struct{}, len(targets))
+		for _, target := range targets {
+			if target == source {
+				continue
+			}
+			if _, ok := publicPaths[target]; !ok {
+				continue
+			}
+			set[target] = struct{}{}
+		}
+		if len(set) == 0 {
+			continue
+		}
+		forwardSets[source] = set
+	}
+
+	mutual := make(map[string]map[string]struct{})
+	for source, targets := range forwardSets {
+		for target := range targets {
+			reciprocal := forwardSets[target]
+			if len(reciprocal) == 0 {
+				continue
+			}
+			if _, ok := reciprocal[source]; !ok {
+				continue
+			}
+			if mutual[source] == nil {
+				mutual[source] = make(map[string]struct{})
+			}
+			mutual[source][target] = struct{}{}
 		}
 	}
-	return false
+	if len(mutual) == 0 {
+		return nil
+	}
+
+	return mutual
 }
 
 func rankedNoteSortKey(note *model.Note) string {

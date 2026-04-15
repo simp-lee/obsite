@@ -21,22 +21,6 @@ func HasImageExtension(value string) bool {
 	}
 }
 
-// ResolvePath returns the first indexed vault-relative asset path that matches the
-// destination under Obsidian-compatible note-relative, vault-root, and attachment-folder rules.
-func ResolvePath(note *model.Note, attachmentFolderPath string, rawDestination string, exists func(string) bool) string {
-	if exists == nil {
-		return ""
-	}
-
-	for _, candidate := range CandidatePaths(note, attachmentFolderPath, rawDestination) {
-		if exists(candidate) {
-			return candidate
-		}
-	}
-
-	return ""
-}
-
 // CandidatePaths expands a destination into the ordered vault-relative candidates
 // that pass 1 and pass 2 should probe.
 func CandidatePaths(note *model.Note, attachmentFolderPath string, rawDestination string) []string {

@@ -1,6 +1,7 @@
 package embed
 
 import (
+	"bytes"
 	"io"
 	"path"
 	"path/filepath"
@@ -9,10 +10,10 @@ import (
 	"strings"
 
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
-	internalasset "github.com/simp-lee/obsite/internal/asset"
 	"github.com/simp-lee/obsite/internal/diag"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
@@ -80,6 +81,16 @@ func New(
 		visited:          clonedVisited,
 		depth:            depth,
 	}}
+}
+
+// MaxRenderDepth returns the embed recursion limit enforced during rendering.
+func MaxRenderDepth() int {
+	return maxDepth
+}
+
+// ScopeNoteToFragment returns the note view used to render a heading-scoped embed.
+func ScopeNoteToFragment(note *model.Note, fragmentID string) *model.Note {
+	return scopeNoteToSectionEmbeds(note, fragmentID)
 }
 
 func (e *extender) Extend(md goldmark.Markdown) {
@@ -207,12 +218,13 @@ func (r *wikilinkHTMLRenderer) renderEmbed(
 	source []byte,
 	node *gmwikilink.Node,
 ) (gast.WalkStatus, error) {
-	rawTarget := composeRawTarget(string(node.Target), string(node.Fragment))
+	target := string(node.Target)
+	rawTarget := composeRawTarget(target, string(node.Fragment))
 	ref := r.consumeEmbed(rawTarget)
 	fragment := strings.TrimSpace(string(node.Fragment))
 
 	if strings.HasPrefix(fragment, "^") {
-		lookup := internalwikilink.LookupTarget(r.index, r.currentNote, string(node.Target), "")
+		lookup := internalwikilink.LookupTarget(r.index, r.currentNote, target, "")
 		if len(lookup.Ambiguous) > 1 {
 			r.recordAmbiguous(ref, rawTarget, lookup.Note, lookup.Ambiguous)
 		}
@@ -227,42 +239,50 @@ func (r *wikilinkHTMLRenderer) renderEmbed(
 		return gast.WalkSkipChildren, nil
 	}
 
-	if assetPath := r.resolveImageAssetPath(string(node.Target)); assetPath != "" {
+	if assetPath := r.resolveImageAssetPath(target); assetPath != "" {
 		r.renderImageEmbed(w, source, node, assetPath)
 		return gast.WalkSkipChildren, nil
 	}
 
-	lookup := internalwikilink.LookupTarget(r.index, r.currentNote, string(node.Target), fragment)
+	lookup := internalwikilink.LookupTarget(r.index, r.currentNote, target, fragment)
 	if len(lookup.Ambiguous) > 1 {
 		r.recordAmbiguous(ref, rawTarget, lookup.Note, lookup.Ambiguous)
 	}
 
 	switch {
 	case lookup.Note == nil:
-		if looksLikeImageTarget(string(node.Target)) || (ref != nil && ref.IsImage) {
+		if lookup.CanvasResource {
+			if len(lookup.Ambiguous) > 0 {
+				r.recordAmbiguousCanvas(ref, rawTarget, lookup.Ambiguous)
+			} else {
+				r.recordUnsupportedCanvas(ref, rawTarget)
+			}
+			return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
+		}
+		if looksLikeImageTarget(target) || (ref != nil && ref.IsImage) {
 			r.recordUnresolvedAsset(ref, rawTarget)
 			r.renderEmbedFallbackText(w, ref, rawTarget)
 			return gast.WalkSkipChildren, nil
 		}
 		r.recordDeadEmbed(ref, rawTarget)
-		return gast.WalkContinue, nil
+		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	case lookup.Unpublished:
 		r.recordUnpublished(ref, rawTarget, lookup.Note)
-		return gast.WalkContinue, nil
+		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	case lookup.MissingFragment:
 		r.recordMissingFragment(ref, rawTarget, lookup.Note, fragment)
-		return gast.WalkContinue, nil
+		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	case r.depth >= maxDepth:
 		r.recordUnsupported(ref, rawTarget, "maximum embed depth of 10 exceeded")
-		return gast.WalkContinue, nil
+		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	case r.isVisited(lookup.Note, lookup.FragmentID):
 		r.recordCycle(ref, rawTarget, lookup.Note, lookup.FragmentID)
-		return gast.WalkContinue, nil
+		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	default:
 		embeddedSource := selectEmbedSource(lookup.Note, lookup.FragmentID)
 		if len(embeddedSource) == 0 {
 			r.recordMissingFragment(ref, rawTarget, lookup.Note, fragment)
-			return gast.WalkContinue, nil
+			return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 		}
 		renderNote := scopeNoteToSectionEmbeds(lookup.Note, lookup.FragmentID)
 
@@ -288,6 +308,11 @@ func (r *wikilinkHTMLRenderer) renderEmbed(
 	}
 }
 
+func (r *wikilinkHTMLRenderer) renderPlainTextEmbedFallback(w util.BufWriter, ref *model.EmbedRef, rawTarget string) (gast.WalkStatus, error) {
+	r.renderEmbedFallbackText(w, ref, rawTarget)
+	return gast.WalkSkipChildren, nil
+}
+
 func (r *wikilinkHTMLRenderer) renderImageEmbed(
 	w util.BufWriter,
 	source []byte,
@@ -302,7 +327,7 @@ func (r *wikilinkHTMLRenderer) renderImageEmbed(
 	}
 
 	imageIndex := r.nextImageIndex()
-	label := normalizeInlineText(string(node.Text(source)))
+	label := normalizeInlineText(wikilinkNodeText(source, node))
 	width := imageWidth(label)
 	alt := embedAltText(label, composeRawTarget(string(node.Target), string(node.Fragment)), assetPath)
 
@@ -385,13 +410,7 @@ func (r *wikilinkHTMLRenderer) resolveImageAssetPath(target string) string {
 }
 
 func resolveImageAssetPath(note *model.Note, idx *model.VaultIndex, target string) string {
-	for _, candidate := range imageAssetCandidates(note, idx, target) {
-		if idx != nil && idx.Assets[candidate] != nil {
-			return candidate
-		}
-	}
-
-	return ""
+	return resourcepath.ResolveIndexedAssetPath(note, idx, target)
 }
 
 func (r *wikilinkHTMLRenderer) isVisited(note *model.Note, fragmentID string) bool {
@@ -465,6 +484,18 @@ func (r *wikilinkHTMLRenderer) recordUnsupported(ref *model.EmbedRef, rawTarget 
 	r.recordUnsupportedWithFallback(ref, rawTarget, message, "plain text")
 }
 
+func (r *wikilinkHTMLRenderer) recordUnsupportedCanvas(ref *model.EmbedRef, rawTarget string) {
+	r.recordUnsupportedWithFallback(ref, rawTarget, "targets unsupported canvas content", "plain text")
+}
+
+func (r *wikilinkHTMLRenderer) recordAmbiguousCanvas(ref *model.EmbedRef, rawTarget string, candidates []string) {
+	if r == nil || r.diag == nil || len(candidates) == 0 {
+		return
+	}
+
+	r.diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "embed %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
+}
+
 func (r *wikilinkHTMLRenderer) recordUnsupportedWithFallback(ref *model.EmbedRef, rawTarget string, message string, fallback string) {
 	if r == nil || r.diag == nil {
 		return
@@ -521,13 +552,59 @@ func scopeNoteToSectionEmbeds(note *model.Note, fragmentID string) *model.Note {
 	if !ok {
 		return note
 	}
+	section = boundedSection(note, section)
 
 	scoped := *note
+	scoped.RawContent = note.RawContent[section.StartOffset:section.EndOffset]
+	scoped.BodyStartLine = sectionBodyStartLine(note, section)
 	scoped.Headings = headingsInSection(note.Headings, note.HeadingSections, section)
-	scoped.HeadingSections = headingSectionsFor(scoped.Headings, note.HeadingSections)
+	scoped.HeadingSections = headingSectionsFor(scoped.Headings, note.HeadingSections, section)
 	scoped.OutLinks = outLinksInSection(note.OutLinks, section)
 	scoped.Embeds = embedsInSection(note.Embeds, section)
+	scoped.ImageRefs = imageRefsInSection(note.ImageRefs, section)
 	return &scoped
+}
+
+func boundedSection(note *model.Note, section model.SectionRange) model.SectionRange {
+	if note == nil {
+		return section
+	}
+
+	if section.StartOffset < 0 {
+		section.StartOffset = 0
+	}
+	if section.StartOffset > len(note.RawContent) {
+		section.StartOffset = len(note.RawContent)
+	}
+	if section.EndOffset > len(note.RawContent) {
+		section.EndOffset = len(note.RawContent)
+	}
+	if section.EndOffset < section.StartOffset {
+		section.EndOffset = section.StartOffset
+	}
+
+	return section
+}
+
+func sectionBodyStartLine(note *model.Note, section model.SectionRange) int {
+	if note == nil {
+		return 0
+	}
+
+	start := section.StartOffset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(note.RawContent) {
+		start = len(note.RawContent)
+	}
+
+	line := note.BodyStartLine
+	if line < 1 {
+		line = 1
+	}
+
+	return line + bytes.Count(note.RawContent[:start], []byte("\n"))
 }
 
 func headingsInSection(headings []model.Heading, sections map[string]model.SectionRange, section model.SectionRange) []model.Heading {
@@ -547,7 +624,7 @@ func headingsInSection(headings []model.Heading, sections map[string]model.Secti
 	return filtered
 }
 
-func headingSectionsFor(headings []model.Heading, sections map[string]model.SectionRange) map[string]model.SectionRange {
+func headingSectionsFor(headings []model.Heading, sections map[string]model.SectionRange, parent model.SectionRange) map[string]model.SectionRange {
 	if len(headings) == 0 || len(sections) == 0 {
 		return nil
 	}
@@ -558,7 +635,7 @@ func headingSectionsFor(headings []model.Heading, sections map[string]model.Sect
 		if !ok {
 			continue
 		}
-		filtered[heading.ID] = section
+		filtered[heading.ID] = rebaseSectionRange(section, parent)
 	}
 
 	if len(filtered) == 0 {
@@ -566,6 +643,23 @@ func headingSectionsFor(headings []model.Heading, sections map[string]model.Sect
 	}
 
 	return filtered
+}
+
+func rebaseSectionRange(section model.SectionRange, parent model.SectionRange) model.SectionRange {
+	if section.StartOffset < parent.StartOffset {
+		section.StartOffset = parent.StartOffset
+	}
+	if section.EndOffset > parent.EndOffset {
+		section.EndOffset = parent.EndOffset
+	}
+	if section.EndOffset < section.StartOffset {
+		section.EndOffset = section.StartOffset
+	}
+
+	return model.SectionRange{
+		StartOffset: section.StartOffset - parent.StartOffset,
+		EndOffset:   section.EndOffset - parent.StartOffset,
+	}
 }
 
 func outLinksInSection(refs []model.LinkRef, section model.SectionRange) []model.LinkRef {
@@ -578,6 +672,7 @@ func outLinksInSection(refs []model.LinkRef, section model.SectionRange) []model
 		if !offsetInSection(ref.Offset, section) {
 			continue
 		}
+		ref.Offset -= section.StartOffset
 		filtered = append(filtered, ref)
 	}
 
@@ -594,6 +689,24 @@ func embedsInSection(refs []model.EmbedRef, section model.SectionRange) []model.
 		if !offsetInSection(ref.Offset, section) {
 			continue
 		}
+		ref.Offset -= section.StartOffset
+		filtered = append(filtered, ref)
+	}
+
+	return filtered
+}
+
+func imageRefsInSection(refs []model.ImageRef, section model.SectionRange) []model.ImageRef {
+	if len(refs) == 0 {
+		return nil
+	}
+
+	filtered := make([]model.ImageRef, 0, len(refs))
+	for _, ref := range refs {
+		if !offsetInSection(ref.Offset, section) {
+			continue
+		}
+		ref.Offset -= section.StartOffset
 		filtered = append(filtered, ref)
 	}
 
@@ -608,15 +721,6 @@ func offsetInSection(offset int, section model.SectionRange) bool {
 		return false
 	}
 	return true
-}
-
-func imageAssetCandidates(note *model.Note, idx *model.VaultIndex, target string) []string {
-	attachmentFolderPath := ""
-	if idx != nil {
-		attachmentFolderPath = idx.AttachmentFolderPath
-	}
-
-	return internalasset.CandidatePaths(note, attachmentFolderPath, target)
 }
 
 func relativeToNoteOutput(note *model.Note, siteRelPath string) string {
@@ -684,7 +788,7 @@ func parseImageEmbedFigureTarget(line []byte) (string, bool) {
 		return "", false
 	}
 
-	if !internalasset.HasImageExtension(targetPath) {
+	if !resourcepath.LooksLikeImage(targetPath) {
 		return "", false
 	}
 
@@ -692,7 +796,7 @@ func parseImageEmbedFigureTarget(line []byte) (string, bool) {
 }
 
 func looksLikeImageTarget(value string) bool {
-	return internalasset.HasImageExtension(value)
+	return resourcepath.LooksLikeImage(value)
 }
 
 func imageWidth(label string) int {
@@ -737,6 +841,36 @@ func normalizeInlineText(value string) string {
 		return ""
 	}
 	return strings.Join(fields, " ")
+}
+
+func wikilinkNodeText(source []byte, node gast.Node) string {
+	var builder strings.Builder
+	appendWikilinkNodeText(&builder, source, node)
+	return builder.String()
+}
+
+func appendWikilinkNodeText(builder *strings.Builder, source []byte, node gast.Node) {
+	if builder == nil || node == nil {
+		return
+	}
+
+	switch current := node.(type) {
+	case *gast.Text:
+		_, _ = builder.Write(current.Value(source))
+		if current.SoftLineBreak() || current.HardLineBreak() {
+			_ = builder.WriteByte('\n')
+		}
+	case *gast.String:
+		_, _ = builder.Write(current.Value)
+	case *gast.RawHTML:
+		_, _ = builder.Write(current.Segments.Value(source))
+	case *gast.AutoLink:
+		_, _ = builder.Write(current.Label(source))
+	default:
+		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+			appendWikilinkNodeText(builder, source, child)
+		}
+	}
 }
 
 func composeRawTarget(target string, fragment string) string {

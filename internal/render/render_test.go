@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +90,12 @@ func TestCountWords(t *testing.T) {
 			wantLatin: 4,
 			wantCJK:   0,
 		},
+		{
+			name:      "template and hidden html stay invisible",
+			html:      "<template><p>Hidden helper words.</p></template><div hidden>Ignore me too.</div><p>Visible words only.</p>",
+			wantLatin: 3,
+			wantCJK:   0,
+		},
 	}
 
 	for _, tt := range tests {
@@ -98,6 +105,67 @@ func TestCountWords(t *testing.T) {
 			gotLatin, gotCJK := CountWords(tt.html)
 			if gotLatin != tt.wantLatin || gotCJK != tt.wantCJK {
 				t.Fatalf("CountWords(%q) = (%d, %d), want (%d, %d)", tt.html, gotLatin, gotCJK, tt.wantLatin, tt.wantCJK)
+			}
+		})
+	}
+}
+
+func TestVisibleSummary(t *testing.T) {
+	t.Parallel()
+
+	longWord := strings.Repeat("A", summaryRuneLimit+20)
+	tests := []struct {
+		name string
+		note model.Note
+		want string
+	}{
+		{
+			name: "duplicate leading heading uses normalized body content",
+			note: model.Note{
+				HTMLContent: `<h1 id="guide">Guide</h1><p>Visible intro.</p><p>Visible outro.</p>`,
+				Headings:    []model.Heading{{Level: 1, Text: "Guide", ID: "guide"}},
+				Frontmatter: model.Frontmatter{
+					Title: "Guide",
+				},
+			},
+			want: "Visible intro. Visible outro.",
+		},
+		{
+			name: "collapsed details keep summary text only",
+			note: model.Note{
+				HTMLContent: `<p>Visible intro.</p><details><summary>Expand</summary><p>Hidden body words.</p></details><p>Visible outro.</p>`,
+			},
+			want: "Visible intro. Expand Visible outro.",
+		},
+		{
+			name: "leading fenced and block code are skipped",
+			note: model.Note{
+				HTMLContent: `<div class="chroma"><pre tabindex="0"><code class="language-go" data-lang="go">fmt.Println(&#34;hi&#34;)</code></pre></div><pre class="mermaid">graph TD; A--&gt;B</pre><p>Visible intro.</p><p>Visible outro.</p>`,
+			},
+			want: "Visible intro. Visible outro.",
+		},
+		{
+			name: "author raw preformatted prose survives renderer code skips",
+			note: model.Note{
+				HTMLContent: `<pre>Author visible preface.</pre><div class="chroma"><pre tabindex="0"><code class="language-go" data-lang="go">fmt.Println(&#34;hi&#34;)</code></pre></div><pre class="unsupported-syntax unsupported-dataview">TABLE rows</pre><pre class="mermaid">graph TD; A--&gt;B</pre><p>Visible outro.</p>`,
+			},
+			want: "Author visible preface. Visible outro.",
+		},
+		{
+			name: "long leading word stays intact",
+			note: model.Note{
+				HTMLContent: `<p>` + longWord + ` trailing words that should be omitted</p>`,
+			},
+			want: longWord,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := VisibleSummary(&tt.note); got != tt.want {
+				t.Fatalf("VisibleSummary() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -216,7 +284,7 @@ func TestRenderNoteInjectsReadingTimeAndWordCount(t *testing.T) {
 		Note: &model.Note{
 			RelPath:     "notes/guide.md",
 			Slug:        "guide",
-			HTMLContent: "<h1 id=\"guide\">Guide</h1><p>Hello world.</p>",
+			HTMLContent: "<h1 id=\"guide\">Guide</h1><template><p>Hidden helper words.</p></template><div hidden>Ignore me too.</div><p>Hello world.</p>",
 			Headings: []model.Heading{{
 				Level: 1,
 				Text:  "Guide",
@@ -621,7 +689,7 @@ func TestRenderNotePromotesFilenameFallbackLeadingH1WhenDotsOnlySeparateWords(t 
 	}
 }
 
-func TestRenderNoteHidesTOCWhenFewerThanTwoUsableHeadings(t *testing.T) {
+func TestRenderNoteShowsTOCWhenOneUsableHeadingRemains(t *testing.T) {
 	t.Parallel()
 
 	got, err := RenderNote(NotePageInput{
@@ -643,11 +711,53 @@ func TestRenderNoteHidesTOCWhenFewerThanTwoUsableHeadings(t *testing.T) {
 		t.Fatalf("RenderNote() error = %v", err)
 	}
 
+	if len(got.Page.TOC) != 1 {
+		t.Fatalf("len(RenderNote().Page.TOC) = %d, want %d", len(got.Page.TOC), 1)
+	}
+	if got.Page.TOC[0].ID != "overview" || got.Page.TOC[0].Text != "Overview" {
+		t.Fatalf("RenderNote().Page.TOC[0] = %#v, want overview as the single remaining ToC entry", got.Page.TOC[0])
+	}
+	if len(got.Page.TOC[0].Children) != 0 {
+		t.Fatalf("RenderNote().Page.TOC[0].Children = %#v, want no nested entries when only one usable heading remains", got.Page.TOC[0].Children)
+	}
+	if !bytes.Contains(got.HTML, []byte(`class="toc-nav"`)) {
+		t.Fatalf("RenderNote() HTML missing ToC when one usable heading remains\n%s", got.HTML)
+	}
+	if !bytes.Contains(got.HTML, []byte(`href="#overview"`)) {
+		t.Fatalf("RenderNote() HTML missing ToC link for the remaining heading\n%s", got.HTML)
+	}
+	if bytes.Contains(got.HTML, []byte(`href="#guide"`)) {
+		t.Fatalf("RenderNote() HTML unexpectedly linked the duplicate promoted title heading\n%s", got.HTML)
+	}
+}
+
+func TestRenderNoteHidesTOCWhenNoUsableHeadingsRemain(t *testing.T) {
+	t.Parallel()
+
+	got, err := RenderNote(NotePageInput{
+		Site: testSiteConfig(),
+		Note: &model.Note{
+			RelPath: "notes/guide.md",
+			Slug:    "guide",
+			HTMLContent: `<h1 id="guide">Guide</h1>
+<p>Intro.</p>`,
+			Headings: []model.Heading{{
+				Level: 1,
+				Text:  "Guide",
+				ID:    "guide",
+			}},
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderNote() error = %v", err)
+	}
+
 	if len(got.Page.TOC) != 0 {
-		t.Fatalf("RenderNote().Page.TOC = %#v, want empty ToC when fewer than two usable headings remain", got.Page.TOC)
+		t.Fatalf("RenderNote().Page.TOC = %#v, want empty ToC when no usable headings remain", got.Page.TOC)
 	}
 	if bytes.Contains(got.HTML, []byte(`class="toc-nav"`)) {
-		t.Fatalf("RenderNote() HTML unexpectedly rendered ToC for too-few headings\n%s", got.HTML)
+		t.Fatalf("RenderNote() HTML unexpectedly rendered ToC without usable headings\n%s", got.HTML)
 	}
 }
 
@@ -1142,8 +1252,14 @@ func TestRenderTimelinePageAsHomepageUsesRootCanonical(t *testing.T) {
 	if len(got.Page.Breadcrumbs) != 0 {
 		t.Fatalf("len(RenderTimelinePage().Page.Breadcrumbs) = %d, want 0 in homepage mode", len(got.Page.Breadcrumbs))
 	}
+	if got.Page.JSONLD != "" {
+		t.Fatalf("RenderTimelinePage().Page.JSONLD = %s, want empty when homepage mode omits breadcrumbs", got.Page.JSONLD)
+	}
 	if !bytes.Contains(got.HTML, []byte("<a href=\"guide/\">Guide</a>")) {
 		t.Fatalf("RenderTimelinePage() HTML missing root-relative note link\n%s", got.HTML)
+	}
+	if bytes.Contains(got.HTML, []byte("<script type=\"application/ld+json\">")) {
+		t.Fatalf("RenderTimelinePage() HTML unexpectedly emitted JSON-LD without breadcrumbs in homepage mode\n%s", got.HTML)
 	}
 }
 
@@ -1344,6 +1460,21 @@ func TestRenderTimelinePageSupportsPaginatedRelPathAndPagination(t *testing.T) {
 	if !bytes.Contains(got.HTML, []byte(`<a class="pagination-link pagination-link-prev" href="../../" rel="prev">Previous</a>`)) {
 		t.Fatalf("RenderTimelinePage() HTML missing prev navigation link\n%s", got.HTML)
 	}
+	if got.Page.JSONLD == "" {
+		t.Fatal("RenderTimelinePage().Page.JSONLD = empty, want breadcrumb JSON-LD for non-homepage timeline")
+	}
+	if count := bytes.Count([]byte(got.Page.JSONLD), []byte(`"@type":"ListItem"`)); count != 2 {
+		t.Fatalf("RenderTimelinePage().Page.JSONLD has %d breadcrumb items, want %d\n%s", count, 2, got.Page.JSONLD)
+	}
+	if !bytes.Contains([]byte(got.Page.JSONLD), []byte(`"name":"Home","item":"https://example.com/blog/"`)) {
+		t.Fatalf("RenderTimelinePage().Page.JSONLD = %s, want home breadcrumb canonicalized to site root", got.Page.JSONLD)
+	}
+	if !bytes.Contains([]byte(got.Page.JSONLD), []byte(`"name":"Notes","item":"https://example.com/blog/notes/page/2/"`)) {
+		t.Fatalf("RenderTimelinePage().Page.JSONLD = %s, want current breadcrumb promoted to paginated timeline canonical", got.Page.JSONLD)
+	}
+	if bytes.Contains([]byte(got.Page.JSONLD), []byte(`"name":"Recent notes"`)) {
+		t.Fatalf("RenderTimelinePage().Page.JSONLD = %s, want no extra page-title breadcrumb beyond visible navigation", got.Page.JSONLD)
+	}
 }
 
 func TestRenderIndexAnd404UseEmbeddedTemplates(t *testing.T) {
@@ -1372,8 +1503,14 @@ func TestRenderIndexAnd404UseEmbeddedTemplates(t *testing.T) {
 	if index.Page.Canonical != "https://example.com/blog/" {
 		t.Fatalf("RenderIndex().Page.Canonical = %q, want %q", index.Page.Canonical, "https://example.com/blog/")
 	}
+	if index.Page.JSONLD != "" {
+		t.Fatalf("RenderIndex().Page.JSONLD = %s, want empty when breadcrumbs are intentionally omitted", index.Page.JSONLD)
+	}
 	if !bytes.Contains(index.HTML, []byte("<link rel=\"stylesheet\" href=\"./style.css\">")) {
 		t.Fatalf("RenderIndex() HTML missing embedded template stylesheet link\n%s", index.HTML)
+	}
+	if bytes.Contains(index.HTML, []byte("<script type=\"application/ld+json\">")) {
+		t.Fatalf("RenderIndex() HTML unexpectedly emitted JSON-LD without breadcrumbs\n%s", index.HTML)
 	}
 	if !bytes.Contains(index.HTML, []byte("<a href=\"guide/\">Guide</a>")) {
 		t.Fatalf("RenderIndex() HTML missing recent note link\n%s", index.HTML)
@@ -1402,6 +1539,15 @@ func TestRenderIndexAnd404UseEmbeddedTemplates(t *testing.T) {
 	}
 	if notFound.Page.Description != "The requested page could not be found." {
 		t.Fatalf("Render404().Page.Description = %q, want %q", notFound.Page.Description, "The requested page could not be found.")
+	}
+	if notFound.Page.JSONLD != "" {
+		t.Fatalf("Render404().Page.JSONLD = %s, want empty when breadcrumbs are intentionally omitted", notFound.Page.JSONLD)
+	}
+	if !bytes.Contains(notFound.HTML, []byte("<base href=\"/blog/\">")) {
+		t.Fatalf("Render404() HTML missing static 404 base href\n%s", notFound.HTML)
+	}
+	if bytes.Contains(notFound.HTML, []byte("<script type=\"application/ld+json\">")) {
+		t.Fatalf("Render404() HTML unexpectedly emitted JSON-LD without breadcrumbs\n%s", notFound.HTML)
 	}
 	if !bytes.Contains(notFound.HTML, []byte("<a class=\"action-link\" href=\"./\">Return to the homepage</a>")) {
 		t.Fatalf("Render404() HTML missing home action link\n%s", notFound.HTML)
@@ -1456,6 +1602,33 @@ func TestEmitStyleCSSUsesTemplateDirOverride(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("EmitStyleCSS() wrote %q, want %q", got, want)
+	}
+}
+
+func TestEmitRuntimeAssetsWritesEmbeddedFiles(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	if err := EmitRuntimeAssets(outputDir); err != nil {
+		t.Fatalf("EmitRuntimeAssets() error = %v", err)
+	}
+
+	for _, relPath := range RuntimeAssetOutputPaths() {
+		got, err := os.ReadFile(filepath.Join(outputDir, filepath.FromSlash(relPath)))
+		if err != nil {
+			t.Fatalf("os.ReadFile(%q) error = %v", relPath, err)
+		}
+
+		want, err := readEmbeddedAsset(filepath.Base(relPath))
+		if err != nil {
+			t.Fatalf("readEmbeddedAsset(%q) error = %v", filepath.Base(relPath), err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("EmitRuntimeAssets() wrote unexpected content for %q", relPath)
+		}
+		if len(got) == 0 {
+			t.Fatalf("EmitRuntimeAssets() wrote empty asset for %q", relPath)
+		}
 	}
 }
 

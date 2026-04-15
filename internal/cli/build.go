@@ -40,12 +40,12 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 				return err
 			}
 
-			cfg, err := deps.loadConfig(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
+			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			if _, err := deps.buildSiteWithOptions(cfg, normalizedVaultPath, trimmedOutputPath, internalbuild.Options{Force: force}); err != nil {
+			if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, trimmedOutputPath, internalbuild.Options{Force: force, DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 				return fmt.Errorf("build site: %w", err)
 			}
 

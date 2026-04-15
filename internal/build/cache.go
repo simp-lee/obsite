@@ -7,45 +7,79 @@ import (
 	"errors"
 	"fmt"
 	"hash"
+	"io"
+	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	internalasset "github.com/simp-lee/obsite/internal/asset"
 	"github.com/simp-lee/obsite/internal/diag"
+	internalembed "github.com/simp-lee/obsite/internal/markdown/embed"
 	markdownwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
-	templateassets "github.com/simp-lee/obsite/templates"
+	internalrender "github.com/simp-lee/obsite/internal/render"
+	"github.com/simp-lee/obsite/internal/resourcepath"
 )
 
 const (
-	cacheManifestDir           = ".obsite-cache"
-	cacheManifestRelPath       = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion       = 2
-	defaultTemplateSigKey      = "default"
-	missingTemplateSigKey      = "missing"
-	cacheSignatureSaltKey      = "phase-21-step-50"
-	derivedSignatureKeySidebar = "sidebar"
-	derivedSignatureKeyRelated = "related"
+	cacheManifestDir             = ".obsite-cache"
+	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
+	cacheManifestVersion         = 2
+	defaultTemplateSigKey        = "default"
+	missingTemplateSigKey        = "missing"
+	cacheSignatureSaltKey        = "phase-21-step-50"
+	derivedSignatureKeyBacklinks = "backlinks"
+	derivedSignatureKeySidebar   = "sidebar"
+	derivedSignatureKeyRelated   = "related"
 )
 
-var cacheTemplateFileNames = []string{
-	"base.html",
-	"note.html",
-	"index.html",
-	"tag.html",
-	"folder.html",
-	"timeline.html",
-	"404.html",
-	"style.css",
+var listTemplateAssetsForSignature = internalrender.EmbeddedTemplateAssetNames
+
+var readDefaultTemplateAssetForSignature = internalrender.ReadEmbeddedTemplateAsset
+
+var readBuildABISourceSignature = buildABISourceSignature
+
+var readBuildABISignature = sync.OnceValues(computeBuildABISignature)
+
+type buildABISourceSignatureUnavailableError struct {
+	cause             error
+	fallbackSignature string
 }
 
-var readDefaultTemplateAssetForSignature = func(name string) ([]byte, error) {
-	return templateassets.FS.ReadFile(name)
+func (err *buildABISourceSignatureUnavailableError) Error() string {
+	if err == nil {
+		return ""
+	}
+	if err.cause == nil {
+		return "build ABI source signature unavailable"
+	}
+	return fmt.Sprintf("build ABI source signature unavailable: %v", err.cause)
+}
+
+func (err *buildABISourceSignatureUnavailableError) Unwrap() error {
+	if err == nil {
+		return nil
+	}
+	return err.cause
+}
+
+func templateAssetNamesForCacheSignature() []string {
+	names := listTemplateAssetsForSignature()
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.EqualFold(strings.TrimSpace(name), "style.css") {
+			continue
+		}
+		filtered = append(filtered, name)
+	}
+	return filtered
 }
 
 type noteRenderSignatureBuilder struct {
@@ -56,17 +90,20 @@ type noteRenderSignatureBuilder struct {
 
 // Options controls build-time behavior that should remain stable across the CLI and serve paths.
 type Options struct {
-	Force bool
+	Force             bool
+	DiagnosticsWriter io.Writer
 }
 
 // CacheManifest stores the incremental-build state that can be safely reused on the next run.
 type CacheManifest struct {
-	Version           int                          `json:"version"`
-	ConfigSignature   string                       `json:"configSignature"`
-	TemplateSignature string                       `json:"templateSignature"`
-	Graph             model.LinkGraph              `json:"graph"`
-	Pages             map[string]string            `json:"pages,omitempty"`
-	Notes             map[string]cacheManifestNote `json:"notes"`
+	Version              int                          `json:"version"`
+	BuildABISignature    string                       `json:"buildABISignature"`
+	ConfigSignature      string                       `json:"configSignature"`
+	TemplateSignature    string                       `json:"templateSignature"`
+	SearchIndexSignature string                       `json:"searchIndexSignature,omitempty"`
+	Graph                model.LinkGraph              `json:"graph"`
+	Pages                map[string]string            `json:"pages,omitempty"`
+	Notes                map[string]cacheManifestNote `json:"notes"`
 }
 
 type cacheManifestNote struct {
@@ -119,6 +156,33 @@ func loadCacheManifest(outputRoot string) (*CacheManifest, error) {
 	}
 
 	return &manifest, nil
+}
+
+func warnCacheManifestLoadFailure(collector *diag.Collector, loadErr error) {
+	if collector == nil || loadErr == nil {
+		return
+	}
+
+	collector.Warningf(
+		diag.KindStructuredData,
+		diag.Location{Path: cacheManifestRelPath},
+		"incremental cache manifest could not be loaded (%v); falling back to a full rebuild. Delete %q if this warning repeats",
+		loadErr,
+		cacheManifestRelPath,
+	)
+}
+
+func warnBuildABISourceSignatureFailure(collector *diag.Collector, signatureErr error) {
+	if collector == nil || signatureErr == nil {
+		return
+	}
+
+	collector.Warningf(
+		diag.KindStructuredData,
+		diag.Location{Path: cacheManifestRelPath},
+		"build ABI source signature could not be collected (%v); disabling incremental cache reuse and forcing a full rebuild for this run",
+		signatureErr,
+	)
 }
 
 func writeCacheManifest(outputRoot string, manifest *CacheManifest) error {
@@ -198,7 +262,7 @@ func buildTemplateSignature(templateDir string) (string, error) {
 	_, _ = hasher.Write([]byte{0})
 	_, _ = hasher.Write([]byte(embeddedSignature))
 
-	for _, name := range cacheTemplateFileNames {
+	for _, name := range templateAssetNamesForCacheSignature() {
 		_, _ = hasher.Write([]byte{0})
 		_, _ = hasher.Write([]byte(name))
 
@@ -222,7 +286,7 @@ func buildEmbeddedTemplateSignature() (string, error) {
 	hasher := newCacheSignatureHasher("embedded-templates")
 	cacheHashWriteString(hasher, defaultTemplateSigKey)
 
-	for _, name := range cacheTemplateFileNames {
+	for _, name := range templateAssetNamesForCacheSignature() {
 		cacheHashWriteString(hasher, name)
 
 		data, err := readDefaultTemplateAssetForSignature(name)
@@ -235,6 +299,156 @@ func buildEmbeddedTemplateSignature() (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
+func computeBuildABISignature() (string, error) {
+	hasher := newCacheSignatureHasher("build-abi")
+	cacheHashWriteString(hasher, runtime.Version())
+
+	if info, ok := debug.ReadBuildInfo(); ok && info != nil {
+		cacheHashWriteString(hasher, info.String())
+	}
+
+	sourceSignature, ok, err := readBuildABISourceSignature()
+	if err != nil {
+		fallbackSignature := hex.EncodeToString(hasher.Sum(nil))
+		return fallbackSignature, &buildABISourceSignatureUnavailableError{
+			cause:             err,
+			fallbackSignature: fallbackSignature,
+		}
+	}
+	if ok {
+		cacheHashWriteString(hasher, sourceSignature)
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func buildABISourceSignature() (string, bool, error) {
+	repoRoot, ok := buildABISourceRoot()
+	if !ok {
+		return "", false, nil
+	}
+
+	signature, err := buildABISourceSignatureFromRoot(repoRoot)
+	if err != nil {
+		return "", false, err
+	}
+	if strings.TrimSpace(signature) == "" {
+		return "", false, nil
+	}
+
+	return signature, true, nil
+}
+
+func buildABISourceRoot() (string, bool) {
+	_, file, _, ok := runtime.Caller(0)
+	if !ok {
+		return "", false
+	}
+
+	candidates := []string{file}
+	if !filepath.IsAbs(file) {
+		if cwd, err := os.Getwd(); err == nil {
+			candidates = append(candidates, filepath.Join(cwd, file))
+		}
+	}
+
+	for _, candidate := range candidates {
+		repoRoot := filepath.Clean(filepath.Join(filepath.Dir(candidate), "..", ".."))
+		info, err := os.Stat(filepath.Join(repoRoot, "go.mod"))
+		if err == nil && !info.IsDir() {
+			return repoRoot, true
+		}
+	}
+
+	return "", false
+}
+
+func buildABISourceSignatureFromRoot(repoRoot string) (string, error) {
+	files, err := collectBuildABISourceFiles(repoRoot)
+	if err != nil {
+		return "", err
+	}
+	if len(files) == 0 {
+		return "", nil
+	}
+
+	hasher := newCacheSignatureHasher("build-abi-source")
+	for _, relPath := range files {
+		cacheHashWriteString(hasher, relPath)
+
+		data, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(relPath)))
+		if err != nil {
+			return "", fmt.Errorf("read build ABI source %q: %w", relPath, err)
+		}
+		cacheHashWriteString(hasher, string(data))
+	}
+
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func collectBuildABISourceFiles(repoRoot string) ([]string, error) {
+	repoRoot = strings.TrimSpace(repoRoot)
+	if repoRoot == "" {
+		return nil, nil
+	}
+
+	files := make([]string, 0, 128)
+	for _, relDir := range []string{"cmd", "internal", "templates"} {
+		absDir := filepath.Join(repoRoot, relDir)
+		info, err := os.Stat(absDir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat build ABI dir %q: %w", relDir, err)
+		}
+		if !info.IsDir() {
+			continue
+		}
+
+		if err := filepath.WalkDir(absDir, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			if entry.IsDir() {
+				return nil
+			}
+
+			name := entry.Name()
+			if filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
+				return nil
+			}
+
+			relPath, err := filepath.Rel(repoRoot, currentPath)
+			if err != nil {
+				return err
+			}
+			files = append(files, filepath.ToSlash(relPath))
+			return nil
+		}); err != nil {
+			return nil, fmt.Errorf("walk build ABI dir %q: %w", relDir, err)
+		}
+	}
+
+	for _, relPath := range []string{"go.mod", "go.sum", "go.work"} {
+		info, err := os.Stat(filepath.Join(repoRoot, relPath))
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, fmt.Errorf("stat build ABI file %q: %w", relPath, err)
+		}
+		if info.IsDir() {
+			continue
+		}
+
+		files = append(files, relPath)
+	}
+
+	sort.Strings(files)
+	return files, nil
+}
+
 func buildInputSignature(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -243,6 +457,56 @@ func buildInputSignature(value any) (string, error) {
 
 	hasher := newCacheSignatureHasher("input")
 	cacheHashWriteString(hasher, string(data))
+	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func buildSearchIndexInputSignature(outputRoot string) (string, error) {
+	trimmedRoot := strings.TrimSpace(outputRoot)
+	if trimmedRoot == "" {
+		return "", fmt.Errorf("search index output root is required")
+	}
+
+	hasher := newCacheSignatureHasher("search-index")
+	err := filepath.Walk(trimmedRoot, func(currentPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if currentPath == trimmedRoot {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(trimmedRoot, currentPath)
+		if err != nil {
+			return err
+		}
+		relPath = filepath.ToSlash(relPath)
+
+		if info.IsDir() {
+			switch relPath {
+			case cacheManifestDir, pagefindOutputSubdir:
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		if !strings.EqualFold(filepath.Ext(relPath), ".html") {
+			return nil
+		}
+
+		data, err := os.ReadFile(currentPath)
+		if err != nil {
+			return err
+		}
+		data = normalizeHTMLForSearchSignature(data)
+
+		cacheHashWriteString(hasher, relPath)
+		cacheHashWriteString(hasher, string(data))
+		return nil
+	})
+	if err != nil {
+		return "", fmt.Errorf("walk search index inputs in %q: %w", trimmedRoot, err)
+	}
+
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -278,11 +542,11 @@ func buildNoteRenderSignatures(idx *model.VaultIndex, noteHashes map[string]stri
 	builder := noteRenderSignatureBuilder{
 		idx:        idx,
 		noteHashes: noteHashes,
-		memo:       make(map[string]string, len(idx.Notes)),
+		memo:       make(map[string]string, len(idx.Notes)*2),
 	}
 	signatures := make(map[string]string, len(idx.Notes))
 	for _, relPath := range sortedNoteSignaturePaths(idx.Notes) {
-		signatures[relPath] = builder.signatureFor(relPath, nil)
+		signatures[relPath] = builder.signatureFor(relPath, "", 0, nil)
 	}
 
 	return signatures
@@ -315,6 +579,16 @@ func buildSidebarDerivedSignature(note *model.Note) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
+func buildBacklinkDerivedSignature(entries []model.BacklinkEntry) string {
+	hasher := newCacheSignatureHasher("backlinks")
+	cacheHashWriteInt(hasher, len(entries))
+	for _, entry := range entries {
+		cacheHashWriteString(hasher, strings.TrimSpace(entry.Title))
+		cacheHashWriteString(hasher, strings.TrimSpace(entry.URL))
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
 func buildRelatedDerivedSignature(articles []model.RelatedArticle) string {
 	hasher := newCacheSignatureHasher("related")
 	cacheHashWriteInt(hasher, len(articles))
@@ -342,44 +616,84 @@ func sortedNoteSignaturePaths(notes map[string]*model.Note) []string {
 	return paths
 }
 
-func (b *noteRenderSignatureBuilder) signatureFor(relPath string, stack map[string]struct{}) string {
+func noteRenderVisitKey(relPath string, fragmentID string) string {
 	relPath = strings.TrimSpace(relPath)
+	fragmentID = strings.TrimSpace(fragmentID)
 	if relPath == "" {
 		return ""
 	}
-	if b == nil || b.idx == nil {
-		return missingNoteRenderSignature(relPath)
+	if fragmentID == "" {
+		return relPath
 	}
-	if signature, ok := b.memo[relPath]; ok {
+	return relPath + "#" + fragmentID
+}
+
+func noteRenderMemoKey(relPath string, fragmentID string, depth int) string {
+	visitKey := noteRenderVisitKey(relPath, fragmentID)
+	if visitKey == "" {
+		return ""
+	}
+	return visitKey + "@depth=" + strconv.Itoa(depth)
+}
+
+func (b *noteRenderSignatureBuilder) signatureFor(relPath string, fragmentID string, depth int, stack map[string]struct{}) string {
+	relPath = strings.TrimSpace(relPath)
+	fragmentID = strings.TrimSpace(fragmentID)
+	visitKey := noteRenderVisitKey(relPath, fragmentID)
+	memoKey := noteRenderMemoKey(relPath, fragmentID, depth)
+	if memoKey == "" {
+		return ""
+	}
+	if b == nil || b.idx == nil {
+		return missingNoteRenderSignature(visitKey)
+	}
+	if signature, ok := b.memo[memoKey]; ok {
 		return signature
 	}
 
 	note := b.idx.Notes[relPath]
 	if note == nil {
-		return missingNoteRenderSignature(relPath)
+		return missingNoteRenderSignature(visitKey)
+	}
+
+	scopedNote := note
+	if fragmentID != "" {
+		scopedNote = internalembed.ScopeNoteToFragment(note, fragmentID)
+		if scopedNote == nil {
+			return missingNoteRenderSignature(visitKey)
+		}
 	}
 	if stack == nil {
 		stack = make(map[string]struct{})
 	}
-	if _, ok := stack[relPath]; ok {
-		return noteRenderCycleSignature(relPath)
+	if _, ok := stack[visitKey]; ok {
+		return noteRenderCycleSignature(visitKey)
 	}
-	stack[relPath] = struct{}{}
-	defer delete(stack, relPath)
+	stack[visitKey] = struct{}{}
+	defer delete(stack, visitKey)
 
 	hasher := newCacheSignatureHasher("note-render")
-	cacheHashWriteString(hasher, relPath)
-	cacheHashWriteString(hasher, b.noteHashes[relPath])
-	cacheHashWriteString(hasher, normalizeCacheTime(note.LastModified))
-	for _, ref := range note.OutLinks {
-		cacheHashWriteString(hasher, b.linkSignature(note, ref))
+	cacheHashWriteString(hasher, visitKey)
+	cacheHashWriteInt(hasher, depth)
+	if fragmentID == "" {
+		cacheHashWriteString(hasher, b.noteHashes[relPath])
+		cacheHashWriteString(hasher, normalizeCacheTime(note.LastModified))
+	} else {
+		cacheHashWriteInt(hasher, scopedNote.BodyStartLine)
+		cacheHashWriteString(hasher, string(scopedNote.RawContent))
 	}
-	for _, ref := range note.Embeds {
-		cacheHashWriteString(hasher, b.embedSignature(note, ref, stack))
+	for _, ref := range scopedNote.OutLinks {
+		cacheHashWriteString(hasher, b.linkSignature(scopedNote, ref))
+	}
+	for _, ref := range scopedNote.Embeds {
+		cacheHashWriteString(hasher, b.embedSignature(scopedNote, ref, stack, depth))
+	}
+	for _, ref := range scopedNote.ImageRefs {
+		cacheHashWriteString(hasher, b.imageSignature(scopedNote, ref))
 	}
 
 	signature := hex.EncodeToString(hasher.Sum(nil))
-	b.memo[relPath] = signature
+	b.memo[memoKey] = signature
 	return signature
 }
 
@@ -393,7 +707,14 @@ func (b *noteRenderSignatureBuilder) linkSignature(source *model.Note, ref model
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func (b *noteRenderSignatureBuilder) embedSignature(source *model.Note, ref model.EmbedRef, stack map[string]struct{}) string {
+func (b *noteRenderSignatureBuilder) imageSignature(source *model.Note, ref model.ImageRef) string {
+	hasher := newCacheSignatureHasher("note-image")
+	cacheHashWriteString(hasher, strings.TrimSpace(ref.RawTarget))
+	cacheHashWriteString(hasher, b.assetResolutionSignature(source, ref.RawTarget))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func (b *noteRenderSignatureBuilder) embedSignature(source *model.Note, ref model.EmbedRef, stack map[string]struct{}, depth int) string {
 	hasher := newCacheSignatureHasher("note-embed")
 	cacheHashWriteString(hasher, strings.TrimSpace(ref.Target))
 	cacheHashWriteString(hasher, strings.TrimSpace(ref.Fragment))
@@ -414,21 +735,23 @@ func (b *noteRenderSignatureBuilder) embedSignature(source *model.Note, ref mode
 	lookup := markdownwikilink.LookupTarget(b.idx, source, strings.TrimSpace(ref.Target), fragment)
 	cacheHashWriteString(hasher, lookupTargetSignature(lookup))
 	if lookup.Note != nil && !lookup.Unpublished && !lookup.MissingFragment {
-		cacheHashWriteString(hasher, b.signatureFor(lookup.Note.RelPath, stack))
+		if depth >= internalembed.MaxRenderDepth() {
+			cacheHashWriteString(hasher, "max-depth")
+		} else {
+			cacheHashWriteString(hasher, b.signatureFor(lookup.Note.RelPath, lookup.FragmentID, depth+1, stack))
+		}
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func (b *noteRenderSignatureBuilder) assetResolutionSignature(source *model.Note, rawDestination string) string {
-	attachmentFolderPath := ""
+	var idx *model.VaultIndex
 	if b != nil && b.idx != nil {
-		attachmentFolderPath = b.idx.AttachmentFolderPath
+		idx = b.idx
 	}
 
-	resolved := internalasset.ResolvePath(source, attachmentFolderPath, rawDestination, func(candidate string) bool {
-		return b != nil && b.idx != nil && b.idx.Assets[candidate] != nil
-	})
+	resolved := resourcepath.ResolveIndexedAssetPath(source, idx, rawDestination)
 	if strings.TrimSpace(resolved) == "" {
 		return "missing-asset"
 	}
@@ -437,7 +760,7 @@ func (b *noteRenderSignatureBuilder) assetResolutionSignature(source *model.Note
 }
 
 func isImageEmbedRef(ref model.EmbedRef) bool {
-	return ref.IsImage || internalasset.HasImageExtension(strings.TrimSpace(ref.Target))
+	return ref.IsImage || resourcepath.LooksLikeImage(strings.TrimSpace(ref.Target))
 }
 
 func splitLinkTarget(rawTarget string, fragment string) (string, string) {
@@ -462,6 +785,7 @@ func splitLinkTarget(rawTarget string, fragment string) (string, string) {
 func lookupTargetSignature(lookup markdownwikilink.LookupResult) string {
 	hasher := newCacheSignatureHasher("lookup-target")
 	cacheHashWriteBool(hasher, lookup.Note != nil)
+	cacheHashWriteBool(hasher, lookup.CanvasResource)
 	cacheHashWriteBool(hasher, lookup.Unpublished)
 	cacheHashWriteBool(hasher, lookup.MissingFragment)
 	cacheHashWriteString(hasher, strings.TrimSpace(lookup.FragmentID))
@@ -612,6 +936,40 @@ func sidebarDerivedSignaturesChanged(idx *model.VaultIndex, current map[string]m
 	}
 
 	return false
+}
+
+func backlinkDerivedSignaturesChanged(idx *model.VaultIndex, current map[string]map[string]string, previous *CacheManifest, contentDirtyPaths map[string]struct{}) (map[string]struct{}, bool) {
+	changed := make(map[string]struct{})
+	if idx == nil {
+		return changed, true
+	}
+
+	currentPaths := allPublicNotePathSet(idx)
+	for relPath := range currentPaths {
+		currentValue := derivedSignatureValue(current[relPath], derivedSignatureKeyBacklinks)
+		if currentValue == "" {
+			return nil, false
+		}
+
+		previousEntry, ok := cacheManifestEntry(previous, relPath)
+		if !ok {
+			if _, dirty := contentDirtyPaths[relPath]; dirty {
+				changed[relPath] = struct{}{}
+				continue
+			}
+			return nil, false
+		}
+
+		previousValue := derivedSignatureValue(previousEntry.DerivedSignatures, derivedSignatureKeyBacklinks)
+		if previousValue == "" {
+			return nil, false
+		}
+		if currentValue != previousValue {
+			changed[relPath] = struct{}{}
+		}
+	}
+
+	return changed, true
 }
 
 func relatedDerivedSignaturesChanged(idx *model.VaultIndex, current map[string]map[string]string, previous *CacheManifest, contentDirtyPaths map[string]struct{}) (map[string]struct{}, bool) {
@@ -779,14 +1137,16 @@ func cacheSeverityOrder(severity diag.Severity) int {
 	}
 }
 
-func buildCacheManifest(configSignature string, templateSignature string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
+func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string, searchIndexSignature string) *CacheManifest {
 	manifest := &CacheManifest{
-		Version:           cacheManifestVersion,
-		ConfigSignature:   configSignature,
-		TemplateSignature: templateSignature,
-		Graph:             cloneLinkGraph(graph),
-		Pages:             cloneSignatureMap(pageSignatures),
-		Notes:             make(map[string]cacheManifestNote, len(noteStates)),
+		Version:              cacheManifestVersion,
+		BuildABISignature:    strings.TrimSpace(buildABISignature),
+		ConfigSignature:      configSignature,
+		TemplateSignature:    templateSignature,
+		SearchIndexSignature: strings.TrimSpace(searchIndexSignature),
+		Graph:                cloneLinkGraph(graph),
+		Pages:                cloneSignatureMap(pageSignatures),
+		Notes:                make(map[string]cacheManifestNote, len(noteStates)),
 	}
 
 	for _, relPath := range sortedNoteBuildStatePaths(noteStates) {

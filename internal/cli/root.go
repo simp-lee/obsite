@@ -10,7 +10,6 @@ import (
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
-	"github.com/simp-lee/obsite/internal/model"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -24,9 +23,8 @@ type previewServer interface {
 }
 
 type commandDependencies struct {
-	loadConfig           func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error)
-	buildSite            func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error)
-	buildSiteWithOptions func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
+	loadSiteInput        func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error)
+	buildSiteWithOptions func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
 	newPreviewServer     func(outputPath string, port int) (previewServer, error)
 	newFileWatcher       func() (fileWatcher, error)
 }
@@ -51,8 +49,7 @@ func executeWithDeps(args []string, deps commandDependencies, stdout io.Writer, 
 
 func defaultCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadConfig:           internalconfig.Load,
-		buildSite:            internalbuild.Build,
+		loadSiteInput:        internalbuild.LoadSiteInput,
 		buildSiteWithOptions: internalbuild.BuildWithOptions,
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {
 			return internalserver.New(outputPath, port)

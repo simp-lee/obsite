@@ -8,7 +8,6 @@ import (
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
-	"github.com/simp-lee/obsite/internal/model"
 )
 
 func TestExecuteShowsRootHelp(t *testing.T) {
@@ -59,13 +58,10 @@ func executeForTest(t *testing.T, deps commandDependencies, args []string) (stdo
 
 func testCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadConfig: func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
-			return model.SiteConfig{}, fmt.Errorf("unexpected loadConfig call")
+		loadSiteInput: func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+			return internalbuild.SiteInput{}, fmt.Errorf("unexpected loadSiteInput call")
 		},
-		buildSite: func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
-			return nil, fmt.Errorf("unexpected buildSite call")
-		},
-		buildSiteWithOptions: func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		buildSiteWithOptions: func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 			return nil, fmt.Errorf("unexpected buildSiteWithOptions call")
 		},
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {

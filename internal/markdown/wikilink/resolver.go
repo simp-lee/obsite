@@ -9,6 +9,8 @@ import (
 
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/resourcepath"
+	"github.com/simp-lee/obsite/internal/slug"
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
 )
 
@@ -34,13 +36,9 @@ type LookupResult struct {
 	Note            *model.Note
 	FragmentID      string
 	Ambiguous       []string
+	CanvasResource  bool
 	Unpublished     bool
 	MissingFragment bool
-}
-
-// NewVaultResolver builds a per-note resolver for pass 2 rendering.
-func NewVaultResolver(idx *model.VaultIndex, note *model.Note, diagCollector *diag.Collector) *VaultResolver {
-	return NewRenderVaultResolver(idx, note, note, "", diagCollector)
 }
 
 // NewRenderVaultResolver builds a render-time resolver with separate source and output-note contexts.
@@ -85,6 +83,13 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 	}
 
 	switch {
+	case lookup.Note == nil && lookup.CanvasResource:
+		if len(lookup.Ambiguous) > 0 {
+			r.recordAmbiguousCanvas(rawTarget, sourceRef, lookup.Ambiguous)
+		} else {
+			r.recordUnsupportedCanvas(rawTarget, sourceRef)
+		}
+		return nil, nil
 	case lookup.Note == nil:
 		r.recordDeadLink(rawTarget, sourceRef)
 		return nil, nil
@@ -192,7 +197,7 @@ func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
 			result.Unpublished = true
 			return result
 		}
-		return LookupResult{}
+		return canvasLookupResult(r.Index, r.CurrentNote, target)
 	}
 
 	if result := r.resolvePublic(target); result.note != nil {
@@ -205,7 +210,7 @@ func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
 		return lookup
 	}
 
-	return LookupResult{}
+	return canvasLookupResult(r.Index, r.CurrentNote, target)
 }
 
 func finalizeLookup(result resolutionResult, fragment string) LookupResult {
@@ -346,11 +351,11 @@ func noteLookupKey(target string) string {
 	if strings.EqualFold(path.Ext(base), ".md") {
 		base = base[:len(base)-len(path.Ext(base))]
 	}
-	return strings.ToLower(base)
+	return slug.Canonicalize(strings.TrimSpace(base))
 }
 
 func aliasLookupKey(target string) string {
-	return strings.ToLower(strings.TrimSpace(target))
+	return slug.Canonicalize(strings.TrimSpace(target))
 }
 
 func buildNoteHref(output *model.Note, source *model.Note, target *model.Note, fragment string, headingIDPrefix string) string {
@@ -583,6 +588,40 @@ func composeRawTarget(target string, fragment string) string {
 	return target + "#" + fragment
 }
 
+// IsCanvasTarget reports whether a wikilink target refers to an Obsidian canvas file.
+func IsCanvasTarget(target string) bool {
+	normalized := strings.TrimSpace(strings.ReplaceAll(target, `\`, "/"))
+	return strings.EqualFold(path.Ext(normalized), ".canvas")
+}
+
+func canvasLookupResult(idx *model.VaultIndex, current *model.Note, target string) LookupResult {
+	lookup := lookupCanvasResource(idx, current, target)
+	if lookup.Path != "" || len(lookup.Ambiguous) > 0 {
+		return LookupResult{CanvasResource: true, Ambiguous: lookup.Ambiguous}
+	}
+
+	return LookupResult{}
+}
+
+func lookupCanvasResource(idx *model.VaultIndex, current *model.Note, target string) model.PathLookupResult {
+	if idx == nil || !IsCanvasTarget(target) {
+		return model.PathLookupResult{}
+	}
+
+	lookup := resourcepath.LookupPath(current, idx.AttachmentFolderPath, target, idx.LookupResourcePath)
+	if lookup.Path != "" || len(lookup.Ambiguous) > 0 {
+		return lookup
+	}
+
+	normalized := strings.TrimSpace(strings.ReplaceAll(target, `\`, "/"))
+	normalized = strings.TrimPrefix(normalized, "/")
+	if normalized == "" || strings.Contains(normalized, "/") {
+		return model.PathLookupResult{}
+	}
+
+	return idx.LookupResourceBaseName(normalized)
+}
+
 func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string) *model.LinkRef {
 	if r == nil || embed || r.CurrentNote == nil {
 		return nil
@@ -613,6 +652,22 @@ func (r *VaultResolver) recordDeadLink(rawTarget string, ref *model.LinkRef) {
 	}
 
 	r.Diag.Warningf(diag.KindDeadLink, r.location(ref), "wikilink %q could not be resolved", rawTarget)
+}
+
+func (r *VaultResolver) recordUnsupportedCanvas(rawTarget string, ref *model.LinkRef) {
+	if r == nil || r.Diag == nil {
+		return
+	}
+
+	r.Diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "wikilink %q targets unsupported canvas content; rendering as plain text", rawTarget)
+}
+
+func (r *VaultResolver) recordAmbiguousCanvas(rawTarget string, ref *model.LinkRef, candidates []string) {
+	if r == nil || r.Diag == nil || len(candidates) == 0 {
+		return
+	}
+
+	r.Diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "wikilink %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
 }
 
 func (r *VaultResolver) recordUnpublished(rawTarget string, ref *model.LinkRef, note *model.Note) {

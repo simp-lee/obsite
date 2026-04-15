@@ -861,6 +861,84 @@ samp {
   font-size: 0.92rem;
 }
 
+.pagination-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem 1rem;
+  width: 100%;
+  margin-top: 1.5rem;
+}
+
+.pagination-pages {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.pagination-pages li {
+  display: flex;
+}
+
+.pagination-link,
+.pagination-page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.65rem;
+  padding: 0.55rem 0.95rem;
+  border-radius: 999px;
+  border: 1px solid var(--panel-border);
+  background: var(--page-surface-soft);
+  box-shadow: inset 0 1px 0 var(--tag-highlight);
+  color: var(--ink);
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.05em;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.pagination-link-prev {
+  margin-right: auto;
+}
+
+.pagination-link-next {
+  margin-left: auto;
+}
+
+.pagination-link {
+  min-width: 6.75rem;
+  white-space: nowrap;
+}
+
+.pagination-page {
+  min-width: 2.65rem;
+}
+
+.pagination-link:hover,
+.pagination-page:hover {
+  transform: translateY(-1px);
+}
+
+.pagination-link[aria-disabled="true"] {
+  color: var(--muted-soft);
+  background: var(--page-surface);
+}
+
+.pagination-page[aria-current="page"] {
+  background: var(--tag-bg);
+  border-color: var(--tag-border);
+  box-shadow: inset 0 1px 0 var(--tag-highlight), var(--shadow-sm);
+  color: var(--ink-strong);
+}
+
 .popover-card {
   position: fixed;
   z-index: 40;
@@ -1195,6 +1273,39 @@ samp {
   background: var(--mermaid-bg);
   color: var(--ink);
   border: 1px dashed var(--mermaid-border);
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+}
+
+.entry-content pre.mermaid svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.entry-content pre.mermaid .mermaid-node {
+  fill: var(--page-surface-soft);
+  stroke: var(--mermaid-border);
+  stroke-width: 2;
+}
+
+.entry-content pre.mermaid .mermaid-label {
+  fill: var(--ink);
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.entry-content pre.mermaid .mermaid-edge {
+  stroke: var(--accent-deep);
+  stroke-width: 2.5;
+  fill: none;
+}
+
+.entry-content pre.mermaid .mermaid-arrow {
+  fill: var(--accent-deep);
 }
 
 .entry-content .math-display {
@@ -1299,6 +1410,16 @@ samp {
   .note-card {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .pagination-link-prev,
+  .pagination-link-next {
+    margin: 0;
+  }
+
+  .pagination-pages {
+    flex-basis: 100%;
+    justify-content: flex-start;
   }
 
   .site-footer {

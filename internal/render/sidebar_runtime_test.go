@@ -750,12 +750,15 @@ type sidebarRuntimeHarness struct {
 func TestSidebarRuntimeRendersNestedTreeTracksExpansionAndCurrentPage(t *testing.T) {
 	t.Parallel()
 
+	const scopedStorageKey = "obsite.sidebar.expanded.v1:/blog/"
+
 	tmpl := parseDefaultTemplateSet(t)
 	html := renderTemplate(t, tmpl, model.PageData{
 		Kind:        model.PageNote,
 		SiteRootRel: "../",
 		Site: model.SiteConfig{
 			Title:    "Field Notes",
+			BaseURL:  "https://example.com/blog/",
 			Language: "en",
 			Sidebar:  model.SidebarConfig{Enabled: true},
 		},
@@ -834,8 +837,11 @@ func TestSidebarRuntimeRendersNestedTreeTracksExpansionAndCurrentPage(t *testing
 	}
 
 	expandedStorage := harness.storage()
-	if got := expandedStorage["obsite.sidebar.expanded.v1"]; !strings.Contains(got, `"docs":true`) {
+	if got := expandedStorage[scopedStorageKey]; !strings.Contains(got, `"docs":true`) {
 		t.Fatalf("expanded sidebar storage = %q, want docs persisted as true", got)
+	}
+	if _, ok := expandedStorage["obsite.sidebar.expanded.v1"]; ok {
+		t.Fatalf("expanded sidebar storage unexpectedly retained legacy key: %#v", expandedStorage)
 	}
 
 	tree = harness.sidebarTree()
@@ -856,8 +862,11 @@ func TestSidebarRuntimeRendersNestedTreeTracksExpansionAndCurrentPage(t *testing
 	}
 
 	collapsedStorage := harness.storage()
-	if got := collapsedStorage["obsite.sidebar.expanded.v1"]; !strings.Contains(got, `"docs":false`) {
+	if got := collapsedStorage[scopedStorageKey]; !strings.Contains(got, `"docs":false`) {
 		t.Fatalf("collapsed sidebar storage = %q, want docs persisted as false", got)
+	}
+	if _, ok := collapsedStorage["obsite.sidebar.expanded.v1"]; ok {
+		t.Fatalf("collapsed sidebar storage unexpectedly retained legacy key: %#v", collapsedStorage)
 	}
 
 	harness = newSidebarRuntimeHarness(t, html, collapsedStorage, false, false)
@@ -881,12 +890,15 @@ func TestSidebarRuntimeRendersNestedTreeTracksExpansionAndCurrentPage(t *testing
 func TestSidebarRuntimeStoredCollapseOverridesActiveBranchAutoOpen(t *testing.T) {
 	t.Parallel()
 
+	const scopedStorageKey = "obsite.sidebar.expanded.v1:/blog/"
+
 	tmpl := parseDefaultTemplateSet(t)
 	html := renderTemplate(t, tmpl, model.PageData{
 		Kind:        model.PageNote,
 		SiteRootRel: "../",
 		Site: model.SiteConfig{
 			Title:    "Field Notes",
+			BaseURL:  "https://example.com/blog/",
 			Language: "en",
 			Sidebar:  model.SidebarConfig{Enabled: true},
 		},
@@ -912,6 +924,13 @@ func TestSidebarRuntimeStoredCollapseOverridesActiveBranchAutoOpen(t *testing.T)
 	harness := newSidebarRuntimeHarness(t, html, map[string]string{
 		"obsite.sidebar.expanded.v1": `{"notes":false,"notes/alpha":false}`,
 	}, false, false)
+	storage := harness.storage()
+	if got := storage[scopedStorageKey]; !strings.Contains(got, `"notes":false`) || !strings.Contains(got, `"notes/alpha":false`) {
+		t.Fatalf("migrated sidebar storage = %q, want scoped collapsed state", got)
+	}
+	if _, ok := storage["obsite.sidebar.expanded.v1"]; ok {
+		t.Fatalf("migrated sidebar storage unexpectedly retained legacy key: %#v", storage)
+	}
 
 	tree := harness.sidebarTree()
 	notes := requireSidebarItem(t, tree, "notes")

@@ -34,7 +34,7 @@ func buildTOC(headings []model.Heading, pageTitle string, titleID string, omitLe
 		})
 	}
 
-	if len(usable) < 2 {
+	if len(usable) == 0 {
 		return nil
 	}
 

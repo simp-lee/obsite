@@ -8,68 +8,68 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const initConfigTemplate = `# Obsite site configuration.
-# Update these defaults before publishing.
-
-# baseURL must be the public site URL used for canonical links and sitemap entries.
-baseURL: https://example.com/
-
-# title appears in page titles and templates.
-title: My Obsite Site
-
-# author is used in templates and structured data.
-author: Your Name
-
-# description is the site-wide SEO fallback.
-description: Notes published with obsite.
-
-# language controls the default html lang value.
-language: en
-
-# defaultPublish controls notes that omit frontmatter publish.
-defaultPublish: true
-
-# search controls optional Pagefind indexing. Keep it disabled until pagefind_extended is installed.
-search:
-  enabled: false
-  # pagefindPath points to the pagefind_extended executable used during build.
-  pagefindPath: pagefind_extended
-  # pagefindVersion must match the installed pagefind_extended version when search is enabled.
-  pagefindVersion: 1.4.0
-
-# pagination controls list pages such as the homepage, tags, and folders.
-pagination:
-  pageSize: 20
-
-# sidebar enables the collapsible file tree navigation.
-sidebar:
-  enabled: false
-
-# popover enables async internal-link previews.
-popover:
-  enabled: false
-
-# related enables related-article blocks on note pages.
-related:
-  enabled: false
-  count: 5
-
-# rss controls generation of the site feed.
-rss:
-  enabled: true
-
-# timeline controls the recent-notes page and optional homepage override.
-timeline:
-  enabled: false
-  asHomepage: false
-  path: notes
-
-# templateDir optionally points to a directory that overrides embedded templates.
-templateDir:
-
-# customCSS optionally points to a CSS file. When omitted, obsite auto-detects custom.css in the vault root.
-customCSS:
-`
+const initConfigTemplate = "" +
+	"# Obsite site configuration.\n" +
+	"# Update these defaults before publishing.\n" +
+	"\n" +
+	"# baseURL must be the public site URL used for canonical links and sitemap entries.\n" +
+	"baseURL: https://example.com/\n" +
+	"\n" +
+	"# title appears in page titles and templates.\n" +
+	"title: My Obsite Site\n" +
+	"\n" +
+	"# author is used in templates and structured data.\n" +
+	"author: Your Name\n" +
+	"\n" +
+	"# description is the site-wide SEO fallback.\n" +
+	"description: Notes published with obsite.\n" +
+	"\n" +
+	"# language controls the default html lang value.\n" +
+	"language: en\n" +
+	"\n" +
+	"# defaultPublish controls notes that omit frontmatter publish.\n" +
+	"defaultPublish: true\n" +
+	"\n" +
+	"# search controls optional Pagefind indexing. Keep it disabled until tools/pagefind_extended is installed in this project.\n" +
+	"search:\n" +
+	"  enabled: false\n" +
+	"  # pagefindPath points to the pagefind_extended executable used during build, relative to this obsite.yaml file.\n" +
+	"  pagefindPath: tools/pagefind_extended\n" +
+	"  # pagefindVersion must match the installed pagefind_extended version when search is enabled.\n" +
+	"  pagefindVersion: 1.5.2\n" +
+	"\n" +
+	"# pagination controls list pages such as the homepage, tags, and folders.\n" +
+	"pagination:\n" +
+	"  pageSize: 20\n" +
+	"\n" +
+	"# sidebar enables the collapsible file tree navigation.\n" +
+	"sidebar:\n" +
+	"  enabled: false\n" +
+	"\n" +
+	"# popover enables async internal-link previews.\n" +
+	"popover:\n" +
+	"  enabled: false\n" +
+	"\n" +
+	"# related enables related-article blocks on note pages.\n" +
+	"related:\n" +
+	"  enabled: false\n" +
+	"  count: 5\n" +
+	"\n" +
+	"# rss controls generation of the site feed.\n" +
+	"rss:\n" +
+	"  enabled: true\n" +
+	"\n" +
+	"# timeline controls the recent-notes page and optional homepage override.\n" +
+	"timeline:\n" +
+	"  enabled: false\n" +
+	"  asHomepage: false\n" +
+	"  path: notes\n" +
+	"\n" +
+	"# templateDir optionally points to a directory that overrides embedded templates.\n" +
+	"templateDir:\n" +
+	"\n" +
+	"# customCSS optionally points to a CSS file. When omitted, obsite auto-detects custom.css in the config directory first, then the vault root.\n" +
+	"customCSS:\n"
 
 func newInitCommand() *cobra.Command {
 	var vaultPath string

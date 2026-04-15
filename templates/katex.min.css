@@ -1,0 +1,83 @@
+.math {
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+.math .katex {
+  display: inline-flex;
+  align-items: baseline;
+  font-style: italic;
+}
+
+.math.math-inline .katex {
+  white-space: nowrap;
+}
+
+.math .katex-mathml {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  border: 0;
+  white-space: nowrap;
+}
+
+.math .katex-html {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.math .katex-html .base {
+  display: inline-block;
+}
+
+.math.math-display {
+  text-align: center;
+}
+
+.math.math-display .katex-display {
+  display: block;
+  max-width: 100%;
+  padding: 0.15rem 0;
+}
+
+.math.math-display .katex-display .katex {
+  justify-content: center;
+}
+
+.math .math-frac {
+  display: inline-flex;
+  flex-direction: column;
+  vertical-align: middle;
+  margin: 0 0.15em;
+  line-height: 1.05;
+  text-align: center;
+  font-style: normal;
+}
+
+.math .math-frac-num {
+  padding: 0 0.25em 0.08em;
+  border-bottom: 1px solid currentColor;
+}
+
+.math .math-frac-den {
+  padding: 0.08em 0.25em 0;
+}
+
+.math sup,
+.math sub {
+  font-size: 0.75em;
+  line-height: 0;
+}
+
+.math sup {
+  vertical-align: 0.55em;
+}
+
+.math sub {
+  vertical-align: -0.2em;
+}

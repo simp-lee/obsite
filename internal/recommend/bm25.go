@@ -16,8 +16,14 @@ type bm25Document struct {
 	length   int
 }
 
+type bm25QueryTerm struct {
+	term string
+	freq int
+}
+
 type BM25 struct {
 	documents map[string]bm25Document
+	postings  map[string][]string
 	documentN float64
 	avgDocLen float64
 	docFreq   map[string]int
@@ -25,20 +31,26 @@ type BM25 struct {
 	b         float64
 }
 
-func newBM25(tokenLists map[string][]string) *BM25 {
+func newBM25(paths []string, tokenLists map[string][]string) *BM25 {
 	index := &BM25{
 		documents: make(map[string]bm25Document, len(tokenLists)),
+		postings:  make(map[string][]string),
 		docFreq:   make(map[string]int),
 		documentN: float64(len(tokenLists)),
 		k1:        defaultBM25K1,
 		b:         defaultBM25B,
 	}
-	if len(tokenLists) == 0 {
+	if len(paths) == 0 || len(tokenLists) == 0 {
 		return index
 	}
 
 	totalLength := 0
-	for docID, tokens := range tokenLists {
+	for _, docID := range paths {
+		tokens, ok := tokenLists[docID]
+		if !ok {
+			continue
+		}
+
 		termFreq := make(map[string]int, len(tokens))
 		seen := make(map[string]struct{}, len(tokens))
 		for _, token := range tokens {
@@ -48,6 +60,7 @@ func newBM25(tokenLists map[string][]string) *BM25 {
 			}
 			seen[token] = struct{}{}
 			index.docFreq[token]++
+			index.postings[token] = append(index.postings[token], docID)
 		}
 
 		length := len(tokens)
@@ -59,7 +72,7 @@ func newBM25(tokenLists map[string][]string) *BM25 {
 	return index
 }
 
-func (b *BM25) Score(queryTerms map[string]int, candidateID string) float64 {
+func (b *BM25) scoreQueryTerms(queryTerms []bm25QueryTerm, candidateID string) float64 {
 	if b == nil || len(queryTerms) == 0 || b.avgDocLen == 0 {
 		return 0
 	}
@@ -71,32 +84,57 @@ func (b *BM25) Score(queryTerms map[string]int, candidateID string) float64 {
 
 	norm := b.k1 * (1 - b.b + b.b*(float64(doc.length)/b.avgDocLen))
 	score := 0.0
-	for _, term := range sortedQueryTerms(queryTerms) {
-		queryFreq := queryTerms[term]
-		termFreq := doc.termFreq[term]
+	for _, queryTerm := range queryTerms {
+		termFreq := doc.termFreq[queryTerm.term]
 		if termFreq == 0 {
 			continue
 		}
 
-		idf := b.inverseDocumentFrequency(term)
+		idf := b.inverseDocumentFrequency(queryTerm.term)
 		numerator := float64(termFreq) * (b.k1 + 1)
 		denominator := float64(termFreq) + norm
-		score += idf * (numerator / denominator) * float64(queryFreq)
+		score += idf * (numerator / denominator) * float64(queryTerm.freq)
 	}
 
 	return score
 }
 
-func sortedQueryTerms(queryTerms map[string]int) []string {
+func (b *BM25) collectCandidateIDs(queryTerms []bm25QueryTerm, dst map[string]struct{}) {
+	if b == nil || len(queryTerms) == 0 || dst == nil {
+		return
+	}
+
+	for _, queryTerm := range queryTerms {
+		for _, candidateID := range b.postings[queryTerm.term] {
+			dst[candidateID] = struct{}{}
+		}
+	}
+}
+
+func (b *BM25) candidateEstimate(queryTerms []bm25QueryTerm) int {
+	if b == nil || len(queryTerms) == 0 {
+		return 0
+	}
+
+	estimate := 0
+	for _, queryTerm := range queryTerms {
+		estimate += len(b.postings[queryTerm.term])
+	}
+	return estimate
+}
+
+func sortedQueryTerms(queryTerms map[string]int) []bm25QueryTerm {
 	if len(queryTerms) == 0 {
 		return nil
 	}
 
-	terms := make([]string, 0, len(queryTerms))
-	for term := range queryTerms {
-		terms = append(terms, term)
+	terms := make([]bm25QueryTerm, 0, len(queryTerms))
+	for term, freq := range queryTerms {
+		terms = append(terms, bm25QueryTerm{term: term, freq: freq})
 	}
-	sort.Strings(terms)
+	sort.Slice(terms, func(i int, j int) bool {
+		return terms[i].term < terms[j].term
+	})
 	return terms
 }
 
@@ -113,7 +151,7 @@ func (b *BM25) inverseDocumentFrequency(term string) float64 {
 	return math.Log(1 + ((b.documentN - docFreq + 0.5) / (docFreq + 0.5)))
 }
 
-func termFrequency(tokens []string) map[string]int {
+func queryTerms(tokens []string) []bm25QueryTerm {
 	if len(tokens) == 0 {
 		return nil
 	}
@@ -123,5 +161,5 @@ func termFrequency(tokens []string) map[string]int {
 		freq[token]++
 	}
 
-	return freq
+	return sortedQueryTerms(freq)
 }

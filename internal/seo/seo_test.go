@@ -12,6 +12,10 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func buildJSONLDForTest(page model.PageData, note *model.Note) (template.JS, error) {
+	return buildJSONLD(page, note, Build(page, note))
+}
+
 func TestBuildSitemapSortsByRecencyThenSlugOrPathAndRequiresLastMod(t *testing.T) {
 	t.Parallel()
 
@@ -163,7 +167,7 @@ func TestBuildJSONLDIncludesArticleAndBreadcrumbListForNotePages(t *testing.T) {
 		Summary: "Summary fallback",
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}
@@ -229,7 +233,7 @@ func TestBuildJSONLDFallsBackToOrganizationAuthorWhenSiteAuthorMissing(t *testin
 		},
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}
@@ -272,7 +276,7 @@ func TestBuildJSONLDFallsBackToNoteLastModifiedWhenDateMissing(t *testing.T) {
 		},
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}
@@ -319,7 +323,7 @@ func TestBuildJSONLDReturnsBreadcrumbListWhenAuthorMissing(t *testing.T) {
 		},
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	assertArticleJSONLDError(t, err, "author")
 
 	payload := decodeJSONLD(t, jsonld)
@@ -360,7 +364,7 @@ func TestApplyCopiesPreSerializedJSONLDIntoPageData(t *testing.T) {
 		},
 	}
 
-	want, err := BuildJSONLD(page, note)
+	want, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}
@@ -429,7 +433,7 @@ func TestBuildJSONLDIncludesBreadcrumbListForNonNotePagesWithBreadcrumbs(t *test
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			jsonld, err := BuildJSONLD(tt.page, nil)
+			jsonld, err := buildJSONLDForTest(tt.page, nil)
 			if err != nil {
 				t.Fatalf("BuildJSONLD() error = %v", err)
 			}
@@ -454,7 +458,7 @@ func TestBuildJSONLDIncludesBreadcrumbListForNonNotePagesWithBreadcrumbs(t *test
 func TestBuildJSONLDOmitsPagesWithoutStructuredData(t *testing.T) {
 	t.Parallel()
 
-	got, err := BuildJSONLD(model.PageData{
+	got, err := buildJSONLDForTest(model.PageData{
 		Kind: model.PageIndex,
 		Site: model.SiteConfig{BaseURL: "https://example.com/blog/"},
 	}, nil)
@@ -464,6 +468,55 @@ func TestBuildJSONLDOmitsPagesWithoutStructuredData(t *testing.T) {
 
 	if got != "" {
 		t.Fatalf("BuildJSONLD() = %s, want empty string", got)
+	}
+}
+
+func TestBuildJSONLDOmitsBreadcrumbListWhenRenderLayerDoesNotProvideBreadcrumbs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		page model.PageData
+	}{
+		{
+			name: "index page",
+			page: model.PageData{
+				Kind:    model.PageIndex,
+				Site:    model.SiteConfig{BaseURL: "https://example.com/blog/", Title: "Field Notes"},
+				Title:   "Field Notes",
+				RelPath: "index.html",
+			},
+		},
+		{
+			name: "404 page",
+			page: model.PageData{
+				Kind:    model.Page404,
+				Site:    model.SiteConfig{BaseURL: "https://example.com/blog/"},
+				Title:   "Not found",
+				RelPath: "404.html",
+			},
+		},
+		{
+			name: "timeline homepage",
+			page: model.PageData{
+				Kind:    model.PageTimeline,
+				Site:    model.SiteConfig{BaseURL: "https://example.com/blog/"},
+				Title:   "Recent notes",
+				RelPath: "index.html",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := buildJSONLDForTest(tt.page, nil)
+			if err != nil {
+				t.Fatalf("BuildJSONLD() error = %v", err)
+			}
+			if got != "" {
+				t.Fatalf("BuildJSONLD() = %s, want empty string when breadcrumbs are not provided", got)
+			}
+		})
 	}
 }
 
@@ -492,7 +545,7 @@ func TestBuildJSONLDAvoidsDuplicateCanonicalBreadcrumb(t *testing.T) {
 		},
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}
@@ -531,7 +584,7 @@ func TestBuildJSONLDNormalizesEmptyCurrentPageBreadcrumbURL(t *testing.T) {
 		},
 	}
 
-	jsonld, err := BuildJSONLD(page, note)
+	jsonld, err := buildJSONLDForTest(page, note)
 	if err != nil {
 		t.Fatalf("BuildJSONLD() error = %v", err)
 	}

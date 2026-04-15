@@ -11,14 +11,20 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	xhtml "golang.org/x/net/html"
+	"golang.org/x/net/html/atom"
 )
 
 // DefaultPort is the default local preview port for obsite serve.
 const DefaultPort = 8080
 
-const liveReloadEndpoint = "/_livereload"
+const (
+	liveReloadEndpoint   = "/_livereload"
+	liveReloadQueryParam = "obsite-live-reload"
+)
 
-var liveReloadScript = []byte(`<script data-obsite-livereload>(function(){if(!window.EventSource){return;}var source=new EventSource("/_livereload");source.onmessage=function(event){if(event.data==="reload"){source.close();window.location.reload();}};})();</script>`)
+var liveReloadScript = []byte(`<script data-obsite-livereload>(function(){if(!window.EventSource){return;}var source=new EventSource("/_livereload?obsite-live-reload=1");source.onmessage=function(event){if(event.data==="reload"){source.close();window.location.reload();}};})();</script>`)
 
 // Server serves a generated Obsite output directory over HTTP.
 type Server struct {
@@ -108,7 +114,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cleanPath, _ := cleanRequestPath(r.URL.Path); cleanPath == liveReloadEndpoint && s.liveReload != nil {
+	if cleanPath, _ := cleanRequestPath(r.URL.Path); cleanPath == liveReloadEndpoint && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
 		s.serveLiveReload(w, r)
 		return
 	}
@@ -136,10 +142,17 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath string) {
-	cleanPath, hasTrailingSlash := cleanRequestPath(requestPath)
+	if isUnsafePreviewRequestPath(requestPath) {
+		return "", ""
+	}
+
+	cleanPath, _ := cleanRequestPath(requestPath)
 	resolvedPath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(cleanPath, "/")))
 	if cleanPath == "/" {
 		resolvedPath = s.outputPath
+	}
+	if !pathWithinRoot(s.outputPath, resolvedPath) {
+		return "", ""
 	}
 
 	info, err := os.Stat(resolvedPath)
@@ -151,14 +164,16 @@ func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath
 		if !hasIndexFile(resolvedPath) {
 			return "", ""
 		}
-		if cleanPath != "/" && !hasTrailingSlash {
-			return "", ensureTrailingSlash(cleanPath)
+
+		canonicalPath := ensureDirectoryPath(cleanPath)
+		if requestPath != canonicalPath {
+			return "", canonicalPath
 		}
 
-		return ensureDirectoryPath(cleanPath), ""
+		return canonicalPath, ""
 	}
 
-	if hasTrailingSlash && cleanPath != "/" {
+	if requestPath != cleanPath {
 		return "", cleanPath
 	}
 
@@ -197,6 +212,19 @@ func (s *Server) serveLiveReload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.liveReload.ServeHTTP(w, r)
+}
+
+func shouldServeLiveReloadRequest(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+
+	if r.URL.Query().Get(liveReloadQueryParam) == "1" {
+		return true
+	}
+
+	accept := strings.ToLower(strings.TrimSpace(r.Header.Get("Accept")))
+	return strings.Contains(accept, "text/event-stream")
 }
 
 func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, servePath string) {
@@ -309,6 +337,81 @@ func validatePort(port int) error {
 	return nil
 }
 
+func isUnsafePreviewRequestPath(requestPath string) bool {
+	normalized := normalizePreviewRequestPath(requestPath)
+	if normalized == "" {
+		return false
+	}
+
+	trimmed := strings.TrimLeft(normalized, "/")
+	return hasWindowsDriveRequestPrefix(trimmed) || hasUNCRequestPrefix(normalized)
+}
+
+func normalizePreviewRequestPath(requestPath string) string {
+	return strings.ReplaceAll(strings.TrimSpace(requestPath), `\`, "/")
+}
+
+func hasWindowsDriveRequestPrefix(value string) bool {
+	if len(value) < 3 || value[1] != ':' {
+		return false
+	}
+
+	first := value[0]
+	if (first < 'A' || first > 'Z') && (first < 'a' || first > 'z') {
+		return false
+	}
+
+	return value[2] == '/'
+}
+
+func hasUNCRequestPrefix(value string) bool {
+	if !strings.HasPrefix(value, "//") {
+		return false
+	}
+
+	trimmed := strings.TrimLeft(value, "/")
+	firstSep := strings.IndexByte(trimmed, '/')
+	if firstSep <= 0 {
+		return false
+	}
+
+	share := trimmed[firstSep+1:]
+	if share == "" {
+		return false
+	}
+
+	if secondSep := strings.IndexByte(share, '/'); secondSep >= 0 {
+		return secondSep > 0
+	}
+
+	return true
+}
+
+func pathWithinRoot(root string, candidate string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(candidate) == "" {
+		return false
+	}
+
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	absCandidate, err := filepath.Abs(candidate)
+	if err != nil {
+		return false
+	}
+
+	rel, err := filepath.Rel(absRoot, absCandidate)
+	if err != nil {
+		return false
+	}
+	if rel == "." {
+		return true
+	}
+
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 func normalizePort(port int) int {
 	if port == 0 {
 		return DefaultPort
@@ -322,28 +425,117 @@ func injectPreviewBaseHref(body []byte) []byte {
 		return body
 	}
 
-	lowerBody := bytes.ToLower(body)
-	if bytes.Contains(lowerBody, []byte("<base")) {
+	insertAt, baseStart, baseEnd, hasBase, ok := previewBaseRewriteRange(body)
+	if !ok {
 		return body
 	}
 
-	headStart := bytes.Index(lowerBody, []byte("<head"))
-	if headStart == -1 {
-		return body
+	if hasBase {
+		withBase := make([]byte, 0, len(body)-(baseEnd-baseStart)+len(`<base href="/">`))
+		withBase = append(withBase, body[:baseStart]...)
+		withBase = append(withBase, []byte(`<base href="/">`)...)
+		withBase = append(withBase, body[baseEnd:]...)
+
+		return withBase
 	}
 
-	headEnd := bytes.IndexByte(lowerBody[headStart:], '>')
-	if headEnd == -1 {
-		return body
-	}
-
-	insertAt := headStart + headEnd + 1
 	withBase := make([]byte, 0, len(body)+len("\n  <base href=\"/\">"))
 	withBase = append(withBase, body[:insertAt]...)
 	withBase = append(withBase, []byte("\n  <base href=\"/\">")...)
 	withBase = append(withBase, body[insertAt:]...)
 
 	return withBase
+}
+
+func previewBaseRewriteRange(body []byte) (insertAt int, baseStart int, baseEnd int, hasBase bool, ok bool) {
+	tokenizer := xhtml.NewTokenizer(bytes.NewReader(body))
+	offset := 0
+	inHead := false
+	implicitHead := false
+	templateDepth := 0
+	insertAt = -1
+
+	for {
+		tokenType := tokenizer.Next()
+		raw := tokenizer.Raw()
+		start := offset
+		end := start + len(raw)
+		offset = end
+
+		switch tokenType {
+		case xhtml.ErrorToken:
+			return insertAt, 0, 0, false, insertAt >= 0
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			if token.DataAtom == atom.Html || strings.EqualFold(token.Data, "html") {
+				if insertAt < 0 {
+					insertAt = end
+				}
+				if !inHead {
+					implicitHead = true
+				}
+				continue
+			}
+			if token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head") {
+				insertAt = end
+				if tokenType == xhtml.SelfClosingTagToken {
+					return insertAt, 0, 0, false, true
+				}
+				inHead = true
+				implicitHead = false
+				continue
+			}
+			if !inHead && !implicitHead {
+				continue
+			}
+
+			if implicitHead && templateDepth == 0 && (token.DataAtom == atom.Body || strings.EqualFold(token.Data, "body")) {
+				return insertAt, 0, 0, false, insertAt >= 0
+			}
+			if implicitHead && templateDepth == 0 && !isImplicitHeadElement(token) {
+				if insertAt < 0 {
+					insertAt = start
+				}
+				return insertAt, 0, 0, false, insertAt >= 0
+			}
+
+			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
+				if tokenType != xhtml.SelfClosingTagToken {
+					templateDepth++
+				}
+				continue
+			}
+
+			if templateDepth == 0 && (token.DataAtom == atom.Base || strings.EqualFold(token.Data, "base")) {
+				return insertAt, start, end, true, true
+			}
+		case xhtml.EndTagToken:
+			token := tokenizer.Token()
+			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
+				if templateDepth > 0 {
+					templateDepth--
+				}
+				continue
+			}
+
+			if inHead && templateDepth == 0 && (token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head")) {
+				return insertAt, 0, 0, false, true
+			}
+			if implicitHead && templateDepth == 0 && (token.DataAtom == atom.Html || strings.EqualFold(token.Data, "html")) {
+				return insertAt, 0, 0, false, insertAt >= 0
+			}
+		}
+	}
+}
+
+func isImplicitHeadElement(token xhtml.Token) bool {
+	name := strings.ToLower(strings.TrimSpace(token.Data))
+	switch name {
+	case "base", "basefont", "bgsound", "link", "meta", "noframes", "noscript", "script", "style", "template", "title":
+		return true
+	default:
+		return false
+	}
 }
 
 func injectLiveReloadScript(body []byte) []byte {

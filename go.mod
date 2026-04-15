@@ -16,7 +16,8 @@ require (
 	go.abhg.dev/goldmark/frontmatter v0.3.0
 	go.abhg.dev/goldmark/hashtag v0.4.0
 	go.abhg.dev/goldmark/wikilink v0.6.0
-	golang.org/x/net v0.52.0
+	golang.org/x/net v0.53.0
+	golang.org/x/text v0.36.0
 )
 
 require (
@@ -31,6 +32,5 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/tdewolff/parse/v2 v2.8.11 // indirect
 	github.com/vcaesar/cedar v0.30.0 // indirect
-	golang.org/x/sys v0.42.0 // indirect
-	golang.org/x/text v0.35.0 // indirect
+	golang.org/x/sys v0.43.0 // indirect
 )

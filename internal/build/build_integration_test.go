@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -25,11 +27,34 @@ import (
 func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
 	t.Parallel()
 
-	vaultPath := copyFixtureVault(t, "site-vault")
-	outputPath := filepath.Join(t.TempDir(), "site")
+	tests := []struct {
+		name                 string
+		insideVault          bool
+		verifyExistingOutput bool
+	}{
+		{name: "managed output outside vault"},
+		{name: "managed output inside vault", insideVault: true, verifyExistingOutput: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := copyFixtureVault(t, "site-vault")
+			outputPath := filepath.Join(t.TempDir(), "site")
+			if tt.insideVault {
+				outputPath = filepath.Join(vaultPath, "site")
+			}
+
+			testBuildIntegrationPublishedFixtureProducesDeployableSite(t, vaultPath, outputPath, tt.verifyExistingOutput)
+		})
+	}
+}
+
+func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, vaultPath string, outputPath string, verifyExistingOutput bool) {
+	cfg := testBuildSiteConfig()
 
 	var diagnostics bytes.Buffer
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
 		concurrency:       2,
 		diagnosticsWriter: &diagnostics,
 	})
@@ -44,6 +69,25 @@ func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
 	}
 	if result.TagPages != 3 {
 		t.Fatalf("result.TagPages = %d, want %d", result.TagPages, 3)
+	}
+	if verifyExistingOutput {
+		var rebuildDiagnostics bytes.Buffer
+		rebuildResult, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
+			concurrency:       2,
+			diagnosticsWriter: &rebuildDiagnostics,
+		})
+		if err != nil {
+			t.Fatalf("rebuild buildWithOptions() error = %v", err)
+		}
+		if rebuildResult == nil {
+			t.Fatal("rebuild buildWithOptions() = nil result, want build result")
+		}
+		if rebuildResult.NotePages != 0 {
+			t.Fatalf("rebuild result.NotePages = %d, want %d", rebuildResult.NotePages, 0)
+		}
+		if rebuildDiagnostics.String() != diagnostics.String() {
+			t.Fatalf("rebuild diagnostics summary = %q, want stable summary %q for inside-vault managed output", rebuildDiagnostics.String(), diagnostics.String())
+		}
 	}
 
 	for _, relPath := range []string{
@@ -65,6 +109,10 @@ func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
 		"assets/hero.png",
 		"assets/photo.png",
 		"assets/diagram.png",
+		"assets/obsite-runtime/katex.min.css",
+		"assets/obsite-runtime/katex.min.js",
+		"assets/obsite-runtime/auto-render.min.js",
+		"assets/obsite-runtime/mermaid.esm.min.mjs",
 	} {
 		_ = readBuildOutputFile(t, outputPath, relPath)
 	}
@@ -95,6 +143,46 @@ func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
 		`href=../tags/parent/child/`,
 	) {
 		t.Fatalf("launch-pad page missing nested tag URL\n%s", landingHTML)
+	}
+	for _, snippets := range [][]string{
+		{`<span class="hashtag"><a href="../tags/field/">#field</a></span>`, `<span class=hashtag><a href=../tags/field/>#field</a></span>`},
+		{`<span class="hashtag"><a href="../tags/parent/child/">#parent/child</a></span>`, `<span class=hashtag><a href=../tags/parent/child/>#parent/child</a></span>`},
+	} {
+		if !containsAny(landingHTML, snippets...) {
+			t.Fatalf("launch-pad page missing inline hashtag tag link %#v\n%s", snippets, landingHTML)
+		}
+	}
+	if containsAny(landingHTML,
+		`cdn.jsdelivr.net`,
+		`https://cdn`,
+	) {
+		t.Fatalf("launch-pad page unexpectedly references external CDN runtime assets\n%s", landingHTML)
+	}
+	for _, expected := range [][]string{
+		{`href="../assets/obsite-runtime/katex.min.css"`, `href=../assets/obsite-runtime/katex.min.css`},
+		{`src="../assets/obsite-runtime/katex.min.js"`, `src=../assets/obsite-runtime/katex.min.js`},
+		{`src="../assets/obsite-runtime/auto-render.min.js"`, `src=../assets/obsite-runtime/auto-render.min.js`},
+		{`..\/assets\/obsite-runtime\/mermaid.esm.min.mjs`},
+	} {
+		if !containsAny(landingHTML, expected...) {
+			t.Fatalf("launch-pad page missing local runtime asset reference %q\n%s", expected[0], landingHTML)
+		}
+	}
+	runtimeKatexCSS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/katex.min.css")
+	if !bytes.Contains(runtimeKatexCSS, []byte(".katex-display")) {
+		t.Fatalf("katex runtime CSS missing KaTeX display selectors\n%s", runtimeKatexCSS)
+	}
+	runtimeKatexJS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/katex.min.js")
+	for _, want := range [][]byte{[]byte("katex-display"), []byte("katex-html"), []byte("renderToString")} {
+		if !bytes.Contains(runtimeKatexJS, want) {
+			t.Fatalf("katex runtime JS missing %q\n%s", want, runtimeKatexJS)
+		}
+	}
+	runtimeMermaidJS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/mermaid.esm.min.mjs")
+	for _, want := range [][]byte{[]byte("http://www.w3.org/2000/svg"), []byte("mermaid-node"), []byte("mermaid-edge")} {
+		if !bytes.Contains(runtimeMermaidJS, want) {
+			t.Fatalf("mermaid runtime JS missing %q\n%s", want, runtimeMermaidJS)
+		}
 	}
 	if !containsAny(landingHTML,
 		`href="../duplicate-north/"`,
@@ -298,10 +386,13 @@ func TestBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T) {
 
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/launch-pad/", http.StatusOK, "Launch Pad")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/style.css", http.StatusOK, "")
-	heroBody := mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/hero.png", http.StatusOK, "")
-	if string(heroBody) != "hero-image" {
-		t.Fatalf("hero asset body = %q, want %q", string(heroBody), "hero-image")
-	}
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/katex.min.css", http.StatusOK, "")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/katex.min.js", http.StatusOK, "")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/auto-render.min.js", http.StatusOK, "")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/mermaid.esm.min.mjs", http.StatusOK, "")
+	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/hero.png", http.StatusOK, ""), 1200, 630, "hero.png")
+	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/photo.png", http.StatusOK, ""), 960, 640, "photo.png")
+	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/diagram.png", http.StatusOK, ""), 960, 540, "diagram.png")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/body-html/", http.StatusOK, "HTML fallback note")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/tags/parent/child/", http.StatusOK, "Tag archive")
 }
@@ -360,6 +451,7 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		t.Fatalf("os.ReadFile(%q) error = %v", configPath, err)
 	}
 	content := string(data)
+	expectedPagefindPath := filepath.Join(vaultPath, "tools", "pagefind_extended")
 	for _, want := range []string{
 		"# Obsite site configuration.",
 		"# baseURL must be the public site URL used for canonical links and sitemap entries.",
@@ -369,8 +461,9 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		"description: Notes published with obsite.",
 		"defaultPublish: true",
 		"search:",
-		"pagefindPath: pagefind_extended",
-		"pagefindVersion: 1.4.0",
+		"# pagefindPath points to the pagefind_extended executable used during build, relative to this obsite.yaml file.",
+		"pagefindPath: tools/pagefind_extended",
+		"pagefindVersion: 1.5.2",
 		"pagination:",
 		"pageSize: 20",
 		"related:",
@@ -387,10 +480,11 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		}
 	}
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
-		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
+	cfg := loadedCfg.Config
 	if cfg.BaseURL != "https://example.com/" {
 		t.Fatalf("cfg.BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/")
 	}
@@ -406,7 +500,7 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	if !cfg.DefaultPublish {
 		t.Fatal("cfg.DefaultPublish = false, want true")
 	}
-	if cfg.Search.PagefindPath != "pagefind_extended" || cfg.Search.PagefindVersion != "1.4.0" {
+	if cfg.Search.PagefindPath != expectedPagefindPath || cfg.Search.PagefindVersion != "1.5.2" {
 		t.Fatalf("cfg.Search = %#v, want default Pagefind settings", cfg.Search)
 	}
 	if cfg.Pagination.PageSize != 20 {
@@ -423,6 +517,98 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	}
 }
 
+func TestBuildIntegrationExternalConfigDirAutoDetectsCustomCSSAndResolvesRelativePagefindPath(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configDir := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(configDir, "obsite.yaml")
+	customCSSPath := filepath.Join(configDir, "custom.css")
+	expectedPagefindPath := filepath.Join(configDir, "tools", "pagefind_extended")
+
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
+title: Alpha
+date: 2026-04-06
+---
+# Alpha
+
+Body.
+`)
+	if err := os.WriteFile(customCSSPath, []byte("body { outline: 2px solid teal; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(expectedPagefindPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(expectedPagefindPath), err)
+	}
+	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
+		"title: External Config Site",
+		"baseURL: https://example.com/blog",
+		"search:",
+		"  enabled: true",
+		"  pagefindPath: tools/pagefind_extended",
+		"  pagefindVersion: 1.5.2",
+	}, "\n")+"\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	if err != nil {
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
+	}
+	cfg := loadedCfg.Config
+	if cfg.CustomCSS != customCSSPath {
+		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
+	}
+	if !loadedCfg.AllowMissingCustomCSS {
+		t.Fatal("loadedCfg.AllowMissingCustomCSS = false, want true for config-dir custom.css")
+	}
+	if cfg.Search.PagefindPath != expectedPagefindPath {
+		t.Fatalf("cfg.Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, expectedPagefindPath)
+	}
+
+	var lookPathCalls int
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
+		allowMissingCustomCSS: loadedCfg.AllowMissingCustomCSS,
+		pagefindLookPath: func(name string) (string, error) {
+			lookPathCalls++
+			if name != expectedPagefindPath {
+				t.Fatalf("pagefindLookPath() name = %q, want %q", name, expectedPagefindPath)
+			}
+			return expectedPagefindPath, nil
+		},
+		pagefindCommand: func(name string, args ...string) ([]byte, error) {
+			if name != expectedPagefindPath {
+				t.Fatalf("pagefindCommand() name = %q, want %q", name, expectedPagefindPath)
+			}
+			if len(args) == 1 && args[0] == "--version" {
+				return []byte("pagefind_extended 1.5.2\n"), nil
+			}
+			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
+				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
+			}
+			writeMinimalPagefindBundle(t, filepath.Join(args[1], pagefindOutputSubdir))
+			return []byte("Indexed 1 page\n"), nil
+		},
+	}); err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
+	}
+	if lookPathCalls != 1 {
+		t.Fatalf("pagefindLookPath() calls = %d, want %d", lookPathCalls, 1)
+	}
+
+	customCSS := readBuildOutputFile(t, outputPath, "assets/custom.css")
+	if !bytes.Contains(customCSS, []byte("outline: 2px solid teal")) {
+		t.Fatalf("assets/custom.css = %q, want copied config-dir custom stylesheet", string(customCSS))
+	}
+	_ = readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json")
+
+	alphaHTML := readBuildOutputFile(t, outputPath, "alpha/index.html")
+	if !containsAny(alphaHTML, `href="../assets/custom.css"`, `href=../assets/custom.css`) {
+		t.Fatalf("note page missing config-dir custom stylesheet link\n%s", alphaHTML)
+	}
+}
+
 func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) {
 	t.Parallel()
 
@@ -430,10 +616,11 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 	outputPath := filepath.Join(t.TempDir(), "site")
 	configPath := filepath.Join(vaultPath, "obsite.yaml")
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
-		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
+	cfg := loadedCfg.Config
 	if cfg.TemplateDir != filepath.Join(vaultPath, "templates") {
 		t.Fatalf("cfg.TemplateDir = %q, want %q", cfg.TemplateDir, filepath.Join(vaultPath, "templates"))
 	}
@@ -458,7 +645,7 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 				t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
 			}
 			if len(args) == 1 && args[0] == "--version" {
-				return []byte("pagefind_extended 1.4.0\n"), nil
+				return []byte("pagefind_extended 1.5.2\n"), nil
 			}
 			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
 				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
@@ -502,6 +689,8 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		if !regexp.MustCompile(`(?s)\bbody\s*\{[^}]*\boutline:\s*3px\s+solid\s+rgb\(12,\s*34,\s*56\)\s*;?[^}]*\}`).Match(customCSS) {
 			t.Fatalf("assets/custom.css missing body outline rule\n%s", customCSS)
 		}
+
+		assertPNGConfig(t, readBuildOutputFile(t, outputPath, "assets/cover.png"), 1280, 720, "cover.png")
 
 		rssXML := readBuildOutputFile(t, outputPath, "index.xml")
 		for _, want := range []string{
@@ -549,6 +738,7 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		updatedHTML := readBuildOutputFile(t, outputPath, "updated-story/index.html")
 
 		for _, snippets := range [][]string{
+			{`data-e2e-custom-note="updated-story"`, `data-e2e-custom-note=updated-story`},
 			{`data-theme-toggle`, `data-theme-toggle=""`},
 			{`__obsiteInitThemeToggle`, `window.__obsiteInitThemeToggle`},
 			{`localStorage.getItem(storageKey)`},
@@ -757,17 +947,311 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 	})
 }
 
+func TestBuildIntegrationFeatureFixtureExercisesNoteOnlyIncrementalRebuildWithSearchAndOverrides(t *testing.T) {
+	tests := []struct {
+		name        string
+		insideVault bool
+	}{
+		{name: "managed output outside vault"},
+		{name: "managed output inside vault", insideVault: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := copyFixtureVault(t, "feature-vault")
+			outputPath := filepath.Join(t.TempDir(), "site")
+			if tt.insideVault {
+				outputPath = filepath.Join(vaultPath, "site")
+			}
+
+			testBuildIntegrationFeatureFixtureExercisesNoteOnlyIncrementalRebuildWithSearchAndOverrides(t, vaultPath, outputPath)
+		})
+	}
+}
+
+func testBuildIntegrationFeatureFixtureExercisesNoteOnlyIncrementalRebuildWithSearchAndOverrides(t *testing.T, vaultPath string, outputPath string) {
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+
+	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	if err != nil {
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
+	}
+	cfg := loadedCfg.Config
+
+	pagefindVersionChecks := 0
+	pagefindIndexRuns := 0
+	options := func(writer io.Writer) buildOptions {
+		return buildOptions{
+			concurrency:       2,
+			diagnosticsWriter: writer,
+			pagefindLookPath: func(name string) (string, error) {
+				if name != cfg.Search.PagefindPath {
+					t.Fatalf("pagefindLookPath() name = %q, want %q", name, cfg.Search.PagefindPath)
+				}
+				return "/usr/local/bin/pagefind_extended", nil
+			},
+			pagefindCommand: func(name string, args ...string) ([]byte, error) {
+				if name != "/usr/local/bin/pagefind_extended" {
+					t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
+				}
+				if len(args) == 1 && args[0] == "--version" {
+					pagefindVersionChecks++
+					return []byte("pagefind_extended 1.5.2\n"), nil
+				}
+				if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
+					t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
+				}
+				pagefindIndexRuns++
+				bundlePath := filepath.Join(args[1], pagefindOutputSubdir)
+				writeMinimalPagefindBundle(t, bundlePath)
+				writeBuildTestFile(t, bundlePath, "pagefind-ui.js", fmt.Sprintf("window.PagefindUI=function(){return %d;};", pagefindIndexRuns))
+				return []byte("Indexed 5 pages\n"), nil
+			},
+		}
+	}
+
+	var firstDiagnostics bytes.Buffer
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, options(&firstDiagnostics))
+	if err != nil {
+		t.Fatalf("first buildWithOptions() error = %v", err)
+	}
+	if result == nil {
+		t.Fatal("first buildWithOptions() = nil result, want build result")
+	}
+	if result.NotePages != 5 {
+		t.Fatalf("first result.NotePages = %d, want %d", result.NotePages, 5)
+	}
+	if strings.TrimSpace(firstDiagnostics.String()) != "" {
+		t.Fatalf("first diagnostics summary = %q, want empty summary", firstDiagnostics.String())
+	}
+	if pagefindVersionChecks != 1 {
+		t.Fatalf("pagefind version checks after first build = %d, want %d", pagefindVersionChecks, 1)
+	}
+	if pagefindIndexRuns != 1 {
+		t.Fatalf("pagefind index runs after first build = %d, want %d", pagefindIndexRuns, 1)
+	}
+
+	baselineManifest := readBuildCacheManifest(t, outputPath)
+	baselineCustomCSS := append([]byte(nil), readBuildOutputFile(t, outputPath, "assets/custom.css")...)
+	baselinePagefindEntry := append([]byte(nil), readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json")...)
+	baselinePagefindUI := append([]byte(nil), readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js")...)
+	baselineIndexHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "index.html")...)
+	baselineTimelinePageTwoHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "page/2/index.html")...)
+	baselineTimelinePageThreeHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "page/3/index.html")...)
+	baselineTagPageOneHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "tags/field/index.html")...)
+	baselineTagPageTwoHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "tags/field/page/2/index.html")...)
+	baselineNotesIndexHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "notes/index.html")...)
+	baselineNotesPageTwoHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "notes/page/2/index.html")...)
+	baselineNotesPageThreeHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "notes/page/3/index.html")...)
+	baselineGardenIndexHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "notes/garden/index.html")...)
+	baselineGardenPageTwoHTML := append([]byte(nil), readBuildOutputFile(t, outputPath, "notes/garden/page/2/index.html")...)
+
+	t.Run("no-op rebuild", func(t *testing.T) {
+		getRenderedNotePaths := captureRenderedNotePagePaths(t)
+		getRenderedIndexPaths := captureRenderedIndexPagePaths(t)
+		getRenderedTagPaths := captureRenderedTagPagePaths(t)
+		getRenderedFolderPaths := captureRenderedFolderPagePaths(t)
+		getRenderedTimelinePaths := captureRenderedTimelinePagePaths(t)
+
+		var diagnostics bytes.Buffer
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, options(&diagnostics))
+		if err != nil {
+			t.Fatalf("second buildWithOptions() error = %v", err)
+		}
+		if result.NotePages != 0 {
+			t.Fatalf("second result.NotePages = %d, want %d", result.NotePages, 0)
+		}
+		if strings.TrimSpace(diagnostics.String()) != "" {
+			t.Fatalf("second diagnostics summary = %q, want empty summary", diagnostics.String())
+		}
+		assertRenderedArchivePageCalls(t, "note pages", getRenderedNotePaths(), nil)
+		assertRenderedArchivePageCalls(t, "index pages", getRenderedIndexPaths(), nil)
+		assertRenderedArchivePageCalls(t, "tag pages", getRenderedTagPaths(), nil)
+		assertRenderedArchivePageCalls(t, "folder pages", getRenderedFolderPaths(), nil)
+		assertRenderedArchivePageCalls(t, "timeline pages", getRenderedTimelinePaths(), nil)
+		if pagefindVersionChecks != 1 {
+			t.Fatalf("pagefind version checks after second build = %d, want %d", pagefindVersionChecks, 1)
+		}
+		if pagefindIndexRuns != 1 {
+			t.Fatalf("pagefind index runs after second build = %d, want %d", pagefindIndexRuns, 1)
+		}
+
+		manifest := readBuildCacheManifest(t, outputPath)
+		for _, relPath := range []string{
+			"index.html",
+			"page/2/index.html",
+			"page/3/index.html",
+			"tags/field/index.html",
+			"tags/field/page/2/index.html",
+			"notes/index.html",
+			"notes/page/2/index.html",
+			"notes/page/3/index.html",
+			"notes/garden/index.html",
+			"notes/garden/page/2/index.html",
+		} {
+			if manifest.Pages[relPath] != baselineManifest.Pages[relPath] {
+				t.Fatalf("manifest.Pages[%q] = %q, want stable signature %q on no-op rebuild", relPath, manifest.Pages[relPath], baselineManifest.Pages[relPath])
+			}
+		}
+		if got := readBuildOutputFile(t, outputPath, "assets/custom.css"); !bytes.Equal(got, baselineCustomCSS) {
+			t.Fatalf("assets/custom.css changed on no-op rebuild\nwant:\n%s\n\ngot:\n%s", baselineCustomCSS, got)
+		}
+		if got := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json"); !bytes.Equal(got, baselinePagefindEntry) {
+			t.Fatalf("_pagefind/pagefind-entry.json changed on no-op rebuild\nwant:\n%s\n\ngot:\n%s", baselinePagefindEntry, got)
+		}
+		if got := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js"); !bytes.Equal(got, baselinePagefindUI) {
+			t.Fatalf("_pagefind/pagefind-ui.js changed on no-op rebuild\nwant:\n%s\n\ngot:\n%s", baselinePagefindUI, got)
+		}
+		for _, tt := range []struct {
+			name string
+			path string
+			want []byte
+		}{
+			{name: "timeline page one", path: "index.html", want: baselineIndexHTML},
+			{name: "timeline page two", path: "page/2/index.html", want: baselineTimelinePageTwoHTML},
+			{name: "timeline page three", path: "page/3/index.html", want: baselineTimelinePageThreeHTML},
+			{name: "tag page one", path: "tags/field/index.html", want: baselineTagPageOneHTML},
+			{name: "tag page two", path: "tags/field/page/2/index.html", want: baselineTagPageTwoHTML},
+			{name: "notes folder page one", path: "notes/index.html", want: baselineNotesIndexHTML},
+			{name: "notes folder page two", path: "notes/page/2/index.html", want: baselineNotesPageTwoHTML},
+			{name: "notes folder page three", path: "notes/page/3/index.html", want: baselineNotesPageThreeHTML},
+			{name: "garden folder page one", path: "notes/garden/index.html", want: baselineGardenIndexHTML},
+			{name: "garden folder page two", path: "notes/garden/page/2/index.html", want: baselineGardenPageTwoHTML},
+		} {
+			if got := readBuildOutputFile(t, outputPath, tt.path); !bytes.Equal(got, tt.want) {
+				t.Fatalf("%s changed on no-op rebuild\nwant:\n%s\n\ngot:\n%s", tt.name, tt.want, got)
+			}
+		}
+	})
+
+	mutationPath := filepath.Join(vaultPath, "notes", "archive.md")
+	const mutatedArchive = `---
+title: Archive
+date: 2026-04-01
+---
+# Archive
+
+Archive entry captures a focused incremental rebuild probe with lighthouse ledger terms that stay isolated from the field-note corpus.
+`
+	if err := os.WriteFile(mutationPath, []byte(mutatedArchive), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", mutationPath, err)
+	}
+	fixtureStamp := time.Date(2026, time.April, 6, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(mutationPath, fixtureStamp, fixtureStamp); err != nil {
+		t.Fatalf("os.Chtimes(%q) error = %v", mutationPath, err)
+	}
+
+	t.Run("targeted mutation", func(t *testing.T) {
+		getRenderedNotePaths := captureRenderedNotePagePaths(t)
+		getRenderedIndexPaths := captureRenderedIndexPagePaths(t)
+		getRenderedTagPaths := captureRenderedTagPagePaths(t)
+		getRenderedFolderPaths := captureRenderedFolderPagePaths(t)
+		getRenderedTimelinePaths := captureRenderedTimelinePagePaths(t)
+
+		var diagnostics bytes.Buffer
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, options(&diagnostics))
+		if err != nil {
+			t.Fatalf("third buildWithOptions() error = %v", err)
+		}
+		if strings.TrimSpace(diagnostics.String()) != "" {
+			t.Fatalf("third diagnostics summary = %q, want empty summary", diagnostics.String())
+		}
+		if pagefindVersionChecks != 2 {
+			t.Fatalf("pagefind version checks after third build = %d, want %d", pagefindVersionChecks, 2)
+		}
+		if pagefindIndexRuns != 2 {
+			t.Fatalf("pagefind index runs after third build = %d, want %d", pagefindIndexRuns, 2)
+		}
+
+		assertRenderedArchivePageCalls(t, "note pages", getRenderedNotePaths(), []string{"notes/archive.md", "notes/garden/field-notes.md", "notes/garden/reference-guide.md", "notes/garden/updated-story.md", "notes/roadmap.md"})
+		assertRenderedArchivePageCalls(t, "index pages", getRenderedIndexPaths(), nil)
+		assertRenderedArchivePageCalls(t, "tag pages", getRenderedTagPaths(), nil)
+		assertRenderedArchivePageCalls(t, "folder pages", getRenderedFolderPaths(), []string{"notes/page/3/index.html"})
+		assertRenderedArchivePageCalls(t, "timeline pages", getRenderedTimelinePaths(), []string{"page/3/index.html"})
+		if result.NotePages != 5 {
+			t.Fatalf("third result.NotePages = %d, want %d", result.NotePages, 5)
+		}
+
+		manifest := readBuildCacheManifest(t, outputPath)
+		for _, relPath := range []string{"page/3/index.html", "notes/page/3/index.html"} {
+			if manifest.Pages[relPath] == baselineManifest.Pages[relPath] {
+				t.Fatalf("manifest.Pages[%q] = %q, want signature to change after targeted mutation", relPath, manifest.Pages[relPath])
+			}
+		}
+		for _, relPath := range []string{"index.html", "page/2/index.html", "tags/field/index.html", "tags/field/page/2/index.html", "notes/index.html", "notes/page/2/index.html", "notes/garden/index.html", "notes/garden/page/2/index.html"} {
+			if manifest.Pages[relPath] != baselineManifest.Pages[relPath] {
+				t.Fatalf("manifest.Pages[%q] = %q, want stable signature %q after targeted mutation", relPath, manifest.Pages[relPath], baselineManifest.Pages[relPath])
+			}
+		}
+
+		archiveHTML := readBuildOutputFile(t, outputPath, "archive/index.html")
+		if !bytes.Contains(archiveHTML, []byte("focused incremental rebuild probe")) {
+			t.Fatalf("archive page missing mutated copy\n%s", archiveHTML)
+		}
+		if !containsAny(archiveHTML, `href="../assets/custom.css"`, `href=../assets/custom.css`) {
+			t.Fatalf("archive page missing retained custom stylesheet link\n%s", archiveHTML)
+		}
+
+		timelinePageThreeHTML := readBuildOutputFile(t, outputPath, "page/3/index.html")
+		if bytes.Equal(timelinePageThreeHTML, baselineTimelinePageThreeHTML) {
+			t.Fatalf("page/3/index.html did not change after targeted mutation")
+		}
+		if !bytes.Contains(timelinePageThreeHTML, []byte("focused incremental rebuild probe")) {
+			t.Fatalf("page/3/index.html missing mutated summary\n%s", timelinePageThreeHTML)
+		}
+		if !containsAny(timelinePageThreeHTML, `data-obsite-search-ui`) {
+			t.Fatalf("page/3/index.html missing search UI after targeted mutation\n%s", timelinePageThreeHTML)
+		}
+
+		notesPageThreeHTML := readBuildOutputFile(t, outputPath, "notes/page/3/index.html")
+		if !containsAny(notesPageThreeHTML, `data-e2e-custom-folder="notes"`, `data-e2e-custom-folder=notes`) {
+			t.Fatalf("notes/page/3/index.html missing folder override marker after targeted mutation\n%s", notesPageThreeHTML)
+		}
+		if !containsAny(notesPageThreeHTML, `href="../../../archive/"`, `href=../../../archive/`) {
+			t.Fatalf("notes/page/3/index.html missing archive link after targeted mutation\n%s", notesPageThreeHTML)
+		}
+
+		if got := readBuildOutputFile(t, outputPath, "assets/custom.css"); !bytes.Equal(got, baselineCustomCSS) {
+			t.Fatalf("assets/custom.css changed after targeted mutation\nwant:\n%s\n\ngot:\n%s", baselineCustomCSS, got)
+		}
+		if got := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json"); !bytes.Equal(got, baselinePagefindEntry) {
+			t.Fatalf("_pagefind/pagefind-entry.json changed unexpectedly after targeted mutation\nwant:\n%s\n\ngot:\n%s", baselinePagefindEntry, got)
+		}
+		if got := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js"); bytes.Equal(got, baselinePagefindUI) {
+			t.Fatalf("_pagefind/pagefind-ui.js did not change after targeted mutation")
+		}
+		for _, tt := range []struct {
+			name string
+			path string
+			want []byte
+		}{
+			{name: "timeline page one", path: "index.html", want: baselineIndexHTML},
+			{name: "timeline page two", path: "page/2/index.html", want: baselineTimelinePageTwoHTML},
+			{name: "tag page one", path: "tags/field/index.html", want: baselineTagPageOneHTML},
+			{name: "tag page two", path: "tags/field/page/2/index.html", want: baselineTagPageTwoHTML},
+			{name: "notes folder page one", path: "notes/index.html", want: baselineNotesIndexHTML},
+			{name: "notes folder page two", path: "notes/page/2/index.html", want: baselineNotesPageTwoHTML},
+			{name: "garden folder page one", path: "notes/garden/index.html", want: baselineGardenIndexHTML},
+		} {
+			if got := readBuildOutputFile(t, outputPath, tt.path); !bytes.Equal(got, tt.want) {
+				t.Fatalf("%s changed unexpectedly after targeted mutation\nwant:\n%s\n\ngot:\n%s", tt.name, tt.want, got)
+			}
+		}
+	})
+}
+
 func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T) {
 	t.Parallel()
-
 	vaultPath := copyFixtureVault(t, "feature-vault")
 	outputPath := filepath.Join(t.TempDir(), "site")
 	configPath := filepath.Join(vaultPath, "obsite.yaml")
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
-		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
+	cfg := loadedCfg.Config
 	cfg.Search.Enabled = false
 	cfg.Timeline.Enabled = true
 	cfg.Timeline.AsHomepage = false
@@ -807,6 +1291,18 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 		t.Fatalf("homepage unexpectedly rendered timeline layout\n%s", indexHTML)
 	}
 
+	styleCSS := readBuildOutputFile(t, outputPath, "style.css")
+	for _, want := range []string{
+		`.pagination-nav{`,
+		`.pagination-pages{`,
+		`.pagination-pages li{`,
+		`.pagination-link,.pagination-page{`,
+	} {
+		if !bytes.Contains(styleCSS, []byte(want)) {
+			t.Fatalf("style.css missing %q\n%s", want, styleCSS)
+		}
+	}
+
 	timelineHTML := readBuildOutputFile(t, outputPath, "timeline/index.html")
 	if !containsAny(timelineHTML,
 		`body class=kind-timeline`,
@@ -835,6 +1331,19 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 			t.Fatalf("timeline/page/2 missing one of %#v\n%s", snippets, timelinePageTwoHTML)
 		}
 	}
+	for _, snippets := range [][]string{
+		{`class="pagination-nav"`, `class=pagination-nav`},
+		{`class="pagination-pages"`, `class=pagination-pages`},
+		{`class="pagination-page" aria-current="page">2</span>`, `class=pagination-page aria-current=page>2</span>`},
+	} {
+		if !containsAny(timelinePageTwoHTML, snippets...) {
+			t.Fatalf("timeline/page/2 missing pagination structure %#v\n%s", snippets, timelinePageTwoHTML)
+		}
+	}
+	assertBreadcrumbListItems(t, mustJSONLDPayloads(t, timelinePageTwoHTML), []internalmodel.Breadcrumb{
+		{Name: "Home", URL: "https://example.com/blog/"},
+		{Name: "Notes", URL: "https://example.com/blog/timeline/page/2/"},
+	})
 
 	notesFolderHTML := readBuildOutputFile(t, outputPath, "notes/index.html")
 	if !containsAny(notesFolderHTML,
@@ -842,6 +1351,15 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 		`data-e2e-custom-folder=notes`,
 	) {
 		t.Fatalf("notes folder page missing override marker while standalone timeline route exists\n%s", notesFolderHTML)
+	}
+	for _, snippets := range [][]string{
+		{`class="pagination-nav"`, `class=pagination-nav`},
+		{`class="pagination-pages"`, `class=pagination-pages`},
+		{`href="page/2/" rel="next">Next</a>`, `href=page/2/ rel=next>Next</a>`},
+	} {
+		if !containsAny(notesFolderHTML, snippets...) {
+			t.Fatalf("notes/index missing pagination markup %#v\n%s", snippets, notesFolderHTML)
+		}
 	}
 
 	sitemapXML := readBuildOutputFile(t, outputPath, "sitemap.xml")
@@ -911,6 +1429,71 @@ func TestBuildIntegrationSlugConflictFixtureReportsFatalDiagnostics(t *testing.T
 	}
 	if strings.Contains(summary, "Warnings (") {
 		t.Fatalf("diagnostics summary unexpectedly reports warnings\n%s", summary)
+	}
+}
+
+func TestBuildIntegrationSlugConflictFixturePreservesPublishedOutputOnFailure(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		insideVault bool
+	}{
+		{name: "managed output outside vault"},
+		{name: "managed output inside vault", insideVault: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := copyFixtureVault(t, "slug-conflict-vault")
+			outputPath := filepath.Join(t.TempDir(), "site")
+			if tt.insideVault {
+				outputPath = filepath.Join(vaultPath, "site")
+			}
+
+			if err := writeManagedOutputMarker(outputPath); err != nil {
+				t.Fatalf("writeManagedOutputMarker(%q) error = %v", outputPath, err)
+			}
+			preservedIndex := []byte("<!doctype html><html><body>published home</body></html>")
+			preservedPage := []byte("<!doctype html><html><body>published page</body></html>")
+			writeBuildTestFile(t, outputPath, "index.html", string(preservedIndex))
+			writeBuildTestFile(t, outputPath, "published/index.html", string(preservedPage))
+
+			var diagnostics bytes.Buffer
+			result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: &diagnostics})
+			if err == nil {
+				t.Fatal("buildWithOptions() error = nil, want slug conflict failure")
+			}
+			if !strings.Contains(err.Error(), `slug conflict for "alpha"`) {
+				t.Fatalf("buildWithOptions() error = %v, want folder-vs-note slug conflict", err)
+			}
+			if result == nil {
+				t.Fatal("buildWithOptions() = nil result, want diagnostics-bearing result")
+			}
+
+			if got := readBuildOutputFile(t, outputPath, "index.html"); !bytes.Equal(got, preservedIndex) {
+				t.Fatalf("index.html changed after slug-conflict rollback\nwant:\n%s\n\ngot:\n%s", preservedIndex, got)
+			}
+			if got := readBuildOutputFile(t, outputPath, "published/index.html"); !bytes.Equal(got, preservedPage) {
+				t.Fatalf("published/index.html changed after slug-conflict rollback\nwant:\n%s\n\ngot:\n%s", preservedPage, got)
+			}
+			if _, err := os.Stat(filepath.Join(outputPath, managedOutputMarkerFilename)); err != nil {
+				t.Fatalf("os.Stat(output marker) error = %v, want managed marker preserved after rollback", err)
+			}
+			assertPathMissing(t, filepath.Join(outputPath, "alpha", "index.html"))
+			assertPathMissing(t, filepath.Join(outputPath, "alpha", "nested", "index.html"))
+
+			if matches, err := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "stage"))); err != nil {
+				t.Fatalf("filepath.Glob(stage pattern) error = %v", err)
+			} else if len(matches) != 0 {
+				t.Fatalf("staged output paths = %#v, want none after slug-conflict rollback", matches)
+			}
+			if matches, err := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup"))); err != nil {
+				t.Fatalf("filepath.Glob(backup pattern) error = %v", err)
+			} else if len(matches) != 0 {
+				t.Fatalf("backup output paths = %#v, want none after pre-publish slug-conflict failure", matches)
+			}
+		})
 	}
 }
 
@@ -991,13 +1574,28 @@ func mustHTTPResponse(t *testing.T, client *http.Client, url string) (*http.Resp
 	if err != nil {
 		t.Fatalf("GET %s error = %v", url, err)
 	}
-	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
+	closeErr := resp.Body.Close()
 	if err != nil {
 		t.Fatalf("io.ReadAll(%s) error = %v", url, err)
 	}
+	if closeErr != nil {
+		t.Fatalf("resp.Body.Close() error = %v", closeErr)
+	}
 	return resp, body
+}
+
+func assertPNGConfig(t *testing.T, data []byte, wantWidth int, wantHeight int, label string) {
+	t.Helper()
+
+	config, err := png.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("png.DecodeConfig(%s) error = %v", label, err)
+	}
+	if config.Width != wantWidth || config.Height != wantHeight {
+		t.Fatalf("%s dimensions = %dx%d, want %dx%d", label, config.Width, config.Height, wantWidth, wantHeight)
+	}
 }
 
 func htmlHead(t *testing.T, document []byte) []byte {

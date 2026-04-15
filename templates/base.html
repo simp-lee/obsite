@@ -5,6 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{if .Title}}{{.Title}}{{if and .Site.Title (ne .Title .Site.Title)}} · {{.Site.Title}}{{end}}{{else if .Site.Title}}{{.Site.Title}}{{else}}Untitled Site{{end}}</title>
+  {{if eq .Kind "404"}}<base href="{{siteBasePath .Site.BaseURL}}">{{end}}
   {{with .Description}}<meta name="description" content="{{.}}">{{end}}
   {{with .Site.Author}}<meta name="author" content="{{.}}">{{end}}
   {{with .Canonical}}<link rel="canonical" href="{{.}}">{{end}}
@@ -26,15 +27,41 @@
 
   <script>
     (function () {
-      var storageKey = "theme";
+      var storageKey = "obsite.theme.v1:{{siteBasePath .Site.BaseURL}}";
+      var legacyStorageKey = "theme";
       var root = document.documentElement;
       var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+      function isStoredTheme(value) {
+        return value === "light" || value === "dark";
+      }
+
+      function migrateStoredTheme(value) {
+        if (!isStoredTheme(value)) {
+          return "";
+        }
+
+        try {
+          localStorage.setItem(storageKey, value);
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+
+        return value;
+      }
 
       function readStoredTheme() {
         try {
           var value = localStorage.getItem(storageKey);
-          if (value === "light" || value === "dark") {
+          if (isStoredTheme(value)) {
             return value;
+          }
+
+          value = localStorage.getItem(legacyStorageKey);
+          if (isStoredTheme(value)) {
+            return migrateStoredTheme(value);
           }
         } catch (error) {
         }
@@ -99,6 +126,9 @@
         var nextTheme = resolveTheme(readStoredTheme()) === "dark" ? "light" : "dark";
         try {
           localStorage.setItem(storageKey, nextTheme);
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
         } catch (error) {
         }
 
@@ -129,9 +159,9 @@
   {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
 
   {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
-  <link rel="stylesheet" href="{{.Site.KaTeXCSSURL}}">
-  <script defer src="{{.Site.KaTeXJSURL}}"></script>
-  <script defer src="{{.Site.KaTeXAutoRenderURL}}"></script>
+  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel .Site.KaTeXCSSURL}}">
+  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXJSURL}}"></script>
+  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXAutoRenderURL}}"></script>
   <script>
     document.addEventListener("DOMContentLoaded", function () {
       var target = document.querySelector("[data-page-content]");
@@ -150,7 +180,7 @@
 
   {{if and .HasMermaid .Site.MermaidJSURL}}
   <script type="module">
-    import mermaid from "{{.Site.MermaidJSURL}}";
+    import mermaid from "{{pageAssetURL .SiteRootRel .Site.MermaidJSURL}}";
 
     mermaid.initialize({
       startOnLoad: true,
@@ -193,7 +223,7 @@
         {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}
         {{if .HasSearch}}
         <div class="site-search" data-obsite-search-ui="true">
-          <div id="search"></div>
+          <div id="obsite-search-root"></div>
         </div>
         {{end}}
       </div>
@@ -249,7 +279,8 @@
       var toggle = document.querySelector("[data-sidebar-toggle]");
       var closeButton = document.querySelector("[data-sidebar-close]");
       var overlay = document.querySelector("[data-sidebar-overlay]");
-      var storageKey = "obsite.sidebar.expanded.v1";
+      var storageKey = "obsite.sidebar.expanded.v1:{{siteBasePath .Site.BaseURL}}";
+      var legacyStorageKey = "obsite.sidebar.expanded.v1";
       var media = window.matchMedia ? window.matchMedia("(max-width: 56rem)") : null;
       var siteRootRel = root ? root.getAttribute("data-site-root-rel") || "./" : "./";
       var popoverEnabled = {{if .Site.Popover.Enabled}}true{{else}}false{{end}};
@@ -465,21 +496,62 @@
         return false;
       }
 
+      function parseExpandedState(raw) {
+        var parsed = null;
+
+        if (!raw) {
+          return null;
+        }
+
+        try {
+          parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed;
+          }
+        } catch (error) {
+        }
+
+        return null;
+      }
+
+      function migrateExpandedState(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return {};
+        }
+
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(value));
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+
+        return value;
+      }
+
       function readExpandedState() {
         var raw = "";
         var parsed = null;
 
         try {
           raw = localStorage.getItem(storageKey) || "";
-          if (!raw) {
-            return {};
-          }
-
-          parsed = JSON.parse(raw);
-          if (parsed && typeof parsed === "object") {
-            return parsed;
-          }
         } catch (error) {
+        }
+
+        parsed = parseExpandedState(raw);
+        if (parsed) {
+          return parsed;
+        }
+
+        try {
+          raw = localStorage.getItem(legacyStorageKey) || "";
+        } catch (error) {
+        }
+
+        parsed = parseExpandedState(raw);
+        if (parsed) {
+          return migrateExpandedState(parsed);
         }
 
         return {};
@@ -488,6 +560,9 @@
       function persistExpandedState() {
         try {
           localStorage.setItem(storageKey, JSON.stringify(expanded));
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
         } catch (error) {
         }
       }
@@ -788,7 +863,7 @@
   {{if .HasSearch}}
   <script src="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>
   <script data-obsite-search-ui="true">
-    new PagefindUI({ element: "#search" });
+    new PagefindUI({ element: "#obsite-search-root" });
   </script>
   {{end}}
 </body>

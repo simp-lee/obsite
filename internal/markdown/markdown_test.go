@@ -186,6 +186,83 @@ func TestNewParserAssignsHeadingIDsFromVisibleText(t *testing.T) {
 	}
 }
 
+func TestNewParserPass1HeadingIDsIgnoreInvisibleRawHTMLAndPreserveEntities(t *testing.T) {
+	t.Parallel()
+
+	md := NewParser(diag.NewCollector())
+	source := []byte("# Hello <script>alert(1)</script><style>.x{}</style><template><span>Ghost</span></template><span hidden>Skip <span>Deeper</span></span><span>&amp;lt;</span> World\n")
+	doc := md.Parser().Parse(text.NewReader(source))
+	headings := collectHeadings(t, doc)
+	if len(headings) != 1 {
+		t.Fatalf("heading count = %d, want 1", len(headings))
+	}
+
+	id, ok := headings[0].AttributeString("id")
+	if !ok {
+		t.Fatal("heading missing id attribute")
+	}
+
+	idBytes, ok := id.([]byte)
+	if !ok {
+		t.Fatalf("heading id type = %T, want []byte", id)
+	}
+	if got := string(idBytes); got != "hello-lt-world" {
+		t.Fatalf("heading id = %q, want %q", got, "hello-lt-world")
+	}
+	if got := VisibleHeadingText(headings[0], source); got != "Hello &lt; World" {
+		t.Fatalf("heading visible text = %q, want %q", got, "Hello &lt; World")
+	}
+}
+
+func TestNewParserPass1HeadingIDsPreserveBrowserVisibleTextAcrossVoidRawHTMLTags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		source      string
+		wantID      string
+		wantVisible string
+	}{
+		{name: "after-visible-span", source: "# Hello <span>Alpha</span>&amp;lt; World\n", wantID: "hello-alpha-lt-world", wantVisible: "Hello Alpha&lt; World"},
+		{name: "after-hidden-span", source: "# Hello <span hidden>Ghost</span>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+		{name: "br", source: "# Hello <br>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+		{name: "hr", source: "# Hello <hr>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+		{name: "br-self-closing", source: "# Hello <br/>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+		{name: "hr-self-closing", source: "# Hello <hr/>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+		{name: "hidden-img", source: "# Hello <img hidden>&amp;lt; World\n", wantID: "hello-lt-world", wantVisible: "Hello &lt; World"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			md := NewParser(diag.NewCollector())
+			source := []byte(tt.source)
+			doc := md.Parser().Parse(text.NewReader(source))
+			headings := collectHeadings(t, doc)
+			if len(headings) != 1 {
+				t.Fatalf("heading count = %d, want 1", len(headings))
+			}
+
+			id, ok := headings[0].AttributeString("id")
+			if !ok {
+				t.Fatal("heading missing id attribute")
+			}
+
+			idBytes, ok := id.([]byte)
+			if !ok {
+				t.Fatalf("heading id type = %T, want []byte", id)
+			}
+			if got := string(idBytes); got != tt.wantID {
+				t.Fatalf("heading id = %q, want %q", got, tt.wantID)
+			}
+			if got := VisibleHeadingText(headings[0], source); got != tt.wantVisible {
+				t.Fatalf("heading visible text = %q, want %q", got, tt.wantVisible)
+			}
+		})
+	}
+}
+
 func TestNewMarkdownMermaidRendererMarksNote(t *testing.T) {
 	t.Parallel()
 
@@ -246,6 +323,36 @@ func TestNewMarkdownMermaidEscapesSourceAndKeepsFallbackForOtherFences(t *testin
 	}
 }
 
+func TestNewMarkdownResolvesInlineHashtagsToTagPages(t *testing.T) {
+	t.Parallel()
+
+	idx := &model.VaultIndex{
+		Tags: map[string]*model.Tag{
+			"field":        {Name: "field", Slug: "tags/field"},
+			"parent/child": {Name: "parent/child", Slug: "tags/parent/child"},
+		},
+	}
+	note := &model.Note{Slug: "launch-pad", RelPath: "notes/launch-pad.md"}
+	md, _ := NewMarkdown(idx, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("Inline tags #field and #parent/child stay linked while #missing stays plain.\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<span class="hashtag"><a href="../tags/field/">#field</a></span>`) {
+		t.Fatalf("HTML = %q, want inline field hashtag link", html)
+	}
+	if !strings.Contains(html, `<span class="hashtag"><a href="../tags/parent/child/">#parent/child</a></span>`) {
+		t.Fatalf("HTML = %q, want inline nested hashtag link", html)
+	}
+	if !strings.Contains(html, `<span class="hashtag">#missing</span>`) {
+		t.Fatalf("HTML = %q, want unresolved hashtag to remain plain text", html)
+	}
+}
+
 func TestNewMarkdownRewritesImagesRegistersAssetsAndLazyLoadsAfterFirst(t *testing.T) {
 	t.Parallel()
 
@@ -281,6 +388,27 @@ func TestNewMarkdownRewritesImagesRegistersAssetsAndLazyLoadsAfterFirst(t *testi
 	wantRegistered := []string{"images/hero.png", "images/chart.png"}
 	if !reflect.DeepEqual(sink.registered, wantRegistered) {
 		t.Fatalf("registered = %#v, want %#v", sink.registered, wantRegistered)
+	}
+}
+
+func TestNewMarkdownEscapesCodeSpanQuotesInImageAltAttributes(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("![code `\" onerror=alert(1) x=\"`](hero.png)\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<img src="hero.png" alt="code &#34; onerror=alert(1) x=&#34;">`) {
+		t.Fatalf("HTML = %q, want code span quotes escaped inside alt attribute", html)
+	}
+	if strings.Contains(html, `alt="code " onerror=`) {
+		t.Fatalf("HTML = %q, want quoted payload to remain inside escaped alt text", html)
 	}
 }
 
@@ -831,6 +959,60 @@ func TestNewMarkdownPassesThroughRawHTML(t *testing.T) {
 	}
 }
 
+// AC-3: 支持 CommonMark/GFM 基线能力，包括表格、删除线、任务列表、脚注、fenced code blocks，并在正文透传 raw HTML
+func TestNewMarkdownRendersCommonMarkAndGFMBaselineFeatures(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "posts/gfm-baseline", RelPath: "notes/gfm-baseline.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("| Feature | Status |\n| --- | --- |\n| Table | Ready |\n\n~~deprecated~~ and <sup>raw</sup>\n\n- [x] shipped\n- [ ] pending\n\n```go\nfmt.Println(\"hi\")\n```\n\nFootnote ref[^1]\n\n[^1]: Footnote body.\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	for _, fragment := range []string{
+		`<table>`,
+		`<th>Feature</th>`,
+		`<td>Ready</td>`,
+		`<del>deprecated</del>`,
+		`<sup>raw</sup>`,
+		`<pre`,
+		`<code`,
+		`href="#fn:1"`,
+		`id="fn:1"`,
+		`Footnote body.`,
+	} {
+		if !strings.Contains(html, fragment) {
+			t.Fatalf("HTML = %q, want fragment %q", html, fragment)
+		}
+	}
+
+	if strings.Contains(html, `&lt;sup&gt;raw&lt;/sup&gt;`) {
+		t.Fatalf("HTML = %q, want inline raw HTML to pass through instead of being escaped", html)
+	}
+	if count := strings.Count(html, `type="checkbox"`); count != 2 {
+		t.Fatalf("checkbox input count = %d, want %d\n%s", count, 2, html)
+	}
+	if count := strings.Count(html, `disabled=""`); count != 2 {
+		t.Fatalf("disabled checkbox count = %d, want %d\n%s", count, 2, html)
+	}
+	if count := strings.Count(html, `checked=""`); count != 1 {
+		t.Fatalf("checked checkbox count = %d, want %d\n%s", count, 1, html)
+	}
+	if !strings.Contains(html, `fmt`) || !strings.Contains(html, `Println`) {
+		t.Fatalf("HTML = %q, want fenced code block content preserved", html)
+	}
+	if !strings.Contains(html, `class="footnotes"`) {
+		t.Fatalf("HTML = %q, want rendered footnotes section", html)
+	}
+	if strings.Contains(html, `[^1]`) {
+		t.Fatalf("HTML = %q, want footnote syntax rendered instead of kept as literal markdown", html)
+	}
+}
+
 func TestNewMarkdownRendersHeadingIDsWithoutPermalinkUI(t *testing.T) {
 	t.Parallel()
 
@@ -865,7 +1047,7 @@ func TestNewMarkdownRendersVisibleHeadingIDs(t *testing.T) {
 	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
 
 	var buf bytes.Buffer
-	source := []byte("# Intro *Bold*\n\n## [[Target Page|Shown Label]]\n\n### 中文 标题\n")
+	source := []byte("# Intro *Bold*\n\n## [[Target Page|Shown Label]]\n\n### 中文 标题\n\n#### RFC <sup>2</sup> and <span>Alpha</span>\n")
 	if err := md.Convert(source, &buf); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -875,10 +1057,250 @@ func TestNewMarkdownRendersVisibleHeadingIDs(t *testing.T) {
 		`<h1 id="intro-bold">Intro <em>Bold</em></h1>`,
 		`<h2 id="shown-label">`,
 		`<h3 id="中文-标题">中文 标题</h3>`,
+		`<h4 id="rfc-2-and-alpha">RFC <sup>2</sup> and <span>Alpha</span></h4>`,
 	} {
 		if !strings.Contains(html, fragment) {
 			t.Fatalf("HTML = %q, want fragment %q", html, fragment)
 		}
+	}
+}
+
+func TestNewMarkdownRendersRawHTMLHeadingIDsFromBrowserVisibleText(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "posts/headings-raw-html", RelPath: "notes/headings-raw-html.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("# Hello <script>alert(1)</script><style>.x{}</style><template><span>Ghost</span></template><span hidden>Skip <span>Deeper</span></span><span>&amp;lt;</span> World\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<h1 id="hello-lt-world">`) {
+		t.Fatalf("HTML = %q, want raw-HTML heading id derived from browser-visible text", html)
+	}
+}
+
+func TestNewMarkdownRendersVoidRawHTMLHeadingIDsFromBrowserVisibleText(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		source        string
+		noteSlug      string
+		noteRelPath   string
+		wantID        string
+		wantFragments []string
+	}{
+		{
+			name:        "after-visible-span",
+			source:      "# Hello <span>Alpha</span>&amp;lt; World\n",
+			noteSlug:    "posts/headings-after-visible-span",
+			noteRelPath: "notes/headings-after-visible-span.md",
+			wantID:      "hello-alpha-lt-world",
+			wantFragments: []string{
+				`<h1 id="hello-alpha-lt-world">Hello <span>Alpha</span>&amp;lt; World</h1>`,
+			},
+		},
+		{
+			name:        "after-hidden-span",
+			source:      "# Hello <span hidden>Ghost</span>&amp;lt; World\n",
+			noteSlug:    "posts/headings-after-hidden-span",
+			noteRelPath: "notes/headings-after-hidden-span.md",
+			wantID:      "hello-lt-world",
+			wantFragments: []string{
+				`<h1 id="hello-lt-world">Hello <span hidden>Ghost</span>&amp;lt; World</h1>`,
+			},
+		},
+		{
+			name:          "br",
+			source:        "# Hello <br>&amp;lt; World\n",
+			noteSlug:      "posts/headings-void-br",
+			noteRelPath:   "notes/headings-void-br.md",
+			wantID:        "hello-lt-world",
+			wantFragments: []string{`<h1 id="hello-lt-world">Hello <br>&amp;lt; World</h1>`},
+		},
+		{
+			name:          "hr",
+			source:        "# Hello <hr>&amp;lt; World\n",
+			noteSlug:      "posts/headings-void-hr",
+			noteRelPath:   "notes/headings-void-hr.md",
+			wantID:        "hello-lt-world",
+			wantFragments: []string{`<h1 id="hello-lt-world">Hello <hr>&amp;lt; World</h1>`},
+		},
+		{
+			name:          "br-self-closing",
+			source:        "# Hello <br/>&amp;lt; World\n",
+			noteSlug:      "posts/headings-void-br-self-closing",
+			noteRelPath:   "notes/headings-void-br-self-closing.md",
+			wantID:        "hello-lt-world",
+			wantFragments: []string{`<h1 id="hello-lt-world">Hello <br/>&amp;lt; World</h1>`},
+		},
+		{
+			name:          "hr-self-closing",
+			source:        "# Hello <hr/>&amp;lt; World\n",
+			noteSlug:      "posts/headings-void-hr-self-closing",
+			noteRelPath:   "notes/headings-void-hr-self-closing.md",
+			wantID:        "hello-lt-world",
+			wantFragments: []string{`<h1 id="hello-lt-world">Hello <hr/>&amp;lt; World</h1>`},
+		},
+		{
+			name:        "hidden-img",
+			source:      "# Hello <img hidden>&amp;lt; World\n",
+			noteSlug:    "posts/headings-void-hidden-img",
+			noteRelPath: "notes/headings-void-hidden-img.md",
+			wantID:      "hello-lt-world",
+			wantFragments: []string{
+				`<h1 id="hello-lt-world">Hello <img hidden`,
+				`&amp;lt; World</h1>`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			note := &model.Note{Slug: tt.noteSlug, RelPath: tt.noteRelPath}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+			var buf bytes.Buffer
+			source := []byte(tt.source)
+			if err := md.Convert(source, &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+
+			html := buf.String()
+			wantHeadingOpen := `<h1 id="` + tt.wantID + `">`
+			if !strings.Contains(html, wantHeadingOpen) {
+				t.Fatalf("HTML = %q, want heading id %q", html, tt.wantID)
+			}
+			for _, wantFragment := range tt.wantFragments {
+				if !strings.Contains(html, wantFragment) {
+					t.Fatalf("HTML = %q, want fragment %q", html, wantFragment)
+				}
+			}
+		})
+	}
+}
+
+func TestNewMarkdownRendersRawHTMLHeadingIDsWithoutDecodeLeakageAcrossBoundaries(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		source        string
+		noteSlug      string
+		noteRelPath   string
+		wantID        string
+		wantFragments []string
+	}{
+		{
+			name:        "entity-before-raw-html",
+			source:      "# &amp;lt; <span>Alpha</span>\n",
+			noteSlug:    "posts/headings-entity-before-raw-html",
+			noteRelPath: "notes/headings-entity-before-raw-html.md",
+			wantID:      "lt-alpha",
+			wantFragments: []string{
+				`<h1 id="lt-alpha">&amp;lt; <span>Alpha</span></h1>`,
+			},
+		},
+		{
+			name:        "code-span-after-raw-html",
+			source:      "# <span>Alpha</span> `&amp;lt;`\n",
+			noteSlug:    "posts/headings-code-span-after-raw-html",
+			noteRelPath: "notes/headings-code-span-after-raw-html.md",
+			wantID:      "alpha-amp-lt",
+			wantFragments: []string{
+				`<h1 id="alpha-amp-lt"><span>Alpha</span> <code>&amp;amp;lt;</code></h1>`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			note := &model.Note{Slug: tt.noteSlug, RelPath: tt.noteRelPath}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+			var buf bytes.Buffer
+			source := []byte(tt.source)
+			if err := md.Convert(source, &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+
+			html := buf.String()
+			wantHeadingOpen := `<h1 id="` + tt.wantID + `">`
+			if !strings.Contains(html, wantHeadingOpen) {
+				t.Fatalf("HTML = %q, want heading id %q", html, tt.wantID)
+			}
+			for _, wantFragment := range tt.wantFragments {
+				if !strings.Contains(html, wantFragment) {
+					t.Fatalf("HTML = %q, want fragment %q", html, wantFragment)
+				}
+			}
+		})
+	}
+}
+
+func TestNewMarkdownResolvesWikilinksToRawHTMLHeadingFragments(t *testing.T) {
+	t.Parallel()
+
+	current := &model.Note{
+		Slug:    "notes/current",
+		RelPath: "notes/current.md",
+		OutLinks: []model.LinkRef{
+			{RawTarget: "Guide#RFC 2 and Alpha", Line: 1},
+		},
+	}
+	target := &model.Note{
+		Slug:    "guides/guide",
+		RelPath: "guides/guide.md",
+		Headings: []model.Heading{
+			{Level: 2, Text: "RFC 2 and Alpha", ID: "rfc-2-and-alpha"},
+		},
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			current.RelPath: current,
+			target.RelPath:  target,
+		},
+		NoteBySlug: map[string]*model.Note{
+			current.Slug: current,
+			target.Slug:  target,
+		},
+		NoteByName: map[string][]*model.Note{
+			"current": {current},
+			"guide":   {target},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, renderResult := NewMarkdown(idx, current, nil, collector)
+
+	var buf bytes.Buffer
+	source := []byte("[[Guide#RFC 2 and Alpha|Docs]]\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<a href="../../guides/guide/#rfc-2-and-alpha">Docs</a>`) {
+		t.Fatalf("HTML = %q, want raw-HTML-derived heading fragment to resolve", html)
+	}
+
+	gotOutLinks := renderResult.OutLinks()
+	if len(gotOutLinks) != 1 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 1", len(gotOutLinks))
+	}
+	if gotOutLinks[0].ResolvedRelPath != target.RelPath {
+		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want %q", gotOutLinks[0].ResolvedRelPath, target.RelPath)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
 	}
 }
 
@@ -1214,7 +1636,7 @@ func TestNewMarkdownRendersNoteEmbeds(t *testing.T) {
 		AliasByName: map[string][]*model.Note{},
 	}
 	collector := diag.NewCollector()
-	md, _ := NewMarkdown(idx, current, nil, collector)
+	md, renderResult := NewMarkdown(idx, current, nil, collector)
 
 	var buf bytes.Buffer
 	if err := md.Convert([]byte("![[Guide]]\n"), &buf); err != nil {
@@ -1230,6 +1652,16 @@ func TestNewMarkdownRendersNoteEmbeds(t *testing.T) {
 	}
 	if got := collector.Diagnostics(); len(got) != 0 {
 		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+	if renderResult == nil {
+		t.Fatal("renderResult = nil, want render-local result")
+	}
+	gotOutLinks := renderResult.OutLinks()
+	if len(gotOutLinks) != 1 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 1 direct embed outlink", len(gotOutLinks))
+	}
+	if gotOutLinks[0].ResolvedRelPath != target.RelPath {
+		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want %q", gotOutLinks[0].ResolvedRelPath, target.RelPath)
 	}
 }
 
@@ -1299,6 +1731,13 @@ func TestNewMarkdownRendersHeadingEmbeds(t *testing.T) {
 	}
 	if renderResult.HasMermaid() {
 		t.Fatal("renderResult.HasMermaid() = true, want false for selected heading without Mermaid")
+	}
+	gotOutLinks := renderResult.OutLinks()
+	if len(gotOutLinks) != 1 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 1 direct embed outlink", len(gotOutLinks))
+	}
+	if gotOutLinks[0].ResolvedRelPath != target.RelPath {
+		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want %q", gotOutLinks[0].ResolvedRelPath, target.RelPath)
 	}
 }
 
@@ -1459,14 +1898,17 @@ func TestNewMarkdownKeepsEmbeddedLinksAssetsAndHeadingsInHostContext(t *testing.
 		t.Fatal("renderResult = nil, want render-local result")
 	}
 	gotOutLinks := renderResult.OutLinks()
-	if len(gotOutLinks) != 2 {
-		t.Fatalf("len(renderResult.OutLinks()) = %d, want 2 embedded outlinks", len(gotOutLinks))
+	if len(gotOutLinks) != 3 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 3 embedded outlinks including direct embed target", len(gotOutLinks))
 	}
 	if gotOutLinks[0].ResolvedRelPath != reference.RelPath {
 		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want %q", gotOutLinks[0].ResolvedRelPath, reference.RelPath)
 	}
 	if gotOutLinks[1].ResolvedRelPath != host.RelPath {
 		t.Fatalf("renderResult.OutLinks()[1].ResolvedRelPath = %q, want %q", gotOutLinks[1].ResolvedRelPath, host.RelPath)
+	}
+	if gotOutLinks[2].ResolvedRelPath != guide.RelPath {
+		t.Fatalf("renderResult.OutLinks()[2].ResolvedRelPath = %q, want %q", gotOutLinks[2].ResolvedRelPath, guide.RelPath)
 	}
 	for i := range guide.OutLinks {
 		if guide.OutLinks[i].ResolvedRelPath != "" {
@@ -1716,6 +2158,68 @@ func TestNewMarkdownSectionEmbedDiagnosticsUseRenderedOccurrenceLine(t *testing.
 	}
 }
 
+func TestNewMarkdownSectionEmbedUnsupportedFenceDiagnosticsUseOriginalSourceLine(t *testing.T) {
+	t.Parallel()
+
+	rawContent := "# Top\n\nIntro.\n\n## Section Title\n\nBefore.\n\n```dataview\nLIST FROM [[]]\n```\n\n## Later\n\nSkip.\n"
+	current := &model.Note{
+		Slug:    "notes/current",
+		RelPath: "notes/current.md",
+		Embeds:  []model.EmbedRef{{Target: "Guide", Fragment: "Section Title", Line: 1}},
+	}
+	target := &model.Note{
+		Slug:          "guides/guide",
+		RelPath:       "guides/guide.md",
+		RawContent:    []byte(rawContent),
+		BodyStartLine: 10,
+		Headings: []model.Heading{
+			{Level: 2, Text: "Section Title", ID: "section-title"},
+			{Level: 2, Text: "Later", ID: "later"},
+		},
+		HeadingSections: map[string]model.SectionRange{
+			"section-title": sectionRangeForTest(t, rawContent, "## Section Title", "## Later"),
+			"later":         sectionRangeForTest(t, rawContent, "## Later", ""),
+		},
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			current.RelPath: current,
+			target.RelPath:  target,
+		},
+		NoteBySlug: map[string]*model.Note{
+			current.Slug: current,
+			target.Slug:  target,
+		},
+		NoteByName: map[string][]*model.Note{
+			"current": {current},
+			"guide":   {target},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, _ := NewMarkdown(idx, current, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("![[Guide#Section Title]]\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `class="unsupported-syntax unsupported-dataview"`) {
+		t.Fatalf("HTML = %q, want Dataview fence degradation inside section embed", html)
+	}
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SeverityWarning,
+		Kind:     diag.KindUnsupportedSyntax,
+		Location: diag.Location{Path: target.RelPath, Line: 19},
+		Message:  `dataview fenced code block is not supported; rendering as plain preformatted text`,
+	}}
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
+	}
+}
+
 func TestNewMarkdownSectionEmbedsScopeRenderedMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1794,8 +2298,8 @@ func TestNewMarkdownSectionEmbedsScopeRenderedMetadata(t *testing.T) {
 	}
 
 	gotOutLinks := renderResult.OutLinks()
-	if len(gotOutLinks) != 4 {
-		t.Fatalf("len(renderResult.OutLinks()) = %d, want 4 in-section outlinks", len(gotOutLinks))
+	if len(gotOutLinks) != 5 {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want 5 outlinks including the direct embed target", len(gotOutLinks))
 	}
 	wantRawTargets := []string{"#Section Title", "#Included", "#Excluded", "Target Page"}
 	wantResolved := []string{host.RelPath, host.RelPath, "", target.RelPath}
@@ -1806,6 +2310,9 @@ func TestNewMarkdownSectionEmbedsScopeRenderedMetadata(t *testing.T) {
 		if gotOutLinks[i].ResolvedRelPath != wantResolved[i] {
 			t.Fatalf("renderResult.OutLinks()[%d].ResolvedRelPath = %q, want %q", i, gotOutLinks[i].ResolvedRelPath, wantResolved[i])
 		}
+	}
+	if gotOutLinks[4].ResolvedRelPath != guide.RelPath {
+		t.Fatalf("renderResult.OutLinks()[4].ResolvedRelPath = %q, want %q", gotOutLinks[4].ResolvedRelPath, guide.RelPath)
 	}
 
 	wantDiagnostics := []diag.Diagnostic{{

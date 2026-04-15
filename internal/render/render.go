@@ -8,13 +8,16 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
@@ -31,10 +34,11 @@ const (
 	notFoundOutputPath   = "404.html"
 	notFoundTitle        = "Not found"
 	notFoundDescription  = "The requested page could not be found."
+	summaryRuneLimit     = 150
 	tagsRootOutputPrefix = "tags"
 )
 
-var defaultTemplateFileNames = []string{
+var embeddedTemplateAssetNames = []string{
 	"base.html",
 	"note.html",
 	"index.html",
@@ -42,13 +46,42 @@ var defaultTemplateFileNames = []string{
 	"folder.html",
 	"timeline.html",
 	"404.html",
+	"style.css",
+	"katex.min.css",
+	"katex.min.js",
+	"auto-render.min.js",
+	"mermaid.esm.min.mjs",
+}
+
+var defaultTemplateFileNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
+
+type embeddedOutputAsset struct {
+	name       string
+	outputPath string
+}
+
+var runtimeTemplateAssets = []embeddedOutputAsset{
+	{name: "katex.min.css", outputPath: "assets/obsite-runtime/katex.min.css"},
+	{name: "katex.min.js", outputPath: "assets/obsite-runtime/katex.min.js"},
+	{name: "auto-render.min.js", outputPath: "assets/obsite-runtime/auto-render.min.js"},
+	{name: "mermaid.esm.min.mjs", outputPath: "assets/obsite-runtime/mermaid.esm.min.mjs"},
 }
 
 var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 	return parseEmbeddedTemplates()
 })
 
-var templateSetCache sync.Map
+var (
+	templateSetCache              sync.Map
+	templateOverrideSnapshotCache sync.Map
+)
+
+var templateOverrideFileReader = struct {
+	mu   sync.RWMutex
+	read func(string) ([]byte, error)
+}{
+	read: os.ReadFile,
+}
 
 type templateSetCacheKey struct {
 	templateDir string
@@ -66,9 +99,32 @@ type templateOverrideSnapshot struct {
 	signature   string
 }
 
+type templateOverrideFileState struct {
+	name            string
+	path            string
+	exists          bool
+	size            int64
+	modTimeUnixNano int64
+	changeToken     string
+}
+
+type templateOverrideState struct {
+	templateDir string
+	files       []templateOverrideFileState
+}
+
+type cachedTemplateOverrideSnapshot struct {
+	mu       sync.Mutex
+	state    templateOverrideState
+	snapshot templateOverrideSnapshot
+	ready    bool
+}
+
 func parseEmbeddedTemplates() (*template.Template, error) {
 	return template.New(baseTemplateName).Funcs(template.FuncMap{
-		"toJSON": templateJSON,
+		"toJSON":       templateJSON,
+		"pageAssetURL": pageAssetURL,
+		"siteBasePath": siteBasePath,
 	}).ParseFS(templateassets.FS, defaultTemplateFileNames...)
 }
 
@@ -163,6 +219,10 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 	}
 
 	content, titleID := normalizeNoteContent(input.Note)
+	summary := strings.TrimSpace(input.Note.Summary)
+	if summary == "" {
+		summary = VisibleSummary(input.Note)
+	}
 	latinWords, cjkChars := CountWords(content)
 	relPath := cleanURLPath(slug + "/index.html")
 	displayTitle := noteDisplayTitle(input.Note)
@@ -190,6 +250,9 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 		HasCustomCSS:    hasCustomCSS(input.Site),
 		Breadcrumbs:     defaultNoteBreadcrumbs(input.Breadcrumbs, relPath, input.Note, displayTitle),
 		SidebarTree:     cloneSidebarTree(input.SidebarTree),
+	}
+	if page.Description == "" {
+		page.Description = summary
 	}
 
 	return renderPage(page, input.Note)
@@ -221,6 +284,25 @@ func CountWords(htmlContent string) (latinWords, cjkChars int) {
 	return latinWords, cjkChars
 }
 
+// VisibleSummary derives a fallback summary from a note's normalized visible HTML content.
+func VisibleSummary(note *model.Note) string {
+	if note == nil {
+		return ""
+	}
+
+	content, _ := normalizeNoteContent(note)
+	return visibleSummaryFromHTML(content)
+}
+
+func visibleSummaryFromHTML(htmlContent string) string {
+	text := visibleTextFromHTMLWithOptions(htmlContent, visibleTextOptions{skipBlockCode: true})
+	if text == "" {
+		return ""
+	}
+
+	return truncateVisibleSummary(text, summaryRuneLimit)
+}
+
 // FormatReadingTime renders a human-readable reading-time label.
 func FormatReadingTime(latinWords, cjkChars int) string {
 	weightedUnits := (latinWords * 2) + cjkChars
@@ -236,7 +318,61 @@ func FormatReadingTime(latinWords, cjkChars int) string {
 	return fmt.Sprintf("%d min read", minutes)
 }
 
+func truncateVisibleSummary(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if value == "" || limit <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(value) <= limit {
+		return value
+	}
+
+	lastBoundary := 0
+	firstBoundaryAfterLimit := 0
+	runeCount := 0
+	for index, r := range value {
+		runeCount++
+		end := index + utf8.RuneLen(r)
+		if isVisibleSummaryBoundaryRune(r) {
+			if runeCount <= limit {
+				lastBoundary = end
+			} else {
+				firstBoundaryAfterLimit = end
+				break
+			}
+		}
+
+		if runeCount == limit && lastBoundary > 0 {
+			return strings.TrimSpace(value[:lastBoundary])
+		}
+	}
+
+	if lastBoundary > 0 {
+		return strings.TrimSpace(value[:lastBoundary])
+	}
+	if firstBoundaryAfterLimit > 0 {
+		return strings.TrimSpace(value[:firstBoundaryAfterLimit])
+	}
+
+	return value
+}
+
+func isVisibleSummaryBoundaryRune(r rune) bool {
+	if unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) {
+		return true
+	}
+	return unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul)
+}
+
 func visibleTextFromHTML(htmlContent string) string {
+	return visibleTextFromHTMLWithOptions(htmlContent, visibleTextOptions{})
+}
+
+type visibleTextOptions struct {
+	skipBlockCode bool
+}
+
+func visibleTextFromHTMLWithOptions(htmlContent string, options visibleTextOptions) string {
 	if strings.TrimSpace(htmlContent) == "" {
 		return ""
 	}
@@ -246,7 +382,7 @@ func visibleTextFromHTML(htmlContent string) string {
 		return ""
 	}
 
-	var extractor visibleTextExtractor
+	extractor := visibleTextExtractor{options: options}
 	for _, node := range nodes {
 		extractor.walk(node)
 	}
@@ -255,6 +391,7 @@ func visibleTextFromHTML(htmlContent string) string {
 }
 
 type visibleTextExtractor struct {
+	options visibleTextOptions
 	builder strings.Builder
 }
 
@@ -273,6 +410,9 @@ func (e *visibleTextExtractor) walk(node *xhtml.Node) {
 		return
 	case xhtml.ElementNode:
 		if shouldSkipVisibleTextNode(node) {
+			return
+		}
+		if e.options.skipBlockCode && shouldSkipVisibleSummaryNode(node) {
 			return
 		}
 
@@ -322,17 +462,93 @@ func parseHTMLFragment(htmlContent string) ([]*xhtml.Node, error) {
 }
 
 func shouldSkipVisibleTextNode(node *xhtml.Node) bool {
-	switch node.Data {
-	case "script", "style":
-		return true
-	default:
+	return isInvisibleHTMLContent(node.Data, node.DataAtom, htmlNodeHasAttr(node, "hidden"))
+}
+
+func shouldSkipVisibleSummaryNode(node *xhtml.Node) bool {
+	if node == nil || node.Type != xhtml.ElementNode {
 		return false
 	}
+
+	if htmlNodeMatchesTag(node, atom.Div, "div") && htmlNodeHasClass(node, "chroma") {
+		return true
+	}
+
+	if !htmlNodeMatchesTag(node, atom.Pre, "pre") {
+		return false
+	}
+
+	if htmlNodeHasClass(node, "mermaid") ||
+		htmlNodeHasClass(node, "unsupported-syntax") ||
+		htmlNodeHasClassPrefix(node, "language-") ||
+		htmlNodeHasAttr(node, "tabindex") {
+		return true
+	}
+
+	return htmlNodeHasDescendantTag(node, atom.Code, "code")
+}
+
+func htmlNodeMatchesTag(node *xhtml.Node, dataAtom atom.Atom, tag string) bool {
+	if node == nil {
+		return false
+	}
+
+	if node.DataAtom == dataAtom {
+		return true
+	}
+
+	return strings.EqualFold(strings.TrimSpace(node.Data), tag)
+}
+
+func htmlNodeHasClass(node *xhtml.Node, className string) bool {
+	return htmlNodeHasClassMatch(node, className, true)
+}
+
+func htmlNodeHasClassPrefix(node *xhtml.Node, prefix string) bool {
+	return htmlNodeHasClassMatch(node, prefix, false)
+}
+
+func htmlNodeHasClassMatch(node *xhtml.Node, prefix string, exact bool) bool {
+	if node == nil || strings.TrimSpace(prefix) == "" {
+		return false
+	}
+
+	for _, attr := range node.Attr {
+		if !strings.EqualFold(attr.Key, "class") {
+			continue
+		}
+		for _, value := range strings.Fields(attr.Val) {
+			if exact {
+				if value == prefix {
+					return true
+				}
+				continue
+			}
+			if strings.HasPrefix(value, prefix) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+func htmlNodeHasDescendantTag(node *xhtml.Node, dataAtom atom.Atom, tag string) bool {
+	for child := node.FirstChild; child != nil; child = child.NextSibling {
+		if child.Type == xhtml.ElementNode && htmlNodeMatchesTag(child, dataAtom, tag) {
+			return true
+		}
+		if htmlNodeHasDescendantTag(child, dataAtom, tag) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func htmlNodeHasAttr(node *xhtml.Node, key string) bool {
 	for _, attr := range node.Attr {
-		if attr.Key == key {
+		if strings.EqualFold(attr.Key, key) {
 			return true
 		}
 	}
@@ -482,12 +698,25 @@ func stripPromotedLeadingH1(content string, headingID string) (string, bool) {
 }
 
 func isInvisibleLeadingPreludeToken(token xhtml.Token) bool {
-	switch token.DataAtom {
+	return isInvisibleHTMLContent(token.Data, token.DataAtom, tokenHasAttribute(token, "hidden"))
+}
+
+func isInvisibleHTMLContent(name string, dataAtom atom.Atom, hidden bool) bool {
+	if hidden {
+		return true
+	}
+
+	switch dataAtom {
 	case atom.Style, atom.Script, atom.Template, atom.Meta, atom.Link:
 		return true
 	}
 
-	return tokenHasAttribute(token, "hidden")
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "style", "script", "template", "meta", "link":
+		return true
+	default:
+		return false
+	}
 }
 
 func tokenHasAttribute(token xhtml.Token, key string) bool {
@@ -601,42 +830,6 @@ func isFilenameFallbackSeparator(r rune) bool {
 
 func normalizeHeadingText(value string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-}
-
-func normalizeHeadingID(value string) string {
-	value = normalizeHeadingText(value)
-	if value == "" {
-		return "heading"
-	}
-
-	var builder strings.Builder
-	lastHyphen := false
-
-	for _, r := range strings.ToLower(value) {
-		switch {
-		case isASCIIControl(r):
-			continue
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			builder.WriteRune(r)
-			lastHyphen = false
-		case unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) || r == '_' || r == '-':
-			if lastHyphen || builder.Len() == 0 {
-				continue
-			}
-			builder.WriteByte('-')
-			lastHyphen = true
-		}
-	}
-
-	normalized := strings.Trim(builder.String(), "-")
-	if normalized == "" {
-		return "heading"
-	}
-	return normalized
-}
-
-func isASCIIControl(r rune) bool {
-	return (r >= 0 && r < 0x20) || r == 0x7f
 }
 
 func isCJKRune(r rune) bool {
@@ -802,8 +995,42 @@ func EmitStyleCSS(outputRoot string, site model.SiteConfig) error {
 	return nil
 }
 
+// EmitRuntimeAssets writes the embedded offline math and Mermaid runtime files into the output root.
+func EmitRuntimeAssets(outputRoot string) error {
+	if strings.TrimSpace(outputRoot) == "" {
+		return errors.New("emit runtime assets: output root is required")
+	}
+
+	for _, asset := range runtimeTemplateAssets {
+		data, err := readEmbeddedAsset(asset.name)
+		if err != nil {
+			return fmt.Errorf("emit runtime assets: %w", err)
+		}
+
+		assetPath := filepath.Join(outputRoot, filepath.FromSlash(asset.outputPath))
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+			return fmt.Errorf("emit runtime assets: mkdir %q: %w", filepath.Dir(assetPath), err)
+		}
+		if err := os.WriteFile(assetPath, data, 0o644); err != nil {
+			return fmt.Errorf("emit runtime assets: write %q: %w", asset.outputPath, err)
+		}
+	}
+
+	return nil
+}
+
+// RuntimeAssetOutputPaths returns the output paths reserved for the embedded offline runtime assets.
+func RuntimeAssetOutputPaths() []string {
+	paths := make([]string, 0, len(runtimeTemplateAssets))
+	for _, asset := range runtimeTemplateAssets {
+		paths = append(paths, asset.outputPath)
+	}
+
+	return paths
+}
+
 func renderPage(page model.PageData, note *model.Note) (RenderedPage, error) {
-	page.HasRSS = page.Site.RSS.Enabled
+	page.HasRSS = page.Site.EffectiveRSSEnabled()
 
 	_, seoErr := seo.Apply(&page, note)
 	pageDiagnostics, handledSEOWarning := nonFatalSEODiagnostics(note, seoErr)
@@ -873,7 +1100,7 @@ func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	snapshot, err := scanTemplateOverrideSnapshot(templateDir)
+	snapshot, err := loadTemplateOverrideSnapshot(templateDir)
 	if err != nil {
 		return nil, err
 	}
@@ -888,6 +1115,61 @@ func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
 	pruneTemplateSetCacheEntries(key)
 
 	return tmpl, nil
+}
+
+func loadTemplateOverrideSnapshot(templateDir string) (templateOverrideSnapshot, error) {
+	state, err := scanTemplateOverrideState(templateDir)
+	if err != nil {
+		return templateOverrideSnapshot{}, err
+	}
+
+	entry, _ := templateOverrideSnapshotCache.LoadOrStore(templateDir, &cachedTemplateOverrideSnapshot{})
+	return entry.(*cachedTemplateOverrideSnapshot).load(state)
+}
+
+func (cached *cachedTemplateOverrideSnapshot) load(state templateOverrideState) (templateOverrideSnapshot, error) {
+	cached.mu.Lock()
+	defer cached.mu.Unlock()
+
+	if cached.ready && templateOverrideStateMatches(cached.state, state) {
+		refreshed, err := scanTemplateOverrideSnapshotFromState(state)
+		if err != nil {
+			return templateOverrideSnapshot{}, err
+		}
+		if refreshed.signature == cached.snapshot.signature {
+			return cached.snapshot, nil
+		}
+
+		cached.state = state
+		cached.snapshot = refreshed
+
+		return refreshed, nil
+	}
+
+	snapshot, err := scanTemplateOverrideSnapshotFromState(state)
+	if err != nil {
+		return templateOverrideSnapshot{}, err
+	}
+
+	cached.state = state
+	cached.snapshot = snapshot
+	cached.ready = true
+
+	return snapshot, nil
+}
+
+func templateOverrideStateMatches(left templateOverrideState, right templateOverrideState) bool {
+	if left.templateDir != right.templateDir || len(left.files) != len(right.files) {
+		return false
+	}
+
+	for index := range left.files {
+		if left.files[index] != right.files[index] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func (snapshot templateOverrideSnapshot) cacheKey() templateSetCacheKey {
@@ -920,40 +1202,62 @@ func pruneTemplateSetCacheEntries(activeKey templateSetCacheKey) {
 	}
 }
 
-func scanTemplateOverrideSnapshot(templateDir string) (templateOverrideSnapshot, error) {
+func scanTemplateOverrideState(templateDir string) (templateOverrideState, error) {
+	state := templateOverrideState{
+		templateDir: templateDir,
+		files:       make([]templateOverrideFileState, 0, len(defaultTemplateFileNames)),
+	}
+
+	for _, name := range defaultTemplateFileNames {
+		fileState, err := resolveTemplateOverrideFileStateInDir(templateDir, name)
+		if err != nil {
+			return templateOverrideState{}, err
+		}
+		state.files = append(state.files, fileState)
+	}
+
+	return state, nil
+}
+
+func scanTemplateOverrideSnapshotFromState(state templateOverrideState) (templateOverrideSnapshot, error) {
 	hasher := sha256.New()
 	files := make([]templateOverrideFile, 0, len(defaultTemplateFileNames))
-	for _, name := range defaultTemplateFileNames {
-		overridePath, ok, err := resolveTemplateOverridePathInDir(templateDir, name)
-		if err != nil {
-			return templateOverrideSnapshot{}, err
-		}
+	for _, fileState := range state.files {
+		name := fileState.name
 
 		_, _ = hasher.Write([]byte(name))
-		if !ok {
+		if !fileState.exists {
 			_, _ = hasher.Write([]byte{0, 0})
 			continue
 		}
 
-		data, err := os.ReadFile(overridePath)
+		data, err := readTemplateOverrideContents(fileState.path)
 		if err != nil {
-			return templateOverrideSnapshot{}, fmt.Errorf("read template override %q: %w", overridePath, err)
+			return templateOverrideSnapshot{}, fmt.Errorf("read template override %q: %w", fileState.path, err)
 		}
 		_, _ = hasher.Write([]byte{0, 1})
 		_, _ = hasher.Write(data)
 		_, _ = hasher.Write([]byte{0})
 
 		files = append(files, templateOverrideFile{
-			path:     overridePath,
+			path:     fileState.path,
 			contents: string(data),
 		})
 	}
 
 	return templateOverrideSnapshot{
-		templateDir: templateDir,
+		templateDir: state.templateDir,
 		files:       files,
 		signature:   hex.EncodeToString(hasher.Sum(nil)),
 	}, nil
+}
+
+func readTemplateOverrideContents(filePath string) ([]byte, error) {
+	templateOverrideFileReader.mu.RLock()
+	reader := templateOverrideFileReader.read
+	templateOverrideFileReader.mu.RUnlock()
+
+	return reader(filePath)
 }
 
 func parseTemplateSet(snapshot templateOverrideSnapshot) (*template.Template, error) {
@@ -1001,62 +1305,82 @@ func readStyleAsset(site model.SiteConfig) ([]byte, error) {
 	return data, nil
 }
 
-func resolveTemplateOverridePaths(templateDir string, names []string) ([]string, error) {
-	normalizedDir, err := normalizeTemplateDir(templateDir)
-	if err != nil {
-		return nil, err
-	}
-
-	return resolveTemplateOverridePathsInDir(normalizedDir, names)
-}
-
-func resolveTemplateOverridePathsInDir(templateDir string, names []string) ([]string, error) {
-	if templateDir == "" {
-		return nil, nil
-	}
-
-	paths := make([]string, 0, len(names))
-	for _, name := range names {
-		overridePath, ok, err := resolveTemplateOverridePathInDir(templateDir, name)
-		if err != nil {
-			return nil, err
-		}
-		if ok {
-			paths = append(paths, overridePath)
-		}
-	}
-
-	return paths, nil
-}
-
-func resolveTemplateOverridePath(templateDir string, name string) (string, bool, error) {
-	normalizedDir, err := normalizeTemplateDir(templateDir)
+func resolveTemplateOverridePathInDir(templateDir string, name string) (string, bool, error) {
+	fileState, err := resolveTemplateOverrideFileStateInDir(templateDir, name)
 	if err != nil {
 		return "", false, err
 	}
 
-	return resolveTemplateOverridePathInDir(normalizedDir, name)
+	return fileState.path, fileState.exists, nil
 }
 
-func resolveTemplateOverridePathInDir(templateDir string, name string) (string, bool, error) {
+func resolveTemplateOverrideFileStateInDir(templateDir string, name string) (templateOverrideFileState, error) {
+	state := templateOverrideFileState{name: name}
 	if templateDir == "" {
-		return "", false, nil
+		return state, nil
 	}
 
 	overridePath := filepath.Join(templateDir, name)
 	info, err := os.Stat(overridePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", false, nil
+			return state, nil
 		}
 
-		return "", false, fmt.Errorf("stat template override %q: %w", overridePath, err)
+		return templateOverrideFileState{}, fmt.Errorf("stat template override %q: %w", overridePath, err)
 	}
 	if info.IsDir() {
-		return "", false, fmt.Errorf("template override %q is a directory", overridePath)
+		return templateOverrideFileState{}, fmt.Errorf("template override %q is a directory", overridePath)
 	}
 
-	return overridePath, true, nil
+	state.path = overridePath
+	state.exists = true
+	state.size = info.Size()
+	state.modTimeUnixNano = info.ModTime().UnixNano()
+	state.changeToken = templateOverrideFileChangeToken(info)
+
+	return state, nil
+}
+
+func templateOverrideFileChangeToken(info os.FileInfo) string {
+	if info == nil {
+		return ""
+	}
+
+	token := fmt.Sprintf("%d:%d:%v", info.Size(), info.ModTime().UnixNano(), info.Mode())
+	value := reflect.ValueOf(info.Sys())
+	if !value.IsValid() {
+		return token
+	}
+	if value.Kind() == reflect.Pointer {
+		if value.IsNil() {
+			return token
+		}
+		value = value.Elem()
+	}
+	if value.Kind() != reflect.Struct {
+		return token
+	}
+
+	parts := []string{
+		templateOverrideStatFieldString(value, "Dev"),
+		templateOverrideStatFieldString(value, "Ino"),
+		templateOverrideStatFieldString(value, "Ctim"),
+		templateOverrideStatFieldString(value, "Ctimespec"),
+		templateOverrideStatFieldString(value, "Mtim"),
+		templateOverrideStatFieldString(value, "Mtimespec"),
+	}
+
+	return token + ":" + strings.Join(parts, ":")
+}
+
+func templateOverrideStatFieldString(value reflect.Value, fieldName string) string {
+	field := value.FieldByName(fieldName)
+	if !field.IsValid() {
+		return ""
+	}
+
+	return fmt.Sprint(field.Interface())
 }
 
 func normalizeTemplateDir(templateDir string) (string, error) {
@@ -1095,6 +1419,26 @@ func readEmbeddedAsset(name string) ([]byte, error) {
 	}
 
 	return data, nil
+}
+
+// EmbeddedTemplateAssetNames returns the embedded template asset inventory in stable order.
+func EmbeddedTemplateAssetNames() []string {
+	return append([]string(nil), embeddedTemplateAssetNames...)
+}
+
+// ReadEmbeddedTemplateAsset returns an embedded default template asset.
+func ReadEmbeddedTemplateAsset(name string) ([]byte, error) {
+	return readEmbeddedAsset(name)
+}
+
+func htmlTemplateAssetNames(names []string) []string {
+	filtered := make([]string, 0, len(names))
+	for _, name := range names {
+		if strings.EqualFold(path.Ext(strings.TrimSpace(name)), ".html") {
+			filtered = append(filtered, name)
+		}
+	}
+	return filtered
 }
 
 func templateJSON(value any) (template.JS, error) {
@@ -1278,6 +1622,55 @@ func siteRootRel(relPath string) string {
 	}
 
 	return strings.Repeat("../", depth)
+}
+
+func siteBasePath(rawBaseURL string) string {
+	trimmed := strings.TrimSpace(rawBaseURL)
+	if trimmed == "" {
+		return "/"
+	}
+
+	parsed, err := url.Parse(trimmed)
+	if err != nil {
+		return "/"
+	}
+
+	clean := path.Clean(parsed.Path)
+	switch clean {
+	case "", ".", "/":
+		return "/"
+	default:
+		return strings.TrimSuffix(clean, "/") + "/"
+	}
+}
+
+func pageAssetURL(siteRootRel string, raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "//") ||
+		strings.HasPrefix(lower, "data:") ||
+		strings.HasPrefix(lower, "mailto:") ||
+		strings.HasPrefix(lower, "javascript:") ||
+		strings.HasPrefix(trimmed, "/") ||
+		strings.HasPrefix(trimmed, "#") ||
+		strings.HasPrefix(trimmed, "?") ||
+		strings.HasPrefix(trimmed, "./") ||
+		strings.HasPrefix(trimmed, "../") {
+		return trimmed
+	}
+
+	base := strings.TrimSpace(siteRootRel)
+	if base == "" {
+		base = "./"
+	}
+
+	return base + trimmed
 }
 
 func relativeDirPath(fromFile string, toDir string) string {

@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 const (
@@ -27,14 +29,17 @@ type ScanResult struct {
 	MarkdownFiles        []string
 	ResourceFiles        []string
 
-	markdownSet map[string]struct{}
-	resourceSet map[string]struct{}
+	markdownSet       map[string]struct{}
+	resourceSet       map[string]string
+	resourceLookup    map[string]string
+	resourceConflicts map[string][]string
 }
 
 // Scan walks a vault once and returns the Markdown and resource candidates needed
 // by later phases. Hidden entries, node_modules, all .obsidian content except the
-// separately-read app.json, and symlinks are excluded. attachmentFolderPath is
-// preserved as normalized metadata only and does not relax scan boundaries.
+// separately-read app.json, symlinks, and non-regular files are excluded.
+// attachmentFolderPath is preserved as normalized metadata only and does not
+// relax scan boundaries.
 func Scan(vaultPath string) (ScanResult, error) {
 	absVaultPath, err := normalizeVaultPath(vaultPath)
 	if err != nil {
@@ -50,7 +55,6 @@ func Scan(vaultPath string) (ScanResult, error) {
 		VaultPath:            absVaultPath,
 		AttachmentFolderPath: attachmentFolderPath,
 		markdownSet:          make(map[string]struct{}),
-		resourceSet:          make(map[string]struct{}),
 	}
 
 	err = filepath.WalkDir(absVaultPath, func(currentPath string, entry fs.DirEntry, walkErr error) error {
@@ -87,13 +91,20 @@ func Scan(vaultPath string) (ScanResult, error) {
 			return nil
 		}
 
+		isRegular, err := isRegularFileEntry(entry)
+		if err != nil {
+			return fmt.Errorf("inspect %q: %w", currentPath, err)
+		}
+		if !isRegular {
+			return nil
+		}
+
 		if isMarkdownFile(name) {
 			result.markdownSet[relPath] = struct{}{}
 			result.MarkdownFiles = append(result.MarkdownFiles, relPath)
 			return nil
 		}
 
-		result.resourceSet[relPath] = struct{}{}
 		result.ResourceFiles = append(result.ResourceFiles, relPath)
 		return nil
 	})
@@ -103,22 +114,30 @@ func Scan(vaultPath string) (ScanResult, error) {
 
 	sort.Strings(result.MarkdownFiles)
 	sort.Strings(result.ResourceFiles)
+	result.resourceSet = model.BuildExactLookupPaths(result.ResourceFiles)
+	result.resourceLookup, result.resourceConflicts = model.BuildCanonicalLookupPaths(result.ResourceFiles)
 
 	return result, nil
 }
 
-// HasMarkdown reports whether the normalized vault-relative path was discovered as a
-// Markdown candidate during Scan.
-func (r ScanResult) HasMarkdown(relPath string) bool {
-	_, ok := r.markdownSet[normalizeLookupPath(relPath)]
-	return ok
-}
+// LookupResourcePath returns the scanned vault-relative resource path that
+// matches relPath after exact and canonical Unicode lookup.
+func (r ScanResult) LookupResourcePath(relPath string) model.PathLookupResult {
+	if exactKey := normalizeLookupPath(relPath); exactKey != "" {
+		if resolved := r.resourceSet[exactKey]; resolved != "" {
+			return model.PathLookupResult{Path: resolved}
+		}
+	}
 
-// HasResource reports whether the normalized vault-relative path was discovered as a
-// non-Markdown resource candidate during Scan.
-func (r ScanResult) HasResource(relPath string) bool {
-	_, ok := r.resourceSet[normalizeLookupPath(relPath)]
-	return ok
+	canonicalKey := model.CanonicalResourceLookupPath(relPath)
+	if canonicalKey == "" {
+		return model.PathLookupResult{}
+	}
+	if ambiguous := r.resourceConflicts[canonicalKey]; len(ambiguous) > 0 {
+		return model.PathLookupResult{Ambiguous: append([]string(nil), ambiguous...)}
+	}
+
+	return model.PathLookupResult{Path: r.resourceLookup[canonicalKey]}
 }
 
 func normalizeVaultPath(vaultPath string) (string, error) {
@@ -145,15 +164,16 @@ func normalizeVaultPath(vaultPath string) (string, error) {
 
 func readAttachmentFolderPath(vaultPath string) (string, error) {
 	configDirPath := filepath.Join(vaultPath, obsidianConfigDir)
-	if err := rejectSymlinkPath(configDirPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
+	hasConfigDir, err := hasValidObsidianConfigDir(configDirPath)
+	if err != nil {
 		return "", err
+	}
+	if !hasConfigDir {
+		return "", nil
 	}
 
 	appConfigPath := filepath.Join(vaultPath, filepath.FromSlash(obsidianAppJSON))
-	if err := rejectSymlinkPath(appConfigPath); err != nil {
+	if err := validateRegularNonSymlinkPath(appConfigPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
 		}
@@ -182,13 +202,33 @@ func readAttachmentFolderPath(vaultPath string) (string, error) {
 	return normalizedPath, nil
 }
 
-func rejectSymlinkPath(filePath string) error {
+func hasValidObsidianConfigDir(configDirPath string) (bool, error) {
+	info, err := os.Lstat(configDirPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("obsidian config path %q must not be a symbolic link", configDirPath)
+	}
+	if !info.IsDir() {
+		return false, nil
+	}
+	return true, nil
+}
+
+func validateRegularNonSymlinkPath(filePath string) error {
 	info, err := os.Lstat(filePath)
 	if err != nil {
 		return err
 	}
 	if info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("obsidian config path %q must not be a symbolic link", filePath)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("obsidian config path %q must be a regular file", filePath)
 	}
 	return nil
 }
@@ -200,7 +240,7 @@ func normalizeAttachmentFolderPath(raw string) (string, error) {
 	}
 
 	normalized := strings.ReplaceAll(raw, `\`, "/")
-	if hasWindowsDriveAbsolutePath(normalized) {
+	if hasWindowsDriveAbsolutePath(normalized) || hasDoubleSlashAbsolutePath(normalized) {
 		return "", fmt.Errorf("attachmentFolderPath must stay inside the vault: %q", raw)
 	}
 
@@ -225,6 +265,10 @@ func hasWindowsDriveAbsolutePath(cleaned string) bool {
 		return false
 	}
 	return len(cleaned) == 2 || cleaned[2] == '/'
+}
+
+func hasDoubleSlashAbsolutePath(cleaned string) bool {
+	return strings.HasPrefix(cleaned, "//")
 }
 
 func isASCIILetter(value byte) bool {
@@ -252,6 +296,21 @@ func isSymlinkEntry(entry fs.DirEntry) (bool, error) {
 		return false, err
 	}
 	return info.Mode()&fs.ModeSymlink != 0, nil
+}
+
+func isRegularFileEntry(entry fs.DirEntry) (bool, error) {
+	if entry.Type().IsRegular() {
+		return true, nil
+	}
+	if entry.Type()&fs.ModeSymlink != 0 || entry.IsDir() {
+		return false, nil
+	}
+
+	info, err := entry.Info()
+	if err != nil {
+		return false, err
+	}
+	return info.Mode().IsRegular(), nil
 }
 
 func hasSkippedPathSegment(relPath string) bool {
@@ -283,5 +342,17 @@ func normalizeLookupPath(relPath string) string {
 	if trimmed == "" {
 		return ""
 	}
-	return path.Clean(strings.ReplaceAll(trimmed, `\`, "/"))
+
+	normalized := strings.ReplaceAll(trimmed, `\`, "/")
+	normalized = strings.TrimPrefix(normalized, "/")
+	if normalized == "" {
+		return ""
+	}
+
+	normalized = path.Clean(normalized)
+	if normalized == "." || normalized == ".." || strings.HasPrefix(normalized, "../") {
+		return ""
+	}
+
+	return normalized
 }

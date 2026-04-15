@@ -1,6 +1,7 @@
 package asset
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,82 @@ import (
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/model"
 )
+
+func mustNewCollector(t *testing.T, vaultRoot string, indexed map[string]*model.Asset) *AssetCollector {
+	t.Helper()
+
+	collector, err := newCollectorWithReservedPaths(vaultRoot, indexed, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("newCollectorWithReservedPaths() error = %v", err)
+	}
+
+	return collector
+}
+
+func mustNewCollectorWithHook(t *testing.T, vaultRoot string, indexed map[string]*model.Asset, scanInventoryHook func() error) *AssetCollector {
+	t.Helper()
+
+	collector, err := newCollectorWithReservedPaths(vaultRoot, indexed, nil, nil, scanInventoryHook)
+	if err != nil {
+		t.Fatalf("newCollectorWithReservedPaths() error = %v", err)
+	}
+
+	return collector
+}
+
+func mergeAssetsForTest(vaultRoot string, indexed map[string]*model.Asset, collector *AssetCollector) map[string]*model.Asset {
+	return mergeAssetsForTestWithReservedPaths(vaultRoot, indexed, collector, nil)
+}
+
+func mergeAssetsForTestWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, collector *AssetCollector, reservedOutputPaths []string) map[string]*model.Asset {
+	merged := make(map[string]*model.Asset, len(indexed))
+	mergeAssetsIntoTestMap(merged, indexed)
+	if collector != nil {
+		mergeAssetsIntoTestMap(merged, collector.Snapshot())
+	}
+
+	assigned := planAssetDestinations(vaultRoot, merged, normalizeReservedOutputKeys(reservedOutputPaths))
+	for srcPath, asset := range merged {
+		if asset == nil {
+			continue
+		}
+		if dstPath := assigned[srcPath]; dstPath != "" {
+			asset.DstPath = dstPath
+		}
+	}
+
+	return merged
+}
+
+func mergeAssetsIntoTestMap(dst map[string]*model.Asset, src map[string]*model.Asset) {
+	if len(src) == 0 {
+		return
+	}
+
+	for key, asset := range src {
+		srcPath := normalizeAssetSource(key, asset)
+		if srcPath == "" {
+			continue
+		}
+
+		existing := dst[srcPath]
+		if existing == nil {
+			existing = &model.Asset{SrcPath: srcPath}
+			dst[srcPath] = existing
+		}
+
+		if asset != nil {
+			existing.RefCount += asset.RefCount
+			if dstPath := outputSitePath(asset.DstPath); dstPath != "" {
+				existing.DstPath = dstPath
+			}
+		}
+	}
+}
+
+func copyAssetsForTest(vaultRoot string, outputRoot string, assets map[string]*model.Asset, diagCollector *diag.Collector) error {
+	return CopyAssetsWithReservedPaths(vaultRoot, outputRoot, assets, diagCollector, nil)
+}
 
 func TestResolvePathAttachmentFallbackOnlyForBarePaths(t *testing.T) {
 	t.Parallel()
@@ -63,11 +140,15 @@ func TestResolvePathAttachmentFallbackOnlyForBarePaths(t *testing.T) {
 				t.Fatalf("CandidatePaths(%q) attachment candidate = %v, want %v (candidates=%v)", tt.rawDestination, hasAttachmentCandidate, tt.wantAttachmentCandidate, candidates)
 			}
 
-			got := ResolvePath(note, "attachments", tt.rawDestination, func(candidate string) bool {
-				return candidate == attachmentPath
-			})
+			got := ""
+			for _, candidate := range candidates {
+				if candidate == attachmentPath {
+					got = candidate
+					break
+				}
+			}
 			if got != tt.want {
-				t.Fatalf("ResolvePath(%q) = %q, want %q", tt.rawDestination, got, tt.want)
+				t.Fatalf("resolved candidate for %q = %q, want %q", tt.rawDestination, got, tt.want)
 			}
 		})
 	}
@@ -82,7 +163,7 @@ func TestAssetCollectorRegisterConcurrent(t *testing.T) {
 		"images/hero.png": {SrcPath: "images/hero.png", RefCount: 1},
 	}
 
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 
 	const registrations = 32
 	expected := "assets/hero.png"
@@ -130,7 +211,7 @@ func TestAssetCollectorRegisterRejectsScanExcludedInputsAndKeepsVisiblePathPlain
 		"images/photo.png": {SrcPath: "images/photo.png", RefCount: 1},
 	}
 
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	visible := collector.Register("images/photo.png")
 	if visible != "assets/photo.png" {
 		t.Fatalf("Register(images/photo.png) = %q, want %q", visible, "assets/photo.png")
@@ -158,7 +239,7 @@ func TestAssetCollectorRegisterRejectsScanExcludedInputsAndKeepsVisiblePathPlain
 		t.Fatalf("Snapshot()[images/photo.png] = %#v, want plain visible asset with refcount 2", asset)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if len(merged) != 1 {
 		t.Fatalf("len(MergeAssets()) = %d, want 1 accepted asset", len(merged))
 	}
@@ -176,8 +257,9 @@ func TestAssetCollectorRegisterBuildsVaultInventoryOnce(t *testing.T) {
 	writeAssetFile(t, vaultRoot, "docs/guide.txt", "guide")
 
 	scans := 0
-	collector := newCollector(vaultRoot, nil, func() {
+	collector := mustNewCollectorWithHook(t, vaultRoot, nil, func() error {
 		scans++
+		return nil
 	})
 	if scans != 1 {
 		t.Fatalf("inventory scans after construction = %d, want 1", scans)
@@ -198,13 +280,28 @@ func TestAssetCollectorRegisterBuildsVaultInventoryOnce(t *testing.T) {
 	}
 }
 
+func TestNewCollectorWithReservedPathsReturnsInventoryScanError(t *testing.T) {
+	t.Parallel()
+
+	wantErr := errors.New("scan failed")
+	collector, err := newCollectorWithReservedPaths(t.TempDir(), nil, nil, nil, func() error {
+		return wantErr
+	})
+	if collector != nil {
+		t.Fatalf("newCollectorWithReservedPaths() = %#v, want nil collector on scan failure", collector)
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("newCollectorWithReservedPaths() error = %v, want wrapped %v", err, wantErr)
+	}
+}
+
 func TestAssetCollectorRegisterKeepsPlainPathForUniquePass2AssetWithoutIndexedPlan(t *testing.T) {
 	t.Parallel()
 
 	vaultRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "images/hero.png", "hero")
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	got := collector.Register("images/hero.png")
 	want := "assets/hero.png"
 	if got != want {
@@ -217,7 +314,7 @@ func TestAssetCollectorRegisterHashesMissingPass2AssetWithoutIndexedPlan(t *test
 
 	vaultRoot := t.TempDir()
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	got := collector.Register("images/missing.png")
 	want := expectedHashedAssetPath(t, vaultRoot, "images/missing.png")
 	if got != want {
@@ -238,12 +335,12 @@ func TestMergeAssetsDedupesAcrossPasses(t *testing.T) {
 		"files/manual.pdf": {SrcPath: "files/manual.pdf", RefCount: 2},
 		"files/extra.bin":  {SrcPath: "files/extra.bin", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	heroPath := collector.Register("images/hero.png")
 	extraPath := collector.Register("files/extra.bin")
 	collector.Register("files/extra.bin")
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if len(merged) != 3 {
 		t.Fatalf("len(MergeAssets()) = %d, want 3", len(merged))
 	}
@@ -270,7 +367,7 @@ func TestMergeAssetsHashesSameBasenameCollisions(t *testing.T) {
 		"images/photo.png":      {SrcPath: "images/photo.png", RefCount: 1},
 		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	registered := collector.Register("attachments/photo.png")
 	if registered == "assets/photo.png" {
 		t.Fatalf("Register() = %q, want hashed collision path", registered)
@@ -279,7 +376,7 @@ func TestMergeAssetsHashesSameBasenameCollisions(t *testing.T) {
 		t.Fatalf("Register() = %q, want assets/photo.<hash>.png", registered)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	left := merged["images/photo.png"]
 	right := merged["attachments/photo.png"]
 	if left == nil || right == nil {
@@ -306,7 +403,7 @@ func TestAssetCollectorRegisterReplansIndexedPlainPathWhenPass2CollisionExists(t
 	indexed := map[string]*model.Asset{
 		"images/photo.png": {SrcPath: "images/photo.png", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	left := collector.Register("images/photo.png")
 	if left == "assets/photo.png" {
 		t.Fatalf("Register(images/photo.png) = %q, want hashed collision path", left)
@@ -334,7 +431,7 @@ func TestAssetCollectorRegisterReplansIndexedPlainPathWhenPass2CollisionExists(t
 		t.Fatalf("Snapshot()[attachments/photo.png] = %#v, want stable DstPath %q", asset, right)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if asset := merged["images/photo.png"]; asset == nil || asset.DstPath != left {
 		t.Fatalf("merged[images/photo.png] = %#v, want stable DstPath %q", asset, left)
 	}
@@ -350,13 +447,13 @@ func TestAssetCollectorRegisterHashesPass2OnlyCollisionIndependentlyOfOrder(t *t
 	writeAssetFile(t, vaultRoot, "images/photo.png", "left")
 	writeAssetFile(t, vaultRoot, "attachments/photo.png", "right")
 
-	collectorA := NewCollector(vaultRoot, nil)
+	collectorA := mustNewCollector(t, vaultRoot, nil)
 	forward := map[string]string{
 		"images/photo.png":      collectorA.Register("images/photo.png"),
 		"attachments/photo.png": collectorA.Register("attachments/photo.png"),
 	}
 
-	collectorB := NewCollector(vaultRoot, nil)
+	collectorB := mustNewCollector(t, vaultRoot, nil)
 	reverse := map[string]string{
 		"attachments/photo.png": collectorB.Register("attachments/photo.png"),
 		"images/photo.png":      collectorB.Register("images/photo.png"),
@@ -381,7 +478,7 @@ func TestAssetCollectorRegisterKeepsExistingPathPlainAfterMissingSameBasename(t 
 	vaultRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "attachments/photo.png", "photo")
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	missing := collector.Register("images/photo.png")
 	wantMissing := expectedHashedAssetPath(t, vaultRoot, "images/photo.png")
 	if missing != wantMissing {
@@ -393,7 +490,7 @@ func TestAssetCollectorRegisterKeepsExistingPathPlainAfterMissingSameBasename(t 
 		t.Fatalf("Register(attachments/photo.png) = %q, want %q", existing, "assets/photo.png")
 	}
 
-	merged := MergeAssets(vaultRoot, nil, collector)
+	merged := mergeAssetsForTest(vaultRoot, nil, collector)
 	if asset := merged["attachments/photo.png"]; asset == nil || asset.DstPath != existing {
 		t.Fatalf("merged[attachments/photo.png] = %#v, want stable plain DstPath %q", asset, existing)
 	}
@@ -413,7 +510,7 @@ func TestAssetCollectorRegisterKeepsIndexedCollisionStable(t *testing.T) {
 		"images/photo.png":      {SrcPath: "images/photo.png", RefCount: 1},
 		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	left := collector.Register("images/photo.png")
 	right := collector.Register("attachments/photo.png")
 
@@ -424,12 +521,139 @@ func TestAssetCollectorRegisterKeepsIndexedCollisionStable(t *testing.T) {
 		t.Fatalf("Register() returned %q and %q, want distinct paths for different contents", left, right)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if asset := merged["images/photo.png"]; asset == nil || asset.DstPath != left {
 		t.Fatalf("merged[images/photo.png] = %#v, want stable DstPath %q", asset, left)
 	}
 	if asset := merged["attachments/photo.png"]; asset == nil || asset.DstPath != right {
 		t.Fatalf("merged[attachments/photo.png] = %#v, want stable DstPath %q", asset, right)
+	}
+}
+
+func TestAssetCollectorPlanDestinationsUsesVisibleUnreferencedCollisionInventory(t *testing.T) {
+	t.Parallel()
+
+	vaultRoot := t.TempDir()
+	writeAssetFile(t, vaultRoot, "attachments/photo.png", "attachment")
+	writeAssetFile(t, vaultRoot, "images/photo.png", "unreferenced-collision")
+
+	collector := mustNewCollector(t, vaultRoot, nil)
+	planned := collector.PlanDestinations(map[string]*model.Asset{
+		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
+	})
+	if len(planned) != 1 {
+		t.Fatalf("len(PlanDestinations()) = %d, want 1 requested asset", len(planned))
+	}
+
+	dstPath := planned["attachments/photo.png"]
+	if dstPath == "assets/photo.png" {
+		t.Fatalf("PlanDestinations()[attachments/photo.png] = %q, want hashed path when visible unreferenced collision exists", dstPath)
+	}
+	if !strings.HasPrefix(dstPath, "assets/photo.") || !strings.HasSuffix(dstPath, ".png") {
+		t.Fatalf("PlanDestinations()[attachments/photo.png] = %q, want assets/photo.<hash>.png", dstPath)
+	}
+
+	if got := collector.Register("attachments/photo.png"); got != dstPath {
+		t.Fatalf("Register(attachments/photo.png) = %q, want finalized planned path %q", got, dstPath)
+	}
+	if snapshot := collector.Snapshot(); snapshot["attachments/photo.png"] == nil || snapshot["attachments/photo.png"].DstPath != dstPath {
+		t.Fatalf("Snapshot()[attachments/photo.png] = %#v, want finalized planned path %q", snapshot["attachments/photo.png"], dstPath)
+	}
+}
+
+func TestMergeAssetsRecomputesCollisionHashesWhenAssetContentChanges(t *testing.T) {
+	t.Parallel()
+
+	vaultRoot := t.TempDir()
+	writeAssetFile(t, vaultRoot, "images/photo.png", "left-v1")
+	writeAssetFile(t, vaultRoot, "attachments/photo.png", "right")
+
+	indexed := mergeAssetsForTest(vaultRoot, map[string]*model.Asset{
+		"images/photo.png":      {SrcPath: "images/photo.png", RefCount: 1},
+		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
+	}, nil)
+	initialLeft := indexed["images/photo.png"]
+	if initialLeft == nil {
+		t.Fatal("indexed[images/photo.png] = nil, want asset")
+	}
+	if initialLeft.DstPath == "assets/photo.png" {
+		t.Fatalf("indexed[images/photo.png].DstPath = %q, want hashed collision path", initialLeft.DstPath)
+	}
+	initialLeftDst := initialLeft.DstPath
+
+	writeAssetFile(t, vaultRoot, "images/photo.png", "left-v2")
+
+	merged := mergeAssetsForTest(vaultRoot, indexed, nil)
+	sources := []string{"attachments/photo.png", "images/photo.png"}
+	want := hashCollisionPaths(vaultRoot, plainAssetKey("images/photo.png"), sources)
+
+	left := merged["images/photo.png"]
+	if left == nil {
+		t.Fatal("merged[images/photo.png] = nil, want asset")
+	}
+	if left.DstPath != want["images/photo.png"] {
+		t.Fatalf("merged[images/photo.png].DstPath = %q, want recomputed path %q", left.DstPath, want["images/photo.png"])
+	}
+	if left.DstPath == initialLeftDst {
+		t.Fatalf("merged[images/photo.png].DstPath = %q, want content change to produce a new hashed destination", left.DstPath)
+	}
+
+	right := merged["attachments/photo.png"]
+	if right == nil {
+		t.Fatal("merged[attachments/photo.png] = nil, want asset")
+	}
+	if right.DstPath != want["attachments/photo.png"] {
+		t.Fatalf("merged[attachments/photo.png].DstPath = %q, want current collision-group path %q", right.DstPath, want["attachments/photo.png"])
+	}
+}
+
+func TestMergeAssetsRestoresPlainPathAfterCollisionDisappears(t *testing.T) {
+	t.Parallel()
+
+	vaultRoot := t.TempDir()
+	writeAssetFile(t, vaultRoot, "attachments/photo.png", "photo")
+
+	indexed := map[string]*model.Asset{
+		"images/photo.png": {
+			SrcPath:  "images/photo.png",
+			RefCount: 1,
+			DstPath:  expectedHashedAssetPath(t, vaultRoot, "images/photo.png"),
+		},
+		"attachments/photo.png": {
+			SrcPath:  "attachments/photo.png",
+			RefCount: 1,
+			DstPath:  expectedHashedAssetPath(t, vaultRoot, "attachments/photo.png"),
+		},
+	}
+
+	merged := mergeAssetsForTest(vaultRoot, indexed, nil)
+	if asset := merged["attachments/photo.png"]; asset == nil || asset.DstPath != "assets/photo.png" {
+		t.Fatalf("merged[attachments/photo.png] = %#v, want converged plain DstPath %q", asset, "assets/photo.png")
+	}
+	if asset := merged["images/photo.png"]; asset == nil || asset.DstPath == "assets/photo.png" || !strings.HasPrefix(asset.DstPath, "assets/photo.") || !strings.HasSuffix(asset.DstPath, ".png") {
+		t.Fatalf("merged[images/photo.png] = %#v, want hashed DstPath after surviving source reclaims plain path", asset)
+	}
+}
+
+func TestMergeAssetsRestoresPlainPathAfterReservedOutputIsReleased(t *testing.T) {
+	t.Parallel()
+
+	vaultRoot := t.TempDir()
+	writeAssetFile(t, vaultRoot, "theme/custom.css", "body {}")
+
+	reserved := mergeAssetsForTestWithReservedPaths(vaultRoot, map[string]*model.Asset{
+		"theme/custom.css": {
+			SrcPath:  "theme/custom.css",
+			RefCount: 1,
+		},
+	}, nil, []string{"assets/custom.css"})
+	if asset := reserved["theme/custom.css"]; asset == nil || asset.DstPath == "assets/custom.css" {
+		t.Fatalf("reserved[theme/custom.css] = %#v, want hashed DstPath while plain output is reserved", asset)
+	}
+
+	released := mergeAssetsForTest(vaultRoot, reserved, nil)
+	if asset := released["theme/custom.css"]; asset == nil || asset.DstPath != "assets/custom.css" {
+		t.Fatalf("released[theme/custom.css] = %#v, want converged plain DstPath %q after reserved output is removed", asset, "assets/custom.css")
 	}
 }
 
@@ -440,15 +664,15 @@ func TestCopyAssetsCopiesMergedAssets(t *testing.T) {
 	outputRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "images/hero.png", "hero-bytes")
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	registered := collector.Register("images/hero.png")
 	if registered != "assets/hero.png" {
 		t.Fatalf("Register() = %q, want %q", registered, "assets/hero.png")
 	}
-	merged := MergeAssets(vaultRoot, nil, collector)
+	merged := mergeAssetsForTest(vaultRoot, nil, collector)
 	collectorDiag := diag.NewCollector()
 
-	if err := CopyAssets(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
+	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
 		t.Fatalf("CopyAssets() error = %v", err)
 	}
 	if collectorDiag.Len() != 0 {
@@ -478,7 +702,7 @@ func TestMergeAssetsRewritesNonAssetDestinationUnderAssets(t *testing.T) {
 		"images/hero.png": {SrcPath: "images/hero.png", RefCount: 1, DstPath: "notes/hero.png"},
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, nil)
+	merged := mergeAssetsForTest(vaultRoot, indexed, nil)
 	asset := merged["images/hero.png"]
 	if asset == nil {
 		t.Fatal("merged[images/hero.png] = nil, want asset")
@@ -488,7 +712,7 @@ func TestMergeAssetsRewritesNonAssetDestinationUnderAssets(t *testing.T) {
 	}
 
 	collectorDiag := diag.NewCollector()
-	if err := CopyAssets(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
+	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
 		t.Fatalf("CopyAssets() error = %v", err)
 	}
 	if collectorDiag.Len() != 0 {
@@ -513,12 +737,12 @@ func TestCopyAssetsRecordsMissingAssetDiagnostics(t *testing.T) {
 	vaultRoot := t.TempDir()
 	outputRoot := t.TempDir()
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	collector.Register("images/missing.png")
-	merged := MergeAssets(vaultRoot, nil, collector)
+	merged := mergeAssetsForTest(vaultRoot, nil, collector)
 	collectorDiag := diag.NewCollector()
 
-	if err := CopyAssets(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
+	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
 		t.Fatalf("CopyAssets() error = %v", err)
 	}
 
@@ -544,7 +768,7 @@ func TestAssetCollectorRegisterRejectsWindowsAbsoluteAndUNCPaths(t *testing.T) {
 		"\\\\server\\share\\photo.png",
 	} {
 		t.Run(input, func(t *testing.T) {
-			collector := NewCollector(t.TempDir(), nil)
+			collector := mustNewCollector(t, t.TempDir(), nil)
 			if got := collector.Register(input); got != "" {
 				t.Fatalf("Register(%q) = %q, want empty path", input, got)
 			}
@@ -566,7 +790,7 @@ func TestAssetCollectorRegisterRejectsSchemeBasedPaths(t *testing.T) {
 		"mailto:foo@example.com",
 	} {
 		t.Run(input, func(t *testing.T) {
-			collector := NewCollector(t.TempDir(), nil)
+			collector := mustNewCollector(t, t.TempDir(), nil)
 			if got := collector.Register(input); got != "" {
 				t.Fatalf("Register(%q) = %q, want empty path", input, got)
 			}
@@ -585,7 +809,7 @@ func TestAssetCollectorRegisterTreatsSymlinkedSourceAsMissing(t *testing.T) {
 	writeAssetFile(t, externalRoot, "hero.png", "outside")
 	writeAssetSymlinkOrSkip(t, filepath.Join(externalRoot, "hero.png"), filepath.Join(vaultRoot, "images", "hero.png"))
 
-	collector := NewCollector(vaultRoot, nil)
+	collector := mustNewCollector(t, vaultRoot, nil)
 	got := collector.Register("images/hero.png")
 	want := expectedHashedAssetPath(t, vaultRoot, "images/hero.png")
 	if got != want {
@@ -634,7 +858,7 @@ func TestCopyAssetsRecordsDiagnosticsForSymlinkedSources(t *testing.T) {
 			}
 			collectorDiag := diag.NewCollector()
 
-			if err := CopyAssets(vaultRoot, outputRoot, assets, collectorDiag); err != nil {
+			if err := copyAssetsForTest(vaultRoot, outputRoot, assets, collectorDiag); err != nil {
 				t.Fatalf("CopyAssets() error = %v", err)
 			}
 
@@ -663,14 +887,14 @@ func TestAssetCollectorRegisterReturnsStableSitePath(t *testing.T) {
 		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
 		"images/photo.png":      {SrcPath: "images/photo.png", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	first := collector.Register("images/photo.png")
 	second := collector.Register("images/photo.png")
 	if first != second {
 		t.Fatalf("Register() returned %q then %q, want stable site path", first, second)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if asset := merged["images/photo.png"]; asset == nil || asset.DstPath != first || asset.RefCount != 3 {
 		t.Fatalf("merged[images/photo.png] = %#v, want stable DstPath %q and refcount 3", asset, first)
 	}
@@ -688,7 +912,7 @@ func TestAssetCollectorRegisterHashesCaseInsensitiveBasenameCollisions(t *testin
 		"images/Photo.png":      {SrcPath: "images/Photo.png", RefCount: 1},
 		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
 	}
-	collector := NewCollector(vaultRoot, indexed)
+	collector := mustNewCollector(t, vaultRoot, indexed)
 	left := collector.Register("images/Photo.png")
 	right := collector.Register("attachments/photo.png")
 
@@ -708,7 +932,7 @@ func TestAssetCollectorRegisterHashesCaseInsensitiveBasenameCollisions(t *testin
 		t.Fatalf("Register() returned %q and %q, want distinct paths for different contents", left, right)
 	}
 
-	merged := MergeAssets(vaultRoot, indexed, collector)
+	merged := mergeAssetsForTest(vaultRoot, indexed, collector)
 	if asset := merged["images/Photo.png"]; asset == nil || asset.DstPath != left {
 		t.Fatalf("merged[images/Photo.png] = %#v, want stable DstPath %q", asset, left)
 	}
@@ -717,7 +941,7 @@ func TestAssetCollectorRegisterHashesCaseInsensitiveBasenameCollisions(t *testin
 	}
 
 	collectorDiag := diag.NewCollector()
-	if err := CopyAssets(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
+	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
 		t.Fatalf("CopyAssets() error = %v", err)
 	}
 	if collectorDiag.Len() != 0 {

@@ -78,11 +78,12 @@ type BacklinkEntry struct {
 
 // NoteSummary is the compact note representation used in list pages.
 type NoteSummary struct {
-	Title   string
-	Summary string
-	URL     string
-	Date    time.Time
-	Tags    []TagLink
+	Title        string
+	Summary      string
+	URL          string
+	Date         time.Time
+	LastModified time.Time
+	Tags         []TagLink
 }
 
 // TOCEntry represents a nested table-of-contents item for a note page.

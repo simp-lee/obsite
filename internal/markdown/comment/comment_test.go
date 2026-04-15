@@ -51,9 +51,24 @@ func TestStrip(t *testing.T) {
 			want:  "- item\n\n    ```md\n    %% not a comment %%\n    ```\nafter \n",
 		},
 		{
+			name:  "list fenced code block content is preserved with tab indentation",
+			input: "- item\n\n\t```md\n\t%% not a comment %%\n\t```\nafter %%gone%%\n",
+			want:  "- item\n\n\t```md\n\t%% not a comment %%\n\t```\nafter \n",
+		},
+		{
 			name:  "list indented code block content is preserved",
 			input: "- item\n\n      %% not a comment %%\nafter %%gone%%\n",
 			want:  "- item\n\n      %% not a comment %%\nafter \n",
+		},
+		{
+			name:  "list indented code block content is preserved with tab indentation",
+			input: "- item\n\n\t\t%% not a comment %%\nafter %%gone%%\n",
+			want:  "- item\n\n\t\t%% not a comment %%\nafter \n",
+		},
+		{
+			name:  "nested list blockquote fenced code block content is preserved with tab indentation",
+			input: "- item\n\n\t> ```md\n\t> %% not a comment %%\n\t> ```\nafter %%gone%%\n",
+			want:  "- item\n\n\t> ```md\n\t> %% not a comment %%\n\t> ```\nafter \n",
 		},
 		{
 			name:  "fence opener revealed after stripping same line comment",

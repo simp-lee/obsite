@@ -1,0 +1,143 @@
+package resourcepath
+
+import (
+	"reflect"
+	"testing"
+
+	"github.com/simp-lee/obsite/internal/model"
+)
+
+func TestCandidatePathsIncludeAttachmentFolderFallback(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	idx := &model.VaultIndex{AttachmentFolderPath: "assets/uploads"}
+
+	got := CandidatePathsWithAttachmentFolder(note, idx.AttachmentFolderPath, "diagram.png")
+	want := []string{"notes/diagram.png", "diagram.png", "assets/uploads/diagram.png"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CandidatePathsWithAttachmentFolder() = %#v, want %#v", got, want)
+	}
+}
+
+func TestResolveIndexedAssetPathSupportsDecodedAndAttachmentFolderTargets(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	idx := &model.VaultIndex{
+		AttachmentFolderPath: "assets/uploads",
+		Assets: map[string]*model.Asset{
+			"images/My Chart.png":       {SrcPath: "images/My Chart.png"},
+			"assets/uploads/poster.png": {SrcPath: "assets/uploads/poster.png"},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{
+			name:   "decoded note relative target",
+			target: "../images/My%20Chart.png?raw=1#frag",
+			want:   "images/My Chart.png",
+		},
+		{
+			name:   "attachment folder fallback",
+			target: "poster.png",
+			want:   "assets/uploads/poster.png",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ResolveIndexedAssetPath(note, idx, tt.target); got != tt.want {
+				t.Fatalf("ResolveIndexedAssetPath(%q) = %q, want %q", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveIndexedAssetPathCanonicalizesUnicodeLookupKeys(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	idx := &model.VaultIndex{
+		AttachmentFolderPath: "assets/uploads",
+		Assets: map[string]*model.Asset{
+			"images/Cafe\u0301 Chart.png":          {SrcPath: "images/Cafe\u0301 Chart.png"},
+			"assets/uploads/Cafe\u0301 Poster.png": {SrcPath: "assets/uploads/Cafe\u0301 Poster.png"},
+		},
+	}
+
+	tests := []struct {
+		name   string
+		target string
+		want   string
+	}{
+		{
+			name:   "standard markdown image path",
+			target: "../images/Café Chart.png?raw=1#frag",
+			want:   "images/Cafe\u0301 Chart.png",
+		},
+		{
+			name:   "image embed target",
+			target: "Café Poster.png",
+			want:   "assets/uploads/Cafe\u0301 Poster.png",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ResolveIndexedAssetPath(note, idx, tt.target); got != tt.want {
+				t.Fatalf("ResolveIndexedAssetPath(%q) = %q, want %q", tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLookupIndexedAssetPathRefusesCanonicalUnicodeCollisions(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/Cafe\u0301 Chart.png": {SrcPath: "images/Cafe\u0301 Chart.png"},
+			"images/Café Chart.png":       {SrcPath: "images/Café Chart.png"},
+		},
+	}
+
+	lookup := LookupIndexedAssetPath(note, idx, "../images/CAFÉ Chart.png?raw=1#frag")
+	if lookup.Path != "" {
+		t.Fatalf("LookupIndexedAssetPath().Path = %q, want empty when canonical fallback is ambiguous", lookup.Path)
+	}
+	want := []string{"images/Cafe\u0301 Chart.png", "images/Café Chart.png"}
+	if !reflect.DeepEqual(lookup.Ambiguous, want) {
+		t.Fatalf("LookupIndexedAssetPath().Ambiguous = %#v, want %#v", lookup.Ambiguous, want)
+	}
+	if got := ResolveIndexedAssetPath(note, idx, "../images/CAFÉ Chart.png?raw=1#frag"); got != "" {
+		t.Fatalf("ResolveIndexedAssetPath() = %q, want empty when canonical fallback is ambiguous", got)
+	}
+}
+
+func TestResolvePathSupportsAttachmentFolderFallbackWithoutIndex(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+
+	lookup := LookupPath(note, "assets/uploads", "poster.png", func(candidate string) model.PathLookupResult {
+		if candidate == "assets/uploads/poster.png" {
+			return model.PathLookupResult{Path: candidate}
+		}
+		return model.PathLookupResult{}
+	})
+	if lookup.Path != "assets/uploads/poster.png" {
+		t.Fatalf("LookupPath().Path = %q, want %q", lookup.Path, "assets/uploads/poster.png")
+	}
+}

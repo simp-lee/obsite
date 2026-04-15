@@ -2,16 +2,17 @@ package markdown
 
 import (
 	"bytes"
+	"html"
 	"net/url"
 	"path"
 	"path/filepath"
 	"strings"
 
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
-	internalasset "github.com/simp-lee/obsite/internal/asset"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	gast "github.com/yuin/goldmark/ast"
@@ -174,28 +175,7 @@ func (r *imageHTMLRenderer) videoEmbedTitle(source []byte, node *gast.Image, fal
 }
 
 func (r *imageHTMLRenderer) writeAltText(w util.BufWriter, source []byte, node gast.Node) {
-	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
-		switch current := child.(type) {
-		case *gast.Text:
-			value := bytes.TrimRight(current.Value(source), "\r\n")
-			if current.IsRaw() {
-				r.Writer.RawWrite(w, value)
-			} else {
-				r.Writer.Write(w, value)
-			}
-			if current.SoftLineBreak() || current.HardLineBreak() {
-				_ = w.WriteByte(' ')
-			}
-		case *gast.String:
-			if current.IsRaw() || current.IsCode() {
-				r.Writer.RawWrite(w, current.Value)
-			} else {
-				r.Writer.Write(w, current.Value)
-			}
-		default:
-			r.writeAltText(w, source, child)
-		}
-	}
+	_, _ = w.WriteString(html.EscapeString(plainAltText(source, node)))
 }
 
 func plainAltText(source []byte, node gast.Node) string {
@@ -251,14 +231,11 @@ func (r *imageHTMLRenderer) rewriteDestination(rawDestination string) string {
 }
 
 func (r *imageHTMLRenderer) resolveIndexedAssetPath(rawDestination string) string {
-	attachmentFolderPath := ""
-	if r != nil && r.index != nil {
-		attachmentFolderPath = r.index.AttachmentFolderPath
+	if r == nil {
+		return ""
 	}
 
-	return internalasset.ResolvePath(r.sourceNote, attachmentFolderPath, rawDestination, func(candidate string) bool {
-		return r != nil && r.index != nil && r.index.Assets[candidate] != nil
-	})
+	return resourcepath.ResolveIndexedAssetPath(r.sourceNote, r.index, rawDestination)
 }
 
 type codeBlockExtender struct {
@@ -512,10 +489,6 @@ func normalizeSitePath(value string) string {
 	}
 
 	return cleaned
-}
-
-func isOutsideVaultPath(value string) bool {
-	return value == ".." || strings.HasPrefix(value, "../")
 }
 
 func splitDestinationSuffix(value string) (string, string) {

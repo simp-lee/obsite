@@ -19,10 +19,10 @@ type Note struct {
 	HTMLContent   string
 	Summary       string
 
-	OutLinks []LinkRef
-	Embeds   []EmbedRef
+	OutLinks  []LinkRef
+	Embeds    []EmbedRef
+	ImageRefs []ImageRef
 
-	Publish    *bool
 	HasMath    bool
 	HasMermaid bool
 }
@@ -132,6 +132,13 @@ type EmbedRef struct {
 	Width    int
 	Line     int
 	Offset   int
+}
+
+// ImageRef records a standard Markdown image reference discovered during parsing.
+type ImageRef struct {
+	RawTarget string
+	Line      int
+	Offset    int
 }
 
 // Tag represents a tag and the notes currently associated with it.

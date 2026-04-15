@@ -27,7 +27,7 @@ func TestVaultResolverResolveWikilink_BestMatch(t *testing.T) {
 	}
 
 	idx := buildIndex([]*model.Note{current, exact, filename, alias, near, far}, nil)
-	resolver := NewVaultResolver(idx, current, diag.NewCollector())
+	resolver := NewRenderVaultResolver(idx, current, current, "", diag.NewCollector())
 
 	tests := []struct {
 		name       string
@@ -92,7 +92,7 @@ func TestVaultResolverResolveWikilink_UnpublishedDowngradesToPlainText(t *testin
 	private := testNote("private/secret.md", "private/secret", withAliases("Private"))
 	idx := buildIndex([]*model.Note{current}, []*model.Note{private})
 	collector := diag.NewCollector()
-	resolver := NewVaultResolver(idx, current, collector)
+	resolver := NewRenderVaultResolver(idx, current, current, "", collector)
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Private")})
 	if err != nil {
@@ -129,7 +129,7 @@ func TestVaultResolverResolveWikilink_ExplicitPathDoesNotFallbackToBasename(t *t
 	publicCollision := testNote("docs/secret.md", "docs/secret")
 	unpublished := testNote("private/secret.md", "private/secret")
 	collector := diag.NewCollector()
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current, publicCollision}, []*model.Note{unpublished}), current, collector)
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, publicCollision}, []*model.Note{unpublished}), current, current, "", collector)
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("private/secret")})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestVaultResolverResolveWikilink_DeadLinkWarns(t *testing.T) {
 	current.OutLinks = []model.LinkRef{{RawTarget: "Missing", Line: 18}}
 
 	collector := diag.NewCollector()
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current}, nil), current, collector)
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current}, nil), current, current, "", collector)
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Missing")})
 	if err != nil {
@@ -195,7 +195,7 @@ func TestVaultResolverResolveWikilink_AmbiguityWarnsAndChoosesLexicographicFirst
 	beta := testNote("beta/docs.md", "beta/docs", withAliases("Docs"))
 	idx := buildIndex([]*model.Note{current, alpha, beta}, nil)
 	collector := diag.NewCollector()
-	resolver := NewVaultResolver(idx, current, collector)
+	resolver := NewRenderVaultResolver(idx, current, current, "", collector)
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Docs")})
 	if err != nil {
@@ -232,7 +232,7 @@ func TestVaultResolverResolveWikilink_UniqueAliasBeatsDuplicateFilenameMatches(t
 	nearFilename := testNote("notes/overview.md", "notes/overview")
 	farFilename := testNote("archive/overview.md", "archive/overview")
 	alias := testNote("docs/home.md", "docs/home", withAliases("Overview"))
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current, nearFilename, farFilename, alias}, nil), current, diag.NewCollector())
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, nearFilename, farFilename, alias}, nil), current, current, "", diag.NewCollector())
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Overview")})
 	if err != nil {
@@ -261,7 +261,7 @@ func TestVaultResolverResolveWikilink_DottedTargetsStillUseBestMatch(t *testing.
 		{RawTarget: "Team Docs v2.1", Line: 23},
 	}
 
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current, filename, alias}, nil), current, diag.NewCollector())
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, filename, alias}, nil), current, current, "", diag.NewCollector())
 
 	tests := []struct {
 		name       string
@@ -305,6 +305,136 @@ func TestVaultResolverResolveWikilink_DottedTargetsStillUseBestMatch(t *testing.
 	}
 }
 
+func TestLookupTargetCanonicalizesUnicodeLookupKeys(t *testing.T) {
+	t.Parallel()
+
+	current := testNote("notes/current.md", "notes/current")
+	publicByName := testNote("notes/Cafe\u0301 Guide.md", "notes/cafe-guide")
+	publicByAlias := testNote("notes/alias.md", "notes/alias", withAliases("Re\u0301sume\u0301"))
+	unpublishedByName := testNote("notes/De\u0301ja\u0300 Vu.md", "notes/deja-vu")
+	unpublishedByAlias := testNote("notes/private.md", "notes/private", withAliases("Touche\u0301"))
+
+	idx := buildIndex(
+		[]*model.Note{current, publicByName, publicByAlias},
+		[]*model.Note{unpublishedByName, unpublishedByAlias},
+	)
+
+	tests := []struct {
+		name            string
+		target          string
+		want            *model.Note
+		wantUnpublished bool
+	}{
+		{name: "public filename", target: "Café Guide", want: publicByName},
+		{name: "public alias", target: "Résumé", want: publicByAlias},
+		{name: "unpublished filename", target: "Déjà Vu", want: unpublishedByName, wantUnpublished: true},
+		{name: "unpublished alias", target: "Touché", want: unpublishedByAlias, wantUnpublished: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lookup := LookupTarget(idx, current, tt.target, "")
+			if lookup.Note != tt.want {
+				t.Fatalf("LookupTarget(%q).Note = %#v, want %#v", tt.target, lookup.Note, tt.want)
+			}
+			if lookup.Unpublished != tt.wantUnpublished {
+				t.Fatalf("LookupTarget(%q).Unpublished = %v, want %v", tt.target, lookup.Unpublished, tt.wantUnpublished)
+			}
+			if lookup.MissingFragment {
+				t.Fatalf("LookupTarget(%q).MissingFragment = true, want false", tt.target)
+			}
+			if len(lookup.Ambiguous) != 0 {
+				t.Fatalf("LookupTarget(%q).Ambiguous = %#v, want nil", tt.target, lookup.Ambiguous)
+			}
+		})
+	}
+}
+
+func TestVaultResolverResolveWikilink_CanvasLookupCanonicalizesUnicodeResourceNames(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		target string
+	}{
+		{name: "explicit path", target: "boards/Café.canvas"},
+		{name: "basename fallback", target: "Café.canvas"},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			current := testNote("notes/current.md", "notes/current")
+			current.OutLinks = []model.LinkRef{{RawTarget: tt.target, Line: 15}}
+
+			idx := buildIndex([]*model.Note{current}, nil)
+			idx.SetResources([]string{"boards/Cafe\u0301.canvas"})
+
+			collector := diag.NewCollector()
+			resolver := NewRenderVaultResolver(idx, current, current, "", collector)
+
+			got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte(tt.target)})
+			if err != nil {
+				t.Fatalf("ResolveWikilink() error = %v", err)
+			}
+			if got != nil {
+				t.Fatalf("ResolveWikilink() = %q, want nil destination", string(got))
+			}
+
+			gotOutLinks := resolver.OutLinks()
+			if len(gotOutLinks) != 1 || gotOutLinks[0].ResolvedRelPath != "" {
+				t.Fatalf("resolver.OutLinks() = %#v, want one unresolved outlink", gotOutLinks)
+			}
+
+			want := []diag.Diagnostic{{
+				Severity: diag.SeverityWarning,
+				Kind:     diag.KindUnsupportedSyntax,
+				Location: diag.Location{Path: current.RelPath, Line: 15},
+				Message:  `wikilink "` + tt.target + `" targets unsupported canvas content; rendering as plain text`,
+			}}
+			if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
+				t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestVaultResolverResolveWikilink_RefusesAmbiguousCanvasBasenameFallback(t *testing.T) {
+	t.Parallel()
+
+	current := testNote("notes/current.md", "notes/current")
+	current.OutLinks = []model.LinkRef{{RawTarget: "plan.canvas", Line: 15}}
+
+	idx := buildIndex([]*model.Note{current}, nil)
+	idx.SetResources([]string{"boards/plan.canvas", "archive/plan.canvas"})
+
+	collector := diag.NewCollector()
+	resolver := NewRenderVaultResolver(idx, current, current, "", collector)
+
+	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("plan.canvas")})
+	if err != nil {
+		t.Fatalf("ResolveWikilink() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ResolveWikilink() = %q, want nil destination", string(got))
+	}
+
+	gotOutLinks := resolver.OutLinks()
+	if len(gotOutLinks) != 1 || gotOutLinks[0].ResolvedRelPath != "" {
+		t.Fatalf("resolver.OutLinks() = %#v, want one unresolved outlink", gotOutLinks)
+	}
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SeverityWarning,
+		Kind:     diag.KindUnsupportedSyntax,
+		Location: diag.Location{Path: current.RelPath, Line: 15},
+		Message:  `wikilink "plan.canvas" matched multiple canvas resources after canonical lookup (archive/plan.canvas, boards/plan.canvas); refusing canonical fallback and rendering as plain text`,
+	}}
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
+	}
+}
+
 func TestVaultResolverResolveWikilink_ResolvesFragments(t *testing.T) {
 	t.Parallel()
 
@@ -323,7 +453,7 @@ func TestVaultResolverResolveWikilink_ResolvesFragments(t *testing.T) {
 		{RawTarget: "#Current Section", Line: 8},
 	}
 
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current, target}, nil), current, diag.NewCollector())
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, target}, nil), current, current, "", diag.NewCollector())
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Guide"), Fragment: []byte("Section Title")})
 	if err != nil {
@@ -366,7 +496,7 @@ func TestVaultResolverResolveWikilink_MissingFragmentWarnsAndDoesNotResolve(t *t
 		withHeadings(model.Heading{Level: 2, Text: "Section Title", ID: "section-title"}),
 	)
 	collector := diag.NewCollector()
-	resolver := NewVaultResolver(buildIndex([]*model.Note{current, target}, nil), current, collector)
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, target}, nil), current, current, "", collector)
 
 	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("Guide"), Fragment: []byte("Missing Heading")})
 	if err != nil {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -87,9 +88,6 @@ layout: journal
 
 	if note.Frontmatter.Publish == nil || !*note.Frontmatter.Publish {
 		t.Fatalf("Frontmatter.Publish = %v, want true", note.Frontmatter.Publish)
-	}
-	if note.Publish == nil || !*note.Publish {
-		t.Fatalf("Publish = %v, want true", note.Publish)
 	}
 	if note.Frontmatter.Slug != "custom-launch" {
 		t.Fatalf("Frontmatter.Slug = %q, want %q", note.Frontmatter.Slug, "custom-launch")
@@ -308,8 +306,8 @@ secret
 	if note == nil {
 		t.Fatal("Unpublished.Notes[notes/guide.md] = nil, want note")
 	}
-	if note.Publish == nil || *note.Publish {
-		t.Fatalf("Publish = %v, want false", note.Publish)
+	if note.Frontmatter.Publish == nil || *note.Frontmatter.Publish {
+		t.Fatalf("Frontmatter.Publish = %v, want false", note.Frontmatter.Publish)
 	}
 	if string(note.RawContent) != "secret\n" {
 		t.Fatalf("RawContent = %q, want %q", string(note.RawContent), "secret\n")
@@ -323,6 +321,101 @@ secret
 	byAlias := got.Unpublished.AliasByName["docs"]
 	if len(byAlias) != 1 || byAlias[0] != note {
 		t.Fatalf("Unpublished.AliasByName[docs] = %#v, want [%p]", byAlias, note)
+	}
+}
+
+func TestParseFrontmatterCanonicalizesUnicodeLookupKeysForUnpublishedNotes(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/Cafe\u0301 Guide.md", "---\naliases:\n  - Re\u0301sume\u0301\npublish: false\n---\nsecret\n")
+
+	scanResult, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: true})
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+
+	note := got.Unpublished.Notes["notes/Cafe\u0301 Guide.md"]
+	if note == nil {
+		t.Fatal("Unpublished.Notes[notes/Cafe\u0301 Guide.md] = nil, want note")
+	}
+
+	byName := got.Unpublished.NoteByName["café guide"]
+	if len(byName) != 1 || byName[0] != note {
+		t.Fatalf("Unpublished.NoteByName[café guide] = %#v, want [%p]", byName, note)
+	}
+
+	byAlias := got.Unpublished.AliasByName["résumé"]
+	if len(byAlias) != 1 || byAlias[0] != note {
+		t.Fatalf("Unpublished.AliasByName[résumé] = %#v, want [%p]", byAlias, note)
+	}
+}
+
+func TestParseFrontmatterNormalizedSiteConfigPublishesByDefault(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/default.md", "---\ntitle: Default\n---\nvisible\n")
+	writeVaultFile(t, vaultPath, "notes/private.md", "---\ntitle: Private\npublish: false\n---\nhidden\n")
+
+	scanResult, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	cfg, err := internalconfig.NormalizeSiteConfig(model.SiteConfig{
+		Title:   "Garden Notes",
+		BaseURL: "https://example.com/blog",
+	})
+	if err != nil {
+		t.Fatalf("config.NormalizeSiteConfig() error = %v", err)
+	}
+
+	got, err := ParseFrontmatter(scanResult, cfg)
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+
+	if len(got.PublicNotes) != 1 {
+		t.Fatalf("len(PublicNotes) = %d, want 1 when normalized config applies defaultPublish=true", len(got.PublicNotes))
+	}
+	if got.PublicNotes[0].RelPath != "notes/default.md" {
+		t.Fatalf("PublicNotes[0].RelPath = %q, want %q", got.PublicNotes[0].RelPath, "notes/default.md")
+	}
+	if _, ok := got.Unpublished.Notes["notes/private.md"]; !ok {
+		t.Fatal("Unpublished.Notes missing notes/private.md")
+	}
+	if _, ok := got.Unpublished.Notes["notes/default.md"]; ok {
+		t.Fatal("Unpublished.Notes unexpectedly contains notes/default.md")
+	}
+}
+
+func TestParseFrontmatterUsesDocumentedDefaultPublishWhenPolicyUnset(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/default.md", "---\ntitle: Default\n---\nvisible\n")
+
+	scanResult, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{})
+	if err != nil {
+		t.Fatalf("ParseFrontmatter() error = %v", err)
+	}
+
+	if len(got.PublicNotes) != 1 {
+		t.Fatalf("len(PublicNotes) = %d, want 1 when defaultPublish is unset", len(got.PublicNotes))
+	}
+	if got.PublicNotes[0].RelPath != "notes/default.md" {
+		t.Fatalf("PublicNotes[0].RelPath = %q, want %q", got.PublicNotes[0].RelPath, "notes/default.md")
 	}
 }
 
@@ -347,7 +440,7 @@ visible
 		t.Fatalf("Scan() error = %v", err)
 	}
 
-	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: false})
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: false, DefaultPublishSet: true})
 	if err != nil {
 		t.Fatalf("ParseFrontmatter() error = %v", err)
 	}
@@ -393,9 +486,6 @@ func TestParseFrontmatterHandlesDocumentWithoutFrontmatter(t *testing.T) {
 	if note.BodyStartLine != 1 {
 		t.Fatalf("BodyStartLine = %d, want %d", note.BodyStartLine, 1)
 	}
-	if note.Publish != nil {
-		t.Fatalf("Publish = %v, want nil", note.Publish)
-	}
 	if note.Frontmatter.Publish != nil {
 		t.Fatalf("Frontmatter.Publish = %v, want nil", note.Frontmatter.Publish)
 	}
@@ -436,9 +526,6 @@ func TestParseFrontmatterStripsBOMWhenDocumentHasNoFrontmatter(t *testing.T) {
 	}
 	if !reflect.DeepEqual(note.Frontmatter, model.Frontmatter{}) {
 		t.Fatalf("Frontmatter = %#v, want zero value", note.Frontmatter)
-	}
-	if note.Publish != nil {
-		t.Fatalf("Publish = %v, want nil", note.Publish)
 	}
 	if note.Frontmatter.Publish != nil {
 		t.Fatalf("Frontmatter.Publish = %v, want nil", note.Frontmatter.Publish)
@@ -567,8 +654,8 @@ Body
 				if !reflect.DeepEqual(note.Frontmatter, model.Frontmatter{}) {
 					t.Fatalf("Frontmatter = %#v, want zero value", note.Frontmatter)
 				}
-				if note.Publish != nil {
-					t.Fatalf("Publish = %v, want nil", note.Publish)
+				if note.Frontmatter.Publish != nil {
+					t.Fatalf("Frontmatter.Publish = %v, want nil", note.Frontmatter.Publish)
 				}
 			},
 		},
@@ -622,8 +709,8 @@ secret
 				if note == nil {
 					t.Fatal("Unpublished.Notes[notes/private.md] = nil, want note")
 				}
-				if note.Publish == nil || *note.Publish {
-					t.Fatalf("Publish = %v, want false", note.Publish)
+				if note.Frontmatter.Publish == nil || *note.Frontmatter.Publish {
+					t.Fatalf("Frontmatter.Publish = %v, want false", note.Frontmatter.Publish)
 				}
 				if note.Frontmatter.Description != "intro\n---\n...\ntail" {
 					t.Fatalf("Frontmatter.Description = %q, want %q", note.Frontmatter.Description, "intro\n---\n...\ntail")

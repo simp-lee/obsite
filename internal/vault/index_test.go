@@ -1,6 +1,7 @@
 package vault
 
 import (
+	"bytes"
 	"path/filepath"
 	"reflect"
 	"sort"
@@ -8,9 +9,9 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
-	"unicode/utf8"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	internalmarkdown "github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -24,7 +25,7 @@ func TestBuildIndexRejectsSlugConflicts(t *testing.T) {
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
 	diagCollector := diag.NewCollector()
 
-	idx, err := BuildIndex(scanResult, frontmatterResult, diagCollector)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diagCollector)
 	if err == nil {
 		t.Fatal("BuildIndex() error = nil, want slug conflict")
 	}
@@ -44,6 +45,47 @@ func TestBuildIndexRejectsSlugConflicts(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("diagnostics = %#v, want slug_conflict error", diagCollector.Errors())
+	}
+}
+
+func TestBuildIndexDoesNotReportFalseSlugConflictForUnicodeNormalization(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/Cafe\u0301 Notes.md", "# Accent\n")
+	writeVaultFile(t, vaultPath, "notes/Cafe Notes.md", "# Plain\n")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	diagCollector := diag.NewCollector()
+
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diagCollector)
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v, want no slug conflict", err)
+	}
+	if diagCollector.HasErrors() {
+		t.Fatalf("diagCollector.Errors() = %#v, want no errors", diagCollector.Errors())
+	}
+
+	accented := idx.Notes["notes/Cafe\u0301 Notes.md"]
+	if accented == nil {
+		t.Fatal("idx.Notes[notes/Cafe\u0301 Notes.md] = nil, want note")
+	}
+	if accented.Slug != "café-notes" {
+		t.Fatalf("accented.Slug = %q, want %q", accented.Slug, "café-notes")
+	}
+	if got := idx.NoteBySlug["café-notes"]; got != accented {
+		t.Fatalf("idx.NoteBySlug[café-notes] = %p, want %p", got, accented)
+	}
+
+	plain := idx.Notes["notes/Cafe Notes.md"]
+	if plain == nil {
+		t.Fatal("idx.Notes[notes/Cafe Notes.md] = nil, want note")
+	}
+	if plain.Slug != "cafe-notes" {
+		t.Fatalf("plain.Slug = %q, want %q", plain.Slug, "cafe-notes")
+	}
+	if got := idx.NoteBySlug["cafe-notes"]; got != plain {
+		t.Fatalf("idx.NoteBySlug[cafe-notes] = %p, want %p", got, plain)
 	}
 }
 
@@ -83,7 +125,7 @@ A-->B
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
 	diagCollector := diag.NewCollector()
 
-	idx, err := BuildIndex(scanResult, frontmatterResult, diagCollector)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diagCollector)
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -173,6 +215,15 @@ A-->B
 	if got := guide.Embeds[1]; got.Target != "Target Page" || got.Fragment != "Section" || got.IsImage || got.Width != 0 || got.Line != 13 {
 		t.Fatalf("guide.Embeds[1] = %#v, want note embed metadata", got)
 	}
+	if len(guide.ImageRefs) != 1 {
+		t.Fatalf("len(guide.ImageRefs) = %d, want 1", len(guide.ImageRefs))
+	}
+	if got := guide.ImageRefs[0]; got.RawTarget != "../images/chart.png?raw=1#frag" || got.Line != 14 {
+		t.Fatalf("guide.ImageRefs[0] = %#v, want markdown image metadata", got)
+	}
+	if wantOffset := strings.Index(string(guide.RawContent), "![Chart](../images/chart.png?raw=1#frag)"); guide.ImageRefs[0].Offset != wantOffset {
+		t.Fatalf("guide.ImageRefs[0].Offset = %d, want %d", guide.ImageRefs[0].Offset, wantOffset)
+	}
 	if section, ok := guide.HeadingSections["intro-heading"]; !ok || section.StartOffset >= section.EndOffset {
 		t.Fatalf("guide.HeadingSections[intro-heading] = %#v, want non-empty section range", section)
 	}
@@ -198,11 +249,17 @@ func TestBuildIndexExtractsVisibleHeadingText(t *testing.T) {
 	vaultPath := t.TempDir()
 	writeVaultFile(t, vaultPath, "notes/headings.md", `# Intro #tag [[Target Page|Shown Label]]
 
-## Raw <span>HTML</span> [[Target Page#Section|Section Label]]
+## RFC <sup>2</sup> and <span>Alpha</span> [[Target Page#Section|Section Label]]
 `)
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	if len(frontmatterResult.PublicNotes) != 1 {
+		t.Fatalf("len(frontmatterResult.PublicNotes) = %d, want 1", len(frontmatterResult.PublicNotes))
+	}
+	frontmatterResult.PublicNotes[0].Summary = "stale summary"
+	frontmatterResult.PublicNotes[0].HTMLContent = "<p>stale html</p>"
+
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -218,8 +275,56 @@ func TestBuildIndexExtractsVisibleHeadingText(t *testing.T) {
 	if got := note.Headings[0]; got.Level != 1 || got.Text != "Intro #tag Shown Label" {
 		t.Fatalf("note.Headings[0] = %#v, want visible hashtag and wikilink label text", got)
 	}
-	if got := note.Headings[1]; got.Level != 2 || got.Text != "Raw HTML Section Label" {
-		t.Fatalf("note.Headings[1] = %#v, want visible text with raw HTML stripped", got)
+	if got := note.Headings[1]; got.Level != 2 || got.Text != "RFC 2 and Alpha Section Label" {
+		t.Fatalf("note.Headings[1] = %#v, want visible text with raw HTML inner text preserved", got)
+	}
+}
+
+func TestBuildIndexExtractsRawHTMLHeadingTextByNodeSemantics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+		want   model.Heading
+	}{
+		{
+			name:   "entity-before-raw-html",
+			source: "# &amp;lt; <span>Alpha</span>\n",
+			want:   model.Heading{Level: 1, Text: "&lt; Alpha", ID: "lt-alpha"},
+		},
+		{
+			name:   "code-span-after-raw-html",
+			source: "# <span>Alpha</span> `&amp;lt;`\n",
+			want:   model.Heading{Level: 1, Text: "Alpha &amp;lt;", ID: "alpha-amp-lt"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vaultPath := t.TempDir()
+			writeVaultFile(t, vaultPath, "notes/headings.md", tt.source)
+
+			scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+			idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+			if err != nil {
+				t.Fatalf("BuildIndex() error = %v", err)
+			}
+
+			note := idx.Notes["notes/headings.md"]
+			if note == nil {
+				t.Fatal("idx.Notes[notes/headings.md] = nil, want note")
+			}
+			if len(note.Headings) != 1 {
+				t.Fatalf("len(note.Headings) = %d, want 1", len(note.Headings))
+			}
+
+			if got := note.Headings[0]; got != tt.want {
+				t.Fatalf("note.Headings[0] = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -232,11 +337,13 @@ func TestBuildIndexExtractsHeadingIDsFromVisibleText(t *testing.T) {
 ## [[Target Page|Shown Label]]
 
 ### 中文 标题
+
+#### RFC <sup>2</sup> and <span>Alpha</span> [[Target Page|Shown Label]]
 `)
 	writeVaultFile(t, vaultPath, "notes/target page.md", "# Target Page\n")
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -250,6 +357,7 @@ func TestBuildIndexExtractsHeadingIDsFromVisibleText(t *testing.T) {
 		{Level: 1, Text: "Intro Bold", ID: "intro-bold"},
 		{Level: 2, Text: "Shown Label", ID: "shown-label"},
 		{Level: 3, Text: "中文 标题", ID: "中文-标题"},
+		{Level: 4, Text: "RFC 2 and Alpha Shown Label", ID: "rfc-2-and-alpha-shown-label"},
 	}
 	if !reflect.DeepEqual(note.Headings, want) {
 		t.Fatalf("note.Headings = %#v, want %#v", note.Headings, want)
@@ -275,7 +383,7 @@ beta
 `)
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -301,7 +409,7 @@ func TestBuildIndexKeepsImageLikeNoteEmbedsAsNotes(t *testing.T) {
 	writeVaultFile(t, vaultPath, "notes/photo.png.md", "# Photo Note\n")
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -329,7 +437,7 @@ func TestBuildIndexRecognizesAttachmentFolderEmbedsAndDecodedMarkdownImages(t *t
 	writeVaultFile(t, vaultPath, "images/My Chart.png", "png")
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -369,7 +477,7 @@ func TestBuildIndexRegistersExtendedObsidianImageEmbedExtensions(t *testing.T) {
 	writeVaultFile(t, vaultPath, "notes/camera.jfif", "jfif")
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -395,6 +503,126 @@ func TestBuildIndexRegistersExtendedObsidianImageEmbedExtensions(t *testing.T) {
 	}
 }
 
+// AC-R026: FR-5、FR-12 扩展图片 embed 在索引与渲染阶段必须共享同一图片后缀白名单
+func TestExtendedImageEmbedsShareWhitelistAcrossIndexAndRender(t *testing.T) {
+	t.Parallel()
+
+	// REG-026
+	// Ledger Key: asset.image / pass1-pass2-extension-whitelists-drift
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, ".obsidian/app.json", `{"attachmentFolderPath":"attachments"}`)
+	writeVaultFile(t, vaultPath, "notes/gallery.md", "![[photo.apng]]\n![[camera.jfif|320]]\n")
+	writeVaultFile(t, vaultPath, "notes/photo.apng", "apng")
+	writeVaultFile(t, vaultPath, "attachments/camera.jfif", "jfif")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/gallery.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/gallery.md] = nil, want note")
+	}
+	if len(note.Embeds) != 2 {
+		t.Fatalf("len(note.Embeds) = %d, want 2", len(note.Embeds))
+	}
+	if got := note.Embeds[0]; got.Target != "photo.apng" || !got.IsImage {
+		t.Fatalf("note.Embeds[0] = %#v, want .apng embed classified as image", got)
+	}
+	if got := note.Embeds[1]; got.Target != "camera.jfif" || !got.IsImage || got.Width != 320 {
+		t.Fatalf("note.Embeds[1] = %#v, want .jfif attachment-folder embed classified as image", got)
+	}
+	if asset := idx.Assets["notes/photo.apng"]; asset == nil || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[notes/photo.apng] = %#v, want registered asset", asset)
+	}
+	if asset := idx.Assets["attachments/camera.jfif"]; asset == nil || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[attachments/camera.jfif] = %#v, want registered attachment-folder asset", asset)
+	}
+
+	sink := &indexTestAssetSink{paths: map[string]string{
+		"notes/photo.apng":        "assets/photo.apng",
+		"attachments/camera.jfif": "assets/camera.jfif",
+	}}
+	collector := diag.NewCollector()
+	md, _ := internalmarkdown.NewMarkdown(idx, note, sink, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("![[photo.apng]]\n\n![[camera.jfif|320]]\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if got := strings.Count(html, "<img "); got != 2 {
+		t.Fatalf("image tag count = %d, want 2 extended image embeds rendered as images\n%s", got, html)
+	}
+	if !strings.Contains(html, `<img src="../assets/photo.apng" alt="photo">`) {
+		t.Fatalf("HTML = %q, want .apng embed rendered as image", html)
+	}
+	if !strings.Contains(html, `<img src="../assets/camera.jfif" alt="camera" width="320" loading="lazy">`) {
+		t.Fatalf("HTML = %q, want .jfif attachment-folder embed rendered as image", html)
+	}
+	if !reflect.DeepEqual(sink.registered, []string{"notes/photo.apng", "attachments/camera.jfif"}) {
+		t.Fatalf("registered = %#v, want both extended image assets registered once", sink.registered)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no degradation diagnostics for supported extended image embeds", got)
+	}
+}
+
+func TestBuildIndexCanonicalizesUnicodeMarkdownImagePathsAndImageEmbeds(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, ".obsidian/app.json", `{"attachmentFolderPath":"assets/uploads"}`)
+	writeVaultFile(t, vaultPath, "notes/gallery.md", "![[Café-Poster.png|640]]\n![Chart](../images/Café-Chart.png?raw=1#frag)\n")
+	writeVaultFile(t, vaultPath, "assets/uploads/Cafe\u0301-Poster.png", "png")
+	writeVaultFile(t, vaultPath, "images/Cafe\u0301-Chart.png", "png")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/gallery.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/gallery.md] = nil, want note")
+	}
+	if len(note.Embeds) != 1 {
+		t.Fatalf("len(note.Embeds) = %d, want 1", len(note.Embeds))
+	}
+	if got := note.Embeds[0]; got.Target != "Café-Poster.png" || !got.IsImage || got.Width != 640 {
+		t.Fatalf("note.Embeds[0] = %#v, want composed image embed metadata", got)
+	}
+	if len(note.ImageRefs) != 1 {
+		t.Fatalf("len(note.ImageRefs) = %d, want 1", len(note.ImageRefs))
+	}
+	if got := note.ImageRefs[0]; got.RawTarget != "../images/Café-Chart.png?raw=1#frag" {
+		t.Fatalf("note.ImageRefs[0] = %#v, want composed markdown image metadata", got)
+	}
+
+	if asset := idx.Assets["assets/uploads/Cafe\u0301-Poster.png"]; asset == nil || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[assets/uploads/Cafe\\u0301-Poster.png] = %#v, want canonicalized image embed asset", asset)
+	}
+	if asset := idx.Assets["images/Cafe\u0301-Chart.png"]; asset == nil || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[images/Cafe\\u0301-Chart.png] = %#v, want canonicalized markdown image asset", asset)
+	}
+	if got := idx.ResolveAssetPath("assets/uploads/Café-Poster.png"); got != "assets/uploads/Cafe\u0301-Poster.png" {
+		t.Fatalf("idx.ResolveAssetPath(embed) = %q, want %q", got, "assets/uploads/Cafe\u0301-Poster.png")
+	}
+	if got := idx.ResolveAssetPath("images/Café-Chart.png"); got != "images/Cafe\u0301-Chart.png" {
+		t.Fatalf("idx.ResolveAssetPath(markdown image) = %q, want %q", got, "images/Cafe\u0301-Chart.png")
+	}
+	if got := idx.ResolveResourcePath("assets/uploads/Café-Poster.png"); got != "assets/uploads/Cafe\u0301-Poster.png" {
+		t.Fatalf("idx.ResolveResourcePath(embed) = %q, want %q", got, "assets/uploads/Cafe\u0301-Poster.png")
+	}
+	if got := idx.ResolveResourceBaseName("Café-Poster.png"); got != "assets/uploads/Cafe\u0301-Poster.png" {
+		t.Fatalf("idx.ResolveResourceBaseName() = %q, want %q", got, "assets/uploads/Cafe\u0301-Poster.png")
+	}
+}
+
 func TestBuildIndexRecordsUnresolvedDiagnosticsForMissingAndSkippedMarkdownImages(t *testing.T) {
 	t.Parallel()
 
@@ -404,7 +632,7 @@ func TestBuildIndexRecordsUnresolvedDiagnosticsForMissingAndSkippedMarkdownImage
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
 	diagCollector := diag.NewCollector()
-	idx, err := BuildIndex(scanResult, frontmatterResult, diagCollector)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diagCollector)
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -452,7 +680,7 @@ func TestBuildIndexRecordsUnresolvedDiagnosticsForSymlinkMarkdownImages(t *testi
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
 	diagCollector := diag.NewCollector()
-	idx, err := BuildIndex(scanResult, frontmatterResult, diagCollector)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diagCollector)
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -479,7 +707,7 @@ func TestBuildIndexRecordsUnresolvedDiagnosticsForSymlinkMarkdownImages(t *testi
 	}
 }
 
-func TestBuildIndexBuildsSummaryFromVisibleTextAtWordBoundary(t *testing.T) {
+func TestBuildIndexLeavesSummaryForRenderedContentNormalization(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
@@ -499,7 +727,7 @@ One two three four five six seven eight nine ten eleven twelve thirteen fourteen
 `)
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -508,50 +736,11 @@ One two three four five six seven eight nine ten eleven twelve thirteen fourteen
 	if note == nil {
 		t.Fatal("idx.Notes[notes/summary.md] = nil, want note")
 	}
-
-	want := "Alpha Beta Gamma Delta One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen"
-	if note.Summary != want {
-		t.Fatalf("note.Summary = %q, want %q", note.Summary, want)
+	if note.Summary != "" {
+		t.Fatalf("note.Summary = %q, want empty until pass-2 rendered HTML is available", note.Summary)
 	}
-	if strings.Contains(note.Summary, "AlphaBeta") || strings.Contains(note.Summary, "GammaDelta") {
-		t.Fatalf("note.Summary = %q, want HTML block and br boundaries to preserve word spacing", note.Summary)
-	}
-	if strings.Contains(note.Summary, "omit me entirely") {
-		t.Fatalf("note.Summary = %q, want script contents removed", note.Summary)
-	}
-	if strings.Contains(note.Summary, "display:none") {
-		t.Fatalf("note.Summary = %q, want style contents removed", note.Summary)
-	}
-	if strings.Contains(note.Summary, "Supercalifragilistic") {
-		t.Fatalf("note.Summary = %q, want truncation at previous word boundary", note.Summary)
-	}
-	if got := utf8.RuneCountInString(note.Summary); got > 150 {
-		t.Fatalf("utf8.RuneCountInString(note.Summary) = %d, want <= 150", got)
-	}
-}
-
-func TestBuildIndexSummaryKeepsLongLeadingWordIntact(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	longWord := strings.Repeat("A", summaryRuneLimit+20)
-	writeVaultFile(t, vaultPath, "notes/summary-long-word.md", longWord+" trailing words that should be omitted\n")
-
-	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
-	if err != nil {
-		t.Fatalf("BuildIndex() error = %v", err)
-	}
-
-	note := idx.Notes["notes/summary-long-word.md"]
-	if note == nil {
-		t.Fatal("idx.Notes[notes/summary-long-word.md] = nil, want note")
-	}
-	if note.Summary != longWord {
-		t.Fatalf("note.Summary = %q, want full leading word without mid-word truncation", note.Summary)
-	}
-	if got := utf8.RuneCountInString(note.Summary); got != summaryRuneLimit+20 {
-		t.Fatalf("utf8.RuneCountInString(note.Summary) = %d, want %d", got, summaryRuneLimit+20)
+	if note.HTMLContent != "" {
+		t.Fatalf("note.HTMLContent = %q, want empty until pass-2 rendered HTML is available", note.HTMLContent)
 	}
 }
 
@@ -634,6 +823,10 @@ func TestBuildIndexWithOptionsHonorsBoundedPassOneConcurrency(t *testing.T) {
 	}
 }
 
+func buildIndexForTest(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector) (*model.VaultIndex, error) {
+	return BuildIndexWithConcurrency(scanResult, frontmatterResult, diagCollector, 1)
+}
+
 func prepareIndexInputs(t *testing.T, vaultPath string) (ScanResult, FrontmatterResult) {
 	t.Helper()
 
@@ -648,4 +841,17 @@ func prepareIndexInputs(t *testing.T, vaultPath string) (ScanResult, Frontmatter
 	}
 
 	return scanResult, frontmatterResult
+}
+
+type indexTestAssetSink struct {
+	paths      map[string]string
+	registered []string
+}
+
+func (s *indexTestAssetSink) Register(vaultRelPath string) string {
+	s.registered = append(s.registered, vaultRelPath)
+	if s.paths == nil {
+		return ""
+	}
+	return s.paths[vaultRelPath]
 }

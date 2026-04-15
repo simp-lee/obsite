@@ -87,7 +87,7 @@ func NewParser(_ *diag.Collector) goldmark.Markdown {
 			goldmark.WithParserOptions(
 				newParserOptions(nil, "")...,
 			),
-			goldmark.WithExtensions(newCoreExtensions(noopWikilinkResolver{})...),
+			goldmark.WithExtensions(newCoreExtensions(noopWikilinkResolver{}, nil)...),
 		)
 	})
 
@@ -130,8 +130,9 @@ func newMarkdownWithState(
 		result.note = outputNote
 		result.resolver = resolverState
 	}
+	hashtagResolver := newRenderHashtagResolver(idx, outputNote)
 	extensions := append(
-		newCoreExtensions(resolver),
+		newCoreExtensions(resolver, hashtagResolver),
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
@@ -170,6 +171,9 @@ func newMarkdownWithState(
 
 			if result != nil {
 				result.appendEmbeddedOutLinks(rewriteEmbeddedOutLinks(childNote, outputNote, childResult.OutLinks()))
+				if childNote != nil && strings.TrimSpace(childNote.RelPath) != "" {
+					result.appendEmbeddedOutLinks([]model.LinkRef{{ResolvedRelPath: childNote.RelPath}})
+				}
 			}
 
 			if outputNote != nil && childNote != nil {
@@ -206,12 +210,12 @@ func newParserOptions(note *model.Note, headingIDPrefix string) []parser.Option 
 	}
 }
 
-func newCoreExtensions(wikilinkResolver gmwikilink.Resolver) []goldmark.Extender {
+func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmhashtag.Resolver) []goldmark.Extender {
 	return []goldmark.Extender{
 		extension.GFM,
 		extension.Footnote,
 		&gmfrontmatter.Extender{},
-		&gmhashtag.Extender{Variant: gmhashtag.ObsidianVariant},
+		&gmhashtag.Extender{Variant: gmhashtag.ObsidianVariant, Resolver: hashtagResolver},
 		&gmwikilink.Extender{Resolver: wikilinkResolver},
 		callout.New(),
 		internalhighlight.New(),

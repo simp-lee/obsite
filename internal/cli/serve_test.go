@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -58,6 +59,87 @@ func TestServeCommandUsesServerDefaultPortWhenOmitted(t *testing.T) {
 	}
 	if gotPort != 0 {
 		t.Fatalf("newPreviewServer port = %d, want 0 so server.New applies its default", gotPort)
+	}
+	if server.listenCalls != 1 {
+		t.Fatalf("ListenAndServe calls = %d, want 1", server.listenCalls)
+	}
+}
+
+func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(t.TempDir(), "site")
+	if err := os.WriteFile(configPath, []byte("title: Garden\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	watcher := newFakeFileWatcher()
+	listenStarted := make(chan struct{}, 1)
+	listenBlock := make(chan struct{})
+	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		return expectedInput, nil
+	}
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		if options.DiagnosticsWriter == nil {
+			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
+		}
+		if input != expectedInput {
+			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
+		}
+		if _, err := options.DiagnosticsWriter.Write([]byte("Warnings (1):\n- build [structured_data] synthetic build warning\n")); err != nil {
+			t.Fatalf("DiagnosticsWriter.Write() error = %v", err)
+		}
+		return &internalbuild.BuildResult{}, nil
+	}
+	deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
+		return server, nil
+	}
+	deps.newFileWatcher = func() (fileWatcher, error) {
+		return watcher, nil
+	}
+
+	var stdoutBuf lockedBuffer
+	var stderrBuf lockedBuffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+	}()
+
+	select {
+	case <-listenStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for preview server to start listening")
+	}
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+
+	watcher.errors <- errors.New("boom")
+	waitForLockedBufferContains(t, &stderrBuf, "watch: watcher error: boom")
+	close(listenBlock)
+
+	err := <-errCh
+	if err != nil {
+		t.Fatalf("executeWithDeps() error = %v", err)
+	}
+	if got := stdoutBuf.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty stdout", got)
+	}
+	stderr := stderrBuf.String()
+	if !strings.Contains(stderr, "synthetic build warning") {
+		t.Fatalf("stderr = %q, want build diagnostics routed through injected stderr", stderr)
+	}
+	if !strings.Contains(stderr, "watch: watcher error: boom") {
+		t.Fatalf("stderr = %q, want watch error prefix routed through injected stderr", stderr)
+	}
+	if strings.Count(stderr, "watch: watcher error: boom") != 1 {
+		t.Fatalf("stderr = %q, want exactly one watch error entry", stderr)
+	}
+	if server.enableCalls != 1 {
+		t.Fatalf("EnableLiveReload calls = %d, want 1 in watch mode", server.enableCalls)
 	}
 	if server.listenCalls != 1 {
 		t.Fatalf("ListenAndServe calls = %d, want 1", server.listenCalls)
@@ -185,14 +267,21 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	var gotOverrides internalconfig.Overrides
 	var gotVaultPath string
 	var gotOutputPath string
-	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", TemplateDir: templateDir, CustomCSS: customCSSPath}}
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
 		gotConfigPath = path
 		gotOverrides = overrides
-		return model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", TemplateDir: templateDir, CustomCSS: customCSSPath}, nil
+		return expectedInput, nil
 	}
-	deps.buildSite = func(cfg model.SiteConfig, vaultPath string, outputPath string) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		gotVaultPath = vaultPath
 		gotOutputPath = outputPath
+		if options.DiagnosticsWriter == nil {
+			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
+		}
+		if input != expectedInput {
+			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
+		}
 		if err := os.MkdirAll(outputPath, 0o755); err != nil {
 			return nil, err
 		}
@@ -647,6 +736,36 @@ func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
 	}
 }
 
+func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalInputs(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(vaultPath, "public")
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	rootDir := filesystemRootForPath(vaultPath)
+	missingRoot := filepath.Join(rootDir, "obsite-root-fallback-"+strings.ReplaceAll(time.Now().UTC().Format("20060102150405.000000000"), ".", "-"))
+	if _, err := os.Stat(missingRoot); err == nil {
+		t.Fatalf("os.Stat(%q) unexpectedly succeeded; want a missing root-level directory for this regression", missingRoot)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(%q) error = %v", missingRoot, err)
+	}
+
+	loop := serveWatchLoop{
+		vaultPath:  vaultPath,
+		outputPath: outputPath,
+	}
+	got := loop.watchDirsForInputs([]serveWatchInput{
+		{path: filepath.Join(missingRoot, "templates"), kind: serveWatchInputDir},
+		{path: filepath.Join(missingRoot, "styles", "custom.css"), kind: serveWatchInputFile},
+	})
+	if len(got) != 0 {
+		t.Fatalf("watchDirsForInputs() = %#v, want no filesystem-root fallback watches for fully missing external inputs", got)
+	}
+}
+
 func TestStartServeWatchLoopRecoversExternalTemplateDirAfterFailedRebuild(t *testing.T) {
 	t.Parallel()
 
@@ -895,6 +1014,120 @@ func TestStartServeWatchLoopWatchesConfiguredHiddenInVaultTemplateDir(t *testing
 	assertNoServeWatchError(t, errorSignal)
 }
 
+func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenOverrideIsRemoved(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	rootNotePath := filepath.Join(vaultPath, "root-note.md")
+	hiddenTemplateDir := filepath.Join(vaultPath, ".obsidian", "templates")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	for _, filePath := range []string{rootNotePath, configPath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	currentExtraWatchInputs := collectServeWatchInputs(hiddenTemplateDir, "", vaultPath)
+	rebuildSignal := make(chan struct{}, 4)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: currentExtraWatchInputs,
+		currentExtraWatchInputs: func() []serveWatchInput {
+			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
+		},
+		debounce: 15 * time.Millisecond,
+		rebuild: func() error {
+			currentExtraWatchInputs = nil
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
+	assertNoServeWatchError(t, errorSignal)
+	if got := watcher.countRemoveCalls(vaultPath); got != 0 {
+		t.Fatalf("watcher.Remove(%q) count = %d, want 0 so the base vault watch stays active", vaultPath, got)
+	}
+
+	if !watcher.sendIfWatched(fsnotify.Event{Name: rootNotePath, Op: fsnotify.Write}) {
+		t.Fatalf("root note %q is no longer covered by any active watch after removing the missing hidden override", rootNotePath)
+	}
+	waitForServeWatchSignal(t, rebuildSignal, "root note rebuild")
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopReportsWatcherCloseErrors(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	rootNotePath := filepath.Join(vaultPath, "root-note.md")
+	outputPath := filepath.Join(vaultPath, "public")
+	for _, filePath := range []string{configPath, rootNotePath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	watcher.setCloseErr(errors.New("close failed"))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:    watcher,
+		vaultPath:  vaultPath,
+		outputPath: outputPath,
+		configPath: configPath,
+		debounce:   15 * time.Millisecond,
+		rebuild: func() error {
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+	cancel()
+	waitForServeWatchErrorContains(t, errorSignal, "close watcher: close failed")
+	if got := watcher.countCloseCalls(); got != 1 {
+		t.Fatalf("watcher.Close() calls = %d, want %d", got, 1)
+	}
+}
+
 func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfterRebuild(t *testing.T) {
 	t.Parallel()
 
@@ -975,11 +1208,13 @@ func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfter
 }
 
 type fakePreviewServer struct {
-	listenErr    error
-	enableCalls  int
-	listenCalls  int
-	reloadCalls  int
-	reloadCalled chan struct{}
+	listenErr     error
+	enableCalls   int
+	listenCalls   int
+	reloadCalls   int
+	reloadCalled  chan struct{}
+	listenStarted chan struct{}
+	listenBlock   <-chan struct{}
 }
 
 func (s *fakePreviewServer) EnableLiveReload() {
@@ -988,6 +1223,15 @@ func (s *fakePreviewServer) EnableLiveReload() {
 
 func (s *fakePreviewServer) ListenAndServe() error {
 	s.listenCalls++
+	if s.listenStarted != nil {
+		select {
+		case s.listenStarted <- struct{}{}:
+		default:
+		}
+	}
+	if s.listenBlock != nil {
+		<-s.listenBlock
+	}
 	return s.listenErr
 }
 
@@ -1001,8 +1245,10 @@ func (s *fakePreviewServer) NotifyReload() {
 type fakeFileWatcher struct {
 	mu          sync.Mutex
 	addCalls    []string
+	active      map[string]struct{}
 	removeCalls []string
 	removeErrs  map[string]error
+	closeErr    error
 	closeCalls  int
 	events      chan fsnotify.Event
 	errors      chan error
@@ -1010,6 +1256,7 @@ type fakeFileWatcher struct {
 
 func newFakeFileWatcher() *fakeFileWatcher {
 	return &fakeFileWatcher{
+		active:     make(map[string]struct{}),
 		events:     make(chan fsnotify.Event, 16),
 		errors:     make(chan error, 4),
 		removeErrs: make(map[string]error),
@@ -1019,7 +1266,9 @@ func newFakeFileWatcher() *fakeFileWatcher {
 func (w *fakeFileWatcher) Add(name string) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.addCalls = append(w.addCalls, filepath.Clean(name))
+	cleanPath := filepath.Clean(name)
+	w.addCalls = append(w.addCalls, cleanPath)
+	w.active[cleanPath] = struct{}{}
 	return nil
 }
 
@@ -1029,14 +1278,18 @@ func (w *fakeFileWatcher) Remove(name string) error {
 
 	cleanPath := filepath.Clean(name)
 	w.removeCalls = append(w.removeCalls, cleanPath)
-	return w.removeErrs[cleanPath]
+	if err := w.removeErrs[cleanPath]; err != nil {
+		return err
+	}
+	delete(w.active, cleanPath)
+	return nil
 }
 
 func (w *fakeFileWatcher) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.closeCalls++
-	return nil
+	return w.closeErr
 }
 
 func (w *fakeFileWatcher) Events() <-chan fsnotify.Event {
@@ -1051,11 +1304,26 @@ func (w *fakeFileWatcher) send(event fsnotify.Event) {
 	w.events <- event
 }
 
+func (w *fakeFileWatcher) sendIfWatched(event fsnotify.Event) bool {
+	if !w.isWatchingPath(event.Name) {
+		return false
+	}
+	w.send(event)
+	return true
+}
+
 func (w *fakeFileWatcher) setRemoveErr(path string, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	w.removeErrs[filepath.Clean(path)] = err
+}
+
+func (w *fakeFileWatcher) setCloseErr(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.closeErr = err
 }
 
 func (w *fakeFileWatcher) countAddCalls(path string) int {
@@ -1086,6 +1354,64 @@ func (w *fakeFileWatcher) countRemoveCalls(path string) int {
 	}
 
 	return count
+}
+
+func (w *fakeFileWatcher) countCloseCalls() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return w.closeCalls
+}
+
+func (w *fakeFileWatcher) isWatchingPath(path string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	cleanPath := filepath.Clean(path)
+	for watchedPath := range w.active {
+		if pathWithinRoot(watchedPath, cleanPath) {
+			return true
+		}
+	}
+
+	return false
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForLockedBufferContains(t *testing.T, buffer *lockedBuffer, want string) {
+	t.Helper()
+
+	deadline := time.After(250 * time.Millisecond)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if strings.Contains(buffer.String(), want) {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for output containing %q; got %q", want, buffer.String())
+		case <-ticker.C:
+		}
+	}
 }
 
 func waitForServeWatchSignal(t *testing.T, signal <-chan struct{}, label string) {
@@ -1181,4 +1507,14 @@ func drainServeWatchSignals(signal <-chan struct{}) {
 			return
 		}
 	}
+}
+
+func filesystemRootForPath(path string) string {
+	cleanPath := filepath.Clean(path)
+	volume := filepath.VolumeName(cleanPath)
+	if volume != "" {
+		return volume + string(filepath.Separator)
+	}
+
+	return string(filepath.Separator)
 }

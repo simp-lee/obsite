@@ -190,7 +190,7 @@ tags:
 `)
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}
@@ -252,7 +252,7 @@ tags:
 `)
 
 	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
-	idx, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector())
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
 	if err != nil {
 		t.Fatalf("BuildIndex() error = %v", err)
 	}

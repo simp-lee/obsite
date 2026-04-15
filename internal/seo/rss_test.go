@@ -122,3 +122,69 @@ func TestBuildRSSProducesRSS20FeedSortedByDate(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRSSUsesLatestLastModifiedForChannelLastBuildDate(t *testing.T) {
+	t.Parallel()
+
+	cfg := model.SiteConfig{
+		Title:   "Field Notes",
+		BaseURL: "https://example.com/blog/",
+	}
+
+	olderPublished := time.Date(2026, 4, 5, 8, 15, 0, 0, time.UTC)
+	olderUpdated := time.Date(2026, 4, 8, 12, 0, 0, 0, time.UTC)
+	newerPublished := time.Date(2026, 4, 7, 11, 45, 0, 0, time.UTC)
+	notes := []model.NoteSummary{
+		{
+			Title:        "Older Note",
+			Summary:      "Updated after publication.",
+			URL:          "older-note/",
+			Date:         olderPublished,
+			LastModified: olderUpdated,
+		},
+		{
+			Title:        "Newer Note",
+			Summary:      "Newer publication.",
+			URL:          "newer-note/",
+			Date:         newerPublished,
+			LastModified: newerPublished,
+		},
+	}
+
+	got, err := BuildRSS(cfg, notes)
+	if err != nil {
+		t.Fatalf("BuildRSS() error = %v", err)
+	}
+
+	var parsed struct {
+		Channel struct {
+			LastBuildDate string `xml:"lastBuildDate"`
+			Items         []struct {
+				Title   string `xml:"title"`
+				PubDate string `xml:"pubDate"`
+			} `xml:"item"`
+		} `xml:"channel"`
+	}
+	if err := xml.Unmarshal(got, &parsed); err != nil {
+		t.Fatalf("xml.Unmarshal() error = %v", err)
+	}
+
+	if parsed.Channel.LastBuildDate != olderUpdated.Format(time.RFC1123Z) {
+		t.Fatalf("channel.lastBuildDate = %q, want %q", parsed.Channel.LastBuildDate, olderUpdated.Format(time.RFC1123Z))
+	}
+	if len(parsed.Channel.Items) != 2 {
+		t.Fatalf("len(channel.items) = %d, want %d", len(parsed.Channel.Items), 2)
+	}
+	if parsed.Channel.Items[0].Title != "Newer Note" {
+		t.Fatalf("items[0].title = %q, want %q", parsed.Channel.Items[0].Title, "Newer Note")
+	}
+	if parsed.Channel.Items[0].PubDate != newerPublished.Format(time.RFC1123Z) {
+		t.Fatalf("items[0].pubDate = %q, want %q", parsed.Channel.Items[0].PubDate, newerPublished.Format(time.RFC1123Z))
+	}
+	if parsed.Channel.Items[1].Title != "Older Note" {
+		t.Fatalf("items[1].title = %q, want %q", parsed.Channel.Items[1].Title, "Older Note")
+	}
+	if parsed.Channel.Items[1].PubDate != olderPublished.Format(time.RFC1123Z) {
+		t.Fatalf("items[1].pubDate = %q, want %q", parsed.Channel.Items[1].PubDate, olderPublished.Format(time.RFC1123Z))
+	}
+}

@@ -1,6 +1,7 @@
 package asset
 
 import (
+	"fmt"
 	"io/fs"
 	"path/filepath"
 	"sort"
@@ -20,27 +21,17 @@ type AssetCollector struct {
 	reservedOutputKeys map[string]struct{}
 	seededByGroup      map[string][]string
 	inventoryByGroup   map[string][]string
-	scanInventoryHook  func()
+	scanInventoryHook  func() error
 }
 
-// NewCollector creates a collector for render-time asset registrations.
-// Register reuses the pass-1 destination plan when available, keeps unique
-// render-only assets on plain assets/<basename> paths, and falls back to
-// deterministic content-hashed paths for unresolved or colliding registrations.
-func NewCollector(vaultRoot string, indexed map[string]*model.Asset) *AssetCollector {
-	return NewCollectorWithReservedPaths(vaultRoot, indexed, nil)
+// NewCollectorWithResourceFiles creates a collector that reuses a caller-provided
+// resource inventory, typically vault.Scan's ResourceFiles, instead of walking
+// the vault again.
+func NewCollectorWithResourceFiles(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, resourceFiles []string) (*AssetCollector, error) {
+	return newCollectorWithReservedPaths(vaultRoot, indexed, reservedOutputPaths, resourceInventoryGroups(resourceFiles), nil)
 }
 
-// NewCollectorWithReservedPaths creates a collector that keeps reserved output paths unavailable to regular assets.
-func NewCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string) *AssetCollector {
-	return newCollectorWithReservedPaths(vaultRoot, indexed, reservedOutputPaths, nil)
-}
-
-func newCollector(vaultRoot string, indexed map[string]*model.Asset, scanInventoryHook func()) *AssetCollector {
-	return newCollectorWithReservedPaths(vaultRoot, indexed, nil, scanInventoryHook)
-}
-
-func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, scanInventoryHook func()) *AssetCollector {
+func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, inventoryByGroup map[string][]string, scanInventoryHook func() error) (*AssetCollector, error) {
 	collector := &AssetCollector{
 		vaultRoot:          vaultRoot,
 		assets:             make(map[string]*model.Asset),
@@ -64,9 +55,17 @@ func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.A
 	for groupKey := range collector.seededByGroup {
 		sort.Strings(collector.seededByGroup[groupKey])
 	}
-	collector.inventoryByGroup = collector.scanVaultInventory()
+	if inventoryByGroup != nil {
+		collector.inventoryByGroup = cloneInventoryByGroup(inventoryByGroup)
+	} else {
+		inventoryByGroup, err := collector.scanVaultInventory()
+		if err != nil {
+			return nil, fmt.Errorf("scan vault asset inventory: %w", err)
+		}
+		collector.inventoryByGroup = inventoryByGroup
+	}
 
-	return collector
+	return collector, nil
 }
 
 // Register records a vault-relative asset reference and returns the site-relative
@@ -116,6 +115,71 @@ func (c *AssetCollector) Snapshot() map[string]*model.Asset {
 	}
 
 	return snapshot
+}
+
+// PlanDestinations expands requested sources through the collector's
+// inventory-aware basename groups, updates the collector's cached plan, and
+// returns destinations for the requested sources.
+func (c *AssetCollector) PlanDestinations(assets map[string]*model.Asset) map[string]string {
+	if c == nil || len(assets) == 0 {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	expanded := make(map[string]*model.Asset)
+	requested := make(map[string]struct{}, len(assets))
+	for key, asset := range assets {
+		srcPath := normalizeAssetSource(key, asset)
+		if srcPath == "" {
+			continue
+		}
+
+		requested[srcPath] = struct{}{}
+		for _, candidate := range c.groupSourcesLocked(plainAssetKey(srcPath), srcPath) {
+			existing := expanded[candidate]
+			if existing == nil {
+				existing = &model.Asset{SrcPath: candidate}
+				if dstPath := c.planned[candidate]; dstPath != "" {
+					existing.DstPath = dstPath
+				}
+				expanded[candidate] = existing
+			}
+		}
+
+		existing := expanded[srcPath]
+		if existing == nil {
+			existing = &model.Asset{SrcPath: srcPath}
+			expanded[srcPath] = existing
+		}
+		if asset != nil {
+			existing.RefCount += asset.RefCount
+			if dstPath := outputSitePath(asset.DstPath); dstPath != "" {
+				existing.DstPath = dstPath
+			}
+		}
+	}
+	if len(expanded) == 0 {
+		return nil
+	}
+
+	planned := planAssetDestinations(c.vaultRoot, expanded, c.reservedOutputKeys)
+	filtered := make(map[string]string, len(requested))
+	for srcPath, dstPath := range planned {
+		if srcPath == "" || dstPath == "" {
+			continue
+		}
+		c.planned[srcPath] = dstPath
+		if asset := c.assets[srcPath]; asset != nil {
+			asset.DstPath = dstPath
+		}
+		if _, ok := requested[srcPath]; ok {
+			filtered[srcPath] = dstPath
+		}
+	}
+
+	return filtered
 }
 
 func (c *AssetCollector) registerSitePathLocked(srcPath string) string {
@@ -204,12 +268,14 @@ func (c *AssetCollector) groupSourcesLocked(groupKey string, srcPath string) []s
 	return ordered
 }
 
-func (c *AssetCollector) scanVaultInventory() map[string][]string {
+func (c *AssetCollector) scanVaultInventory() (map[string][]string, error) {
 	if c == nil || strings.TrimSpace(c.vaultRoot) == "" {
-		return nil
+		return nil, nil
 	}
 	if c.scanInventoryHook != nil {
-		c.scanInventoryHook()
+		if err := c.scanInventoryHook(); err != nil {
+			return nil, err
+		}
 	}
 
 	groups := make(map[string][]string)
@@ -262,14 +328,14 @@ func (c *AssetCollector) scanVaultInventory() map[string][]string {
 		return nil
 	})
 	if err != nil {
-		return nil
+		return nil, err
 	}
 
 	for groupKey := range groups {
 		sort.Strings(groups[groupKey])
 	}
 
-	return groups
+	return groups, nil
 }
 
 func isRegularInventoryEntry(entry fs.DirEntry) (bool, error) {
@@ -295,4 +361,43 @@ func (c *AssetCollector) sourceExists(srcPath string) bool {
 
 	_, _, err := assetSourceInfo(c.vaultRoot, srcPath)
 	return err == nil
+}
+
+func resourceInventoryGroups(resourceFiles []string) map[string][]string {
+	groups := make(map[string][]string)
+	if resourceFiles == nil {
+		return groups
+	}
+
+	seen := make(map[string]struct{}, len(resourceFiles))
+	for _, resourceFile := range resourceFiles {
+		normalized := normalizePublishableAssetPath(resourceFile)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+
+		groupKey := plainAssetKey(normalized)
+		if groupKey == "" {
+			continue
+		}
+		groups[groupKey] = append(groups[groupKey], normalized)
+	}
+
+	for groupKey := range groups {
+		sort.Strings(groups[groupKey])
+	}
+
+	return groups
+}
+
+func cloneInventoryByGroup(groups map[string][]string) map[string][]string {
+	cloned := make(map[string][]string, len(groups))
+	for groupKey, paths := range groups {
+		cloned[groupKey] = append([]string(nil), paths...)
+	}
+	return cloned
 }

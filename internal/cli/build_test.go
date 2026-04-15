@@ -69,14 +69,17 @@ func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
 	var gotOverrides internalconfig.Overrides
 	var gotVaultPath string
 	var gotOutputPath string
-	var gotConfig model.SiteConfig
-	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+	var gotInput internalbuild.SiteInput
+	var gotOptions internalbuild.Options
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}}
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
 		gotConfigPath = path
 		gotOverrides = overrides
-		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+		return expectedInput, nil
 	}
-	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
-		gotConfig = cfg
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		gotInput = input
+		gotOptions = options
 		gotVaultPath = vaultPath
 		gotOutputPath = outputPath
 		if options.Force {
@@ -107,8 +110,11 @@ func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
 	if gotOutputPath != outputPath {
 		t.Fatalf("build outputPath = %q, want %q", gotOutputPath, outputPath)
 	}
-	if gotConfig.Title != "Garden Notes" || gotConfig.BaseURL != "https://example.com/" {
-		t.Fatalf("build cfg = %#v, want loaded config", gotConfig)
+	if gotInput != expectedInput {
+		t.Fatalf("build input = %#v, want %#v", gotInput, expectedInput)
+	}
+	if gotOptions.DiagnosticsWriter == nil {
+		t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
 	}
 }
 
@@ -124,14 +130,18 @@ func TestBuildCommandAllowsConfigOverride(t *testing.T) {
 	deps := testCommandDependencies()
 	var gotConfigPath string
 	var gotOverrides internalconfig.Overrides
-	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}}
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
 		gotConfigPath = path
 		gotOverrides = overrides
-		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+		return expectedInput, nil
 	}
-	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		if options.Force {
 			t.Fatalf("build options = %#v, want non-force config override build", options)
+		}
+		if input != expectedInput {
+			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		return &internalbuild.BuildResult{}, nil
 	}
@@ -220,10 +230,10 @@ func TestBuildCommandPropagatesBuildFailure(t *testing.T) {
 	}
 
 	deps := testCommandDependencies()
-	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
-		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}}, nil
 	}
-	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		return nil, errors.New("boom")
 	}
 
@@ -251,11 +261,11 @@ func TestBuildCommandPassesForceOption(t *testing.T) {
 	}
 
 	deps := testCommandDependencies()
-	deps.loadConfig = func(path string, overrides internalconfig.Overrides) (model.SiteConfig, error) {
-		return model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}, nil
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}}, nil
 	}
 	gotOptions := internalbuild.Options{}
-	deps.buildSiteWithOptions = func(cfg model.SiteConfig, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		gotOptions = options
 		return &internalbuild.BuildResult{}, nil
 	}
@@ -271,5 +281,43 @@ func TestBuildCommandPassesForceOption(t *testing.T) {
 	}
 	if !gotOptions.Force {
 		t.Fatalf("build options = %#v, want force enabled", gotOptions)
+	}
+}
+
+func TestBuildCommandRoutesRealBuildWarningsToInjectedStderr(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	notePath := filepath.Join(vaultPath, "alpha.md")
+	canvasPath := filepath.Join(vaultPath, "sketch.canvas")
+
+	if err := os.WriteFile(configPath, []byte("title: Garden Notes\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+	if err := os.WriteFile(notePath, []byte("---\ntitle: Alpha\ndate: 2026-04-10\n---\n# Alpha\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", notePath, err)
+	}
+	if err := os.WriteFile(canvasPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", canvasPath, err)
+	}
+
+	stdout, stderr, err := executeForTest(t, defaultCommandDependencies(), []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", outputPath,
+	})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	}
+	if !strings.Contains(stderr, "Warnings (") {
+		t.Fatalf("stderr = %q, want warning summary", stderr)
+	}
+	if !strings.Contains(stderr, "sketch.canvas [unsupported_syntax] canvas files are skipped during site builds") {
+		t.Fatalf("stderr = %q, want canvas warning routed through injected stderr", stderr)
 	}
 }

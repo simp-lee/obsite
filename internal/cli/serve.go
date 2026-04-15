@@ -57,6 +57,7 @@ type serveWatchLoop struct {
 	notifyReload            func()
 	onError                 func(error)
 	watchedDirs             map[string]struct{}
+	vaultWatchDirs          map[string]struct{}
 	configWatchDirs         map[string]struct{}
 	extraWatchDirs          map[string]struct{}
 }
@@ -130,15 +131,16 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath 
 	var currentExtraWatchInputs []serveWatchInput
 
 	build := func() error {
-		cfg, err := deps.loadConfig(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
+		input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
+		cfg := input.Config
 
 		nextExtraWatchInputs := collectServeWatchInputs(cfg.TemplateDir, cfg.CustomCSS, normalizedVaultPath)
 		currentExtraWatchInputs = nextExtraWatchInputs
 
-		if _, err := deps.buildSite(cfg, normalizedVaultPath, outputPath); err != nil {
+		if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, outputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 			return fmt.Errorf("build site: %w", err)
 		}
 
@@ -225,28 +227,25 @@ func startServeWatchLoop(ctx context.Context, loop serveWatchLoop) error {
 		return fmt.Errorf("watcher is nil")
 	}
 	if loop.rebuild == nil {
-		_ = loop.watcher.Close()
-		return fmt.Errorf("rebuild function is nil")
+		return closeServeWatchLoopWatcher(fmt.Errorf("rebuild function is nil"), loop.watcher)
 	}
 	if loop.debounce <= 0 {
 		loop.debounce = defaultWatchDebounce
 	}
 	loop.extraWatchInputs = normalizeServeWatchInputs(loop.extraWatchInputs)
 	loop.watchedDirs = make(map[string]struct{})
+	loop.vaultWatchDirs = make(map[string]struct{})
 	loop.configWatchDirs = make(map[string]struct{})
 	loop.extraWatchDirs = make(map[string]struct{})
 
 	if err := loop.addVaultTree(loop.vaultPath); err != nil {
-		_ = loop.watcher.Close()
-		return err
+		return closeServeWatchLoopWatcher(err, loop.watcher)
 	}
 	if err := loop.addConfigParentWatch(); err != nil {
-		_ = loop.watcher.Close()
-		return err
+		return closeServeWatchLoopWatcher(err, loop.watcher)
 	}
 	if err := loop.addExtraInputWatches(); err != nil {
-		_ = loop.watcher.Close()
-		return err
+		return closeServeWatchLoopWatcher(err, loop.watcher)
 	}
 
 	go loop.run(ctx)
@@ -254,7 +253,7 @@ func startServeWatchLoop(ctx context.Context, loop serveWatchLoop) error {
 }
 
 func (loop *serveWatchLoop) run(ctx context.Context) {
-	defer loop.watcher.Close()
+	defer loop.closeWatcher()
 
 	var timer *time.Timer
 	var timerC <-chan time.Time
@@ -323,6 +322,28 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 	}
 }
 
+func closeServeWatchLoopWatcher(cause error, watcher fileWatcher) error {
+	if watcher == nil {
+		return cause
+	}
+
+	if err := watcher.Close(); err != nil {
+		return errors.Join(cause, fmt.Errorf("close watcher: %w", err))
+	}
+
+	return cause
+}
+
+func (loop *serveWatchLoop) closeWatcher() {
+	if loop == nil || loop.watcher == nil {
+		return
+	}
+
+	if err := loop.watcher.Close(); err != nil {
+		loop.reportError(fmt.Errorf("close watcher: %w", err))
+	}
+}
+
 func (loop *serveWatchLoop) addVaultTree(root string) error {
 	return filepath.WalkDir(root, func(current string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -343,7 +364,7 @@ func (loop *serveWatchLoop) addVaultTree(root string) error {
 			return filepath.SkipDir
 		}
 
-		return loop.addWatchDir(cleanPath)
+		return loop.addVaultWatchDir(cleanPath)
 	})
 }
 
@@ -412,6 +433,9 @@ func (loop *serveWatchLoop) watchDirsForInputs(inputs []serveWatchInput) map[str
 		if strings.TrimSpace(watchDir) == "" || watchDir == "." || loop.pathIsOutput(watchDir) {
 			continue
 		}
+		if isFilesystemRoot(watchDir) && filepath.Clean(watchDir) != filepath.Clean(targetWatchDir) {
+			continue
+		}
 
 		watchDirs[filepath.Clean(watchDir)] = struct{}{}
 		if filepath.Clean(watchDir) != filepath.Clean(targetWatchDir) {
@@ -430,7 +454,11 @@ func (loop *serveWatchLoop) watchDirsForInputs(inputs []serveWatchInput) map[str
 }
 
 func (loop *serveWatchLoop) shouldRetainBaseWatchDir(path string) bool {
-	_, ok := loop.configWatchDirs[filepath.Clean(path)]
+	cleanPath := filepath.Clean(path)
+	if _, ok := loop.configWatchDirs[cleanPath]; ok {
+		return true
+	}
+	_, ok := loop.vaultWatchDirs[cleanPath]
 	return ok
 }
 
@@ -480,6 +508,15 @@ func (loop *serveWatchLoop) addWatchDir(path string) error {
 	return nil
 }
 
+func (loop *serveWatchLoop) addVaultWatchDir(path string) error {
+	cleanPath := filepath.Clean(path)
+	if err := loop.addWatchDir(cleanPath); err != nil {
+		return err
+	}
+	loop.vaultWatchDirs[cleanPath] = struct{}{}
+	return nil
+}
+
 func (loop *serveWatchLoop) isWatchedDir(path string) bool {
 	_, ok := loop.watchedDirs[filepath.Clean(path)]
 	return ok
@@ -499,6 +536,7 @@ func (loop *serveWatchLoop) removeWatchedDirSubtree(path string) {
 func (loop *serveWatchLoop) removeWatchDir(path string) error {
 	cleanPath := filepath.Clean(path)
 	delete(loop.watchedDirs, cleanPath)
+	delete(loop.vaultWatchDirs, cleanPath)
 	if err := loop.watcher.Remove(cleanPath); err != nil && !errors.Is(err, fsnotify.ErrNonExistentWatch) {
 		return fmt.Errorf("unwatch %q: %w", cleanPath, err)
 	}

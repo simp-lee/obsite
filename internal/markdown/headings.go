@@ -1,10 +1,11 @@
 package markdown
 
 import (
+	"html"
+	"io"
 	"strconv"
 	"strings"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
@@ -13,6 +14,7 @@ import (
 	"github.com/yuin/goldmark/text"
 	gmhashtag "go.abhg.dev/goldmark/hashtag"
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
+	xhtml "golang.org/x/net/html"
 )
 
 type visibleHeadingIDTransformer struct {
@@ -92,12 +94,22 @@ func appendVisibleHeadingInlineText(collector *headingTextCollector, node gast.N
 
 	switch current := node.(type) {
 	case *gast.Text:
-		collector.appendText(string(current.Value(source)))
-		if current.SoftLineBreak() || current.HardLineBreak() {
+		if current.IsRaw() {
+			collector.appendText(string(current.Value(source)))
+		} else {
+			collector.appendSourceText(string(current.Value(source)))
+		}
+		if !collector.inInvisibleRawHTML() && (current.SoftLineBreak() || current.HardLineBreak()) {
 			collector.space()
 		}
 	case *gast.String:
-		collector.appendText(string(current.Value))
+		if current.IsCode() || current.IsRaw() {
+			collector.appendText(string(current.Value))
+		} else {
+			collector.appendSourceText(string(current.Value))
+		}
+	case *gast.CodeSpan:
+		collector.appendCodeSpanText(current, source)
 	case *gmhashtag.Node:
 		collector.appendText("#" + string(current.Tag))
 	case *gmwikilink.Node:
@@ -208,8 +220,10 @@ func isHeadingASCIIControl(r rune) bool {
 }
 
 type headingTextCollector struct {
-	builder      strings.Builder
-	pendingSpace bool
+	builder            strings.Builder
+	pendingSpace       bool
+	htmlStack          []headingHTMLTagState
+	invisibleHTMLDepth int
 }
 
 func newHeadingTextCollector() *headingTextCollector {
@@ -238,13 +252,97 @@ func (c *headingTextCollector) appendText(value string) {
 	c.builder.WriteString(value)
 }
 
+func (c *headingTextCollector) appendSourceText(value string) {
+	if c == nil || value == "" || c.inInvisibleRawHTML() {
+		return
+	}
+	c.appendText(html.UnescapeString(value))
+}
+
+func (c *headingTextCollector) appendCodeSpanText(node *gast.CodeSpan, source []byte) {
+	if c == nil || node == nil || c.inInvisibleRawHTML() {
+		return
+	}
+
+	var builder strings.Builder
+	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
+		textNode, ok := child.(*gast.Text)
+		if !ok {
+			continue
+		}
+
+		value := textNode.Segment.Value(source)
+		if len(value) > 0 && value[len(value)-1] == '\n' {
+			_, _ = builder.Write(value[:len(value)-1])
+			_ = builder.WriteByte(' ')
+			continue
+		}
+		_, _ = builder.Write(value)
+	}
+
+	c.appendText(builder.String())
+}
+
+func (c *headingTextCollector) inInvisibleRawHTML() bool {
+	return c != nil && c.invisibleHTMLDepth > 0
+}
+
 func (c *headingTextCollector) applyRawHTML(fragment string) {
 	if c == nil || fragment == "" {
 		return
 	}
-	for _, token := range parseHeadingHTMLTokens(fragment) {
-		if headingHTMLTagBreaksText(token) {
-			c.space()
+
+	tokenizer := xhtml.NewTokenizer(strings.NewReader(fragment))
+	for {
+		switch tokenType := tokenizer.Next(); tokenType {
+		case xhtml.ErrorToken:
+			if err := tokenizer.Err(); err != nil && err != io.EOF {
+				return
+			}
+			return
+		case xhtml.TextToken:
+			if !c.inInvisibleRawHTML() {
+				c.appendText(string(tokenizer.Text()))
+			}
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			tag := headingHTMLTagToken{name: strings.ToLower(token.Data), selfClosing: tokenType == xhtml.SelfClosingTagToken}
+			if tag.name == "" {
+				continue
+			}
+
+			invisible := c.inInvisibleRawHTML() || headingHTMLTagHidesText(tag.name, token.Attr)
+			if !invisible && headingHTMLTagBreaksText(tag) {
+				c.space()
+			}
+			if headingHTMLTagIsVoid(tag.name) {
+				continue
+			}
+			if tag.selfClosing {
+				continue
+			}
+
+			c.htmlStack = append(c.htmlStack, headingHTMLTagState{name: tag.name, invisible: invisible})
+			if invisible {
+				c.invisibleHTMLDepth++
+			}
+		case xhtml.EndTagToken:
+			token := tokenizer.Token()
+			tag := headingHTMLTagToken{name: strings.ToLower(token.Data), closing: true}
+			if tag.name == "" {
+				continue
+			}
+
+			if !c.inInvisibleRawHTML() && headingHTMLTagBreaksText(tag) {
+				c.space()
+			}
+
+			var removedInvisible int
+			c.htmlStack, removedInvisible = closeHeadingHTMLTagState(c.htmlStack, tag.name)
+			c.invisibleHTMLDepth -= removedInvisible
+			if c.invisibleHTMLDepth < 0 {
+				c.invisibleHTMLDepth = 0
+			}
 		}
 	}
 }
@@ -253,6 +351,11 @@ type headingHTMLTagToken struct {
 	name        string
 	closing     bool
 	selfClosing bool
+}
+
+type headingHTMLTagState struct {
+	name      string
+	invisible bool
 }
 
 var headingTextBoundaryTags = map[string]struct{}{
@@ -295,93 +398,72 @@ var headingTextBoundaryTags = map[string]struct{}{
 	"ul":         {},
 }
 
+var headingInvisibleTextTags = map[string]struct{}{
+	"script":   {},
+	"style":    {},
+	"template": {},
+}
+
+var headingHTMLVoidTags = map[string]struct{}{
+	"area":   {},
+	"base":   {},
+	"br":     {},
+	"col":    {},
+	"embed":  {},
+	"hr":     {},
+	"img":    {},
+	"input":  {},
+	"link":   {},
+	"meta":   {},
+	"param":  {},
+	"source": {},
+	"track":  {},
+	"wbr":    {},
+}
+
 func headingHTMLTagBreaksText(token headingHTMLTagToken) bool {
 	_, ok := headingTextBoundaryTags[token.name]
 	return ok
 }
 
-func parseHeadingHTMLTokens(fragment string) []headingHTMLTagToken {
-	tokens := make([]headingHTMLTagToken, 0)
-	for index := 0; index < len(fragment); {
-		open := strings.IndexByte(fragment[index:], '<')
-		if open < 0 {
-			break
+func headingHTMLTagIsVoid(name string) bool {
+	_, ok := headingHTMLVoidTags[name]
+	return ok
+}
+
+func headingHTMLTagHidesText(name string, attrs []xhtml.Attribute) bool {
+	if _, ok := headingInvisibleTextTags[name]; ok {
+		return true
+	}
+
+	for _, attr := range attrs {
+		if strings.EqualFold(attr.Key, "hidden") {
+			return true
 		}
-		open += index
-		next, token, ok := nextHeadingHTMLTagToken(fragment, open)
-		if !ok {
-			index = open + 1
+	}
+
+	return false
+}
+
+func closeHeadingHTMLTagState(stack []headingHTMLTagState, name string) ([]headingHTMLTagState, int) {
+	if len(stack) == 0 || name == "" {
+		return stack, 0
+	}
+
+	for index := len(stack) - 1; index >= 0; index-- {
+		if stack[index].name != name {
 			continue
 		}
-		tokens = append(tokens, token)
-		index = next
-	}
-	return tokens
-}
 
-func nextHeadingHTMLTagToken(fragment string, start int) (int, headingHTMLTagToken, bool) {
-	if start < 0 || start >= len(fragment) || fragment[start] != '<' {
-		return 0, headingHTMLTagToken{}, false
-	}
-	if strings.HasPrefix(fragment[start:], "<!--") {
-		end := strings.Index(fragment[start+4:], "-->")
-		if end < 0 {
-			return len(fragment), headingHTMLTagToken{}, true
+		removedInvisible := 0
+		for _, state := range stack[index:] {
+			if state.invisible {
+				removedInvisible++
+			}
 		}
-		return start + 4 + end + 3, headingHTMLTagToken{}, true
+
+		return stack[:index], removedInvisible
 	}
 
-	end, ok := findHeadingTagEnd(fragment, start+1)
-	if !ok {
-		return 0, headingHTMLTagToken{}, false
-	}
-
-	inner := strings.TrimSpace(fragment[start+1 : end])
-	if inner == "" || inner[0] == '!' || inner[0] == '?' {
-		return end + 1, headingHTMLTagToken{}, true
-	}
-
-	token := headingHTMLTagToken{}
-	if inner[0] == '/' {
-		token.closing = true
-		inner = strings.TrimSpace(inner[1:])
-	}
-	if strings.HasSuffix(inner, "/") {
-		token.selfClosing = true
-		inner = strings.TrimSpace(inner[:len(inner)-1])
-	}
-	if inner == "" {
-		return end + 1, token, true
-	}
-
-	nameEnd := 0
-	for nameEnd < len(inner) {
-		r, size := utf8.DecodeRuneInString(inner[nameEnd:])
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == ':' || r == '-' || r == '_') {
-			break
-		}
-		nameEnd += size
-	}
-	if nameEnd == 0 {
-		return end + 1, token, true
-	}
-
-	token.name = strings.ToLower(inner[:nameEnd])
-	return end + 1, token, true
-}
-
-func findHeadingTagEnd(fragment string, start int) (int, bool) {
-	quote := rune(0)
-	for index := start; index < len(fragment); index++ {
-		current := rune(fragment[index])
-		switch {
-		case quote != 0 && current == quote:
-			quote = 0
-		case quote == 0 && (current == '\'' || current == '"'):
-			quote = current
-		case quote == 0 && current == '>':
-			return index, true
-		}
-	}
-	return 0, false
+	return stack, 0
 }

@@ -22,6 +22,7 @@ import (
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/link"
 	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
@@ -49,13 +50,23 @@ type BuildResult struct {
 	ErrorCount   int
 }
 
+// SiteInput is the build-owned contract for site generation.
+//
+// It keeps loader-derived build policy inside the build boundary instead of
+// leaking config-layer provenance through model.SiteConfig or Options.
+type SiteInput struct {
+	Config                model.SiteConfig
+	allowMissingCustomCSS bool
+}
+
 type buildOptions struct {
-	concurrency       int
-	diagnosticsWriter io.Writer
-	force             bool
-	minifier          *minify.M
-	pagefindLookPath  func(string) (string, error)
-	pagefindCommand   func(string, ...string) ([]byte, error)
+	concurrency           int
+	diagnosticsWriter     io.Writer
+	force                 bool
+	allowMissingCustomCSS bool
+	minifier              *minify.M
+	pagefindLookPath      func(string) (string, error)
+	pagefindCommand       func(string, ...string) ([]byte, error)
 }
 
 type renderedNote struct {
@@ -111,6 +122,12 @@ type stagedOutputPublisher struct {
 	hasExistingOutput bool
 }
 
+var (
+	stagedOutputRename    = os.Rename
+	stagedOutputRemoveAll = os.RemoveAll
+	stagedOutputStat      = os.Stat
+)
+
 const (
 	managedOutputMarkerFilename = ".obsite-output"
 	managedOutputMarkerContents = "managed by obsite\n"
@@ -137,6 +154,7 @@ var renderMarkdownNote = func(idx *model.VaultIndex, note *model.Note, assetSink
 	rendered.HTMLContent = html.String()
 	rendered.HasMath = renderResult.HasMath()
 	rendered.HasMermaid = renderResult.HasMermaid()
+	rendered.Summary = render.VisibleSummary(rendered)
 
 	return &renderedNote{
 		source:   note,
@@ -221,20 +239,33 @@ func (e diagnosticBuildError) Error() string {
 	return fmt.Sprintf("build failed with %d diagnostic error(s)", e.count)
 }
 
-// Build runs the full Obsite site-generation pipeline.
-func Build(cfg model.SiteConfig, vaultPath string, outputPath string) (*BuildResult, error) {
-	return BuildWithOptions(cfg, vaultPath, outputPath, Options{})
+// LoadSiteInput loads build input using config-layer normalization while
+// preserving build-only policy such as auto-detected custom.css optionality.
+func LoadSiteInput(path string, overrides internalconfig.Overrides) (SiteInput, error) {
+	loaded, err := internalconfig.LoadForBuild(path, overrides)
+	if err != nil {
+		return SiteInput{}, err
+	}
+
+	return SiteInput{
+		Config:                loaded.Config,
+		allowMissingCustomCSS: loaded.AllowMissingCustomCSS,
+	}, nil
 }
 
-// BuildWithOptions runs the full Obsite site-generation pipeline with explicit runtime options.
-func BuildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string, options Options) (*BuildResult, error) {
-	return buildWithOptions(cfg, vaultPath, outputPath, buildOptions{force: options.Force})
+// BuildWithOptions runs the full Obsite site-generation pipeline from a build.SiteInput contract.
+func BuildWithOptions(input SiteInput, vaultPath string, outputPath string, options Options) (*BuildResult, error) {
+	return buildWithOptions(input.Config, vaultPath, outputPath, buildOptions{
+		force:                 options.Force,
+		diagnosticsWriter:     options.DiagnosticsWriter,
+		allowMissingCustomCSS: input.allowMissingCustomCSS,
+	})
 }
 
 func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string, options buildOptions) (result *BuildResult, err error) {
 	options = normalizeBuildOptions(options)
-	diagnostics := diag.NewCollector()
 	result = &BuildResult{}
+	diagnostics := diag.NewCollector()
 
 	defer func() {
 		result, err = finalizeBuild(result, diagnostics, options.diagnosticsWriter, err)
@@ -259,7 +290,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("validate config: %w", err)
 	}
 	cfg = normalizedCfg
-	cfg.CustomCSS, err = resolveCustomCSSSource(cfg.CustomCSS)
+	cfg.CustomCSS, err = resolveCustomCSSSource(cfg.CustomCSS, options.allowMissingCustomCSS)
 	if err != nil {
 		return result, fmt.Errorf("resolve custom CSS: %w", err)
 	}
@@ -284,19 +315,33 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, err
 	}
+	disableCacheReuse := false
+	buildABISignature, err := readBuildABISignature()
+	if err != nil {
+		var abiSourceErr *buildABISourceSignatureUnavailableError
+		if !errors.As(err, &abiSourceErr) {
+			return result, fmt.Errorf("compute build ABI signature: %w", err)
+		}
+
+		disableCacheReuse = true
+		buildABISignature = abiSourceErr.fallbackSignature
+		warnBuildABISourceSignatureFailure(diagnostics, abiSourceErr)
+	}
 	templateSignature, err := buildTemplateSignature(cfg.TemplateDir)
 	if err != nil {
 		return result, err
 	}
 
 	var previousManifest *CacheManifest
-	if !options.force {
+	if !options.force && !disableCacheReuse {
 		loadedManifest, loadErr := loadCacheManifest(previousOutputPath)
 		if loadErr == nil {
 			previousManifest = loadedManifest
+		} else {
+			warnCacheManifestLoadFailure(diagnostics, loadErr)
 		}
 	}
-	fullDirty := options.force || previousManifest == nil || previousManifest.ConfigSignature != configSignature || previousManifest.TemplateSignature != templateSignature
+	fullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature || previousManifest.ConfigSignature != configSignature || previousManifest.TemplateSignature != templateSignature
 
 	scanResult, err := vault.Scan(normalizedVaultPath)
 	if err != nil {
@@ -323,6 +368,9 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := detectTimelinePageConflicts(cfg, idx, folderPages, diagnostics); err != nil {
 		return result, fmt.Errorf("build timeline page: %w", err)
 	}
+	if err := detectGeneratedPageRouteConflicts(cfg, idx, folderPages, diagnostics); err != nil {
+		return result, fmt.Errorf("build route manifest: %w", err)
+	}
 
 	noteHashes, err := buildNoteHashes(normalizedVaultPath, idx)
 	if err != nil {
@@ -332,8 +380,22 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	noteDerivedSignatures := buildNoteDerivedSignatures(idx)
 	hashSnapshot := diffNoteHashes(previousManifest, noteHashes)
 
-	assetCollector := internalasset.NewCollectorWithReservedPaths(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths)
+	assetCollector, err := internalasset.NewCollectorWithResourceFiles(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths, scanResult.ResourceFiles)
+	if err != nil {
+		return result, fmt.Errorf("create asset collector: %w", err)
+	}
 	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, fullDirty)
+	if renderErr != nil {
+		for _, state := range noteStates {
+			if state == nil {
+				continue
+			}
+			for _, diagnostic := range state.renderDiagnostics {
+				diagnostics.Add(diagnostic)
+			}
+		}
+		return result, fmt.Errorf("render markdown: %w", renderErr)
+	}
 	noteStatesByPath := make(map[string]*noteBuildState, len(noteStates))
 	contentDirtyPaths := make(map[string]struct{}, len(noteStates))
 	for _, state := range noteStates {
@@ -342,17 +404,16 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 		relPath := state.rendered.source.RelPath
 		noteStatesByPath[relPath] = state
-		for _, diagnostic := range state.renderDiagnostics {
-			diagnostics.Add(diagnostic)
-		}
 		if !state.fromCache {
 			contentDirtyPaths[relPath] = struct{}{}
 		}
 	}
-	if renderErr != nil {
-		return result, fmt.Errorf("render markdown: %w", renderErr)
+	assetDestinationPlan := assetCollector.PlanDestinations(mergeBuildAssets(idx.Assets, noteStatesByPath))
+	assetDestinationDirtyPaths, err := rerenderNotesWithMismatchedAssetDestinations(idx, assetCollector, noteStatesByPath, assetDestinationPlan)
+	if err != nil {
+		return result, fmt.Errorf("rerender notes for asset path changes: %w", err)
 	}
-	result.NotePages = len(contentDirtyPaths)
+	applyAssetDestinationPlanToNoteStates(noteStatesByPath, assetDestinationPlan)
 
 	renderedByPath := make(map[string]*renderedNote, len(noteStatesByPath))
 	resolvedOutLinks := make(map[string][]model.LinkRef, len(noteStatesByPath))
@@ -363,23 +424,40 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		renderedByPath[relPath] = state.rendered
 		resolvedOutLinks[relPath] = cloneLinkRefs(state.rendered.outLinks)
 	}
+	for _, relPath := range sortedNoteBuildStatePaths(noteStatesByPath) {
+		state := noteStatesByPath[relPath]
+		if state == nil {
+			continue
+		}
+		for _, diagnostic := range state.renderDiagnostics {
+			diagnostics.Add(diagnostic)
+		}
+	}
 
+	summaryByPath := buildRenderedSummaryMap(renderedByPath)
 	result.Graph = link.BuildGraph(idx, resolvedOutLinks)
-	relatedArticlesByPath, relatedSignatures, err := buildRelatedArticlesByPath(cfg, idx, result.Graph)
+	backlinkSignatures := buildBacklinkDerivedSignatures(idx, result.Graph)
+	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyBacklinks, backlinkSignatures)
+	relatedArticlesByPath, relatedSignatures, err := buildRelatedArticlesByPath(cfg, idx, result.Graph, summaryByPath)
 	if err != nil {
 		return result, fmt.Errorf("build related articles: %w", err)
 	}
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyRelated, relatedSignatures)
-	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, result.Graph, noteDerivedSignatures, fullDirty)
+	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, noteDerivedSignatures, fullDirty)
+	for relPath := range assetDestinationDirtyPaths {
+		notePageDirty[relPath] = struct{}{}
+	}
+	result.NotePages = len(notePageDirty)
 	popoverMarker, err := newPopoverLinkMarker(cfg, renderedByPath)
 	if err != nil {
 		return result, fmt.Errorf("build popover link marker: %w", err)
 	}
 
-	recentNotes := buildRecentNotes(idx, "index.html")
+	recentNotes := buildRecentNotes(idx, "index.html", summaryByPath)
 	result.RecentNotes = append([]model.NoteSummary(nil), recentNotes...)
 	siteLastModified := siteLastModified(allPublicNotes(idx))
 	stagingOutputPath := publisher.OutputPath()
+	searchReadyArchivePages := make(map[string]render.RenderedPage)
 
 	writeSitePages := func(searchReady bool, pageDiagnostics *diag.Collector) ([]model.PageData, map[string]string, error) {
 		sitemapPages := make([]model.PageData, 0, len(noteStatesByPath)+len(idx.Tags)+len(folderPages)+2)
@@ -391,7 +469,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 		sitemapPages = append(sitemapPages, notePages...)
 
-		tagPages, tagSignatures, err := writeTagPages(cfg, idx, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty)
+		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -399,14 +477,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result.TagPages = len(tagPages)
 		sitemapPages = append(sitemapPages, tagPages...)
 
-		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty)
+		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
 		if err != nil {
 			return nil, nil, err
 		}
 		mergePageSignatures(pageSignatures, folderSignatures)
 		sitemapPages = append(sitemapPages, renderedFolderPages...)
 
-		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty)
+		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -414,7 +492,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages = append(sitemapPages, timelinePages...)
 
 		if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
-			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty)
+			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -453,6 +531,9 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := minifyCSSFile(filepath.Join(stagingOutputPath, "style.css"), options.minifier); err != nil {
 		return result, err
 	}
+	if err := render.EmitRuntimeAssets(stagingOutputPath); err != nil {
+		return result, fmt.Errorf("emit runtime assets: %w", err)
+	}
 	if err := copyCustomCSS(cfg.CustomCSS, stagingOutputPath); err != nil {
 		return result, err
 	}
@@ -475,7 +556,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, err
 	}
 
-	if cfg.RSS.Enabled {
+	if cfg.EffectiveRSSEnabled() {
 		rssXML, err := seo.BuildRSS(cfg, recentNotes)
 		if err != nil {
 			return result, fmt.Errorf("build rss: %w", err)
@@ -485,18 +566,32 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}
 
+	searchIndexSignature := ""
 	if cfg.Search.Enabled {
-		if err := runPagefindIndex(stagingOutputPath, cfg.Search, options); err != nil {
-			return result, fmt.Errorf("build search index: %w", err)
+		searchIndexSignature, err = buildSearchIndexInputSignature(stagingOutputPath)
+		if err != nil {
+			return result, fmt.Errorf("compute search index signature: %w", err)
+		}
+
+		reusedSearchIndex, err := tryReuseSearchIndex(previousManifest, previousOutputPath, stagingOutputPath, searchIndexSignature, fullDirty)
+		if err != nil {
+			return result, fmt.Errorf("reuse search index bundle: %w", err)
+		}
+		if !reusedSearchIndex {
+			if err := runPagefindIndex(stagingOutputPath, cfg.Search, options); err != nil {
+				return result, fmt.Errorf("build search index: %w", err)
+			}
 		}
 		if _, pageSignatures, err = writeSitePages(true, nil); err != nil {
 			return result, err
 		}
 	}
 
-	manifest := buildCacheManifest(configSignature, templateSignature, result.Graph, noteStatesByPath, pageSignatures)
-	if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
-		return result, err
+	if !disableCacheReuse {
+		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, result.Graph, noteStatesByPath, pageSignatures, searchIndexSignature)
+		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
+			return result, err
+		}
 	}
 
 	return result, nil
@@ -553,6 +648,83 @@ func runPagefindIndex(outputPath string, searchCfg model.SearchConfig, options b
 	return nil
 }
 
+func tryReuseSearchIndex(previous *CacheManifest, previousOutputPath string, outputPath string, currentSignature string, fullDirty bool) (bool, error) {
+	if fullDirty || previous == nil {
+		return false, nil
+	}
+	if strings.TrimSpace(currentSignature) == "" || strings.TrimSpace(previous.SearchIndexSignature) == "" {
+		return false, nil
+	}
+	if previous.SearchIndexSignature != currentSignature {
+		return false, nil
+	}
+
+	copied, err := copyDirectoryFromPreviousOutput(previousOutputPath, outputPath, pagefindOutputSubdir)
+	if err != nil {
+		return false, err
+	}
+	if !copied {
+		return false, nil
+	}
+	if err := validatePagefindOutput(outputPath); err != nil {
+		_ = os.RemoveAll(filepath.Join(outputPath, pagefindOutputSubdir))
+		return false, nil
+	}
+
+	return true, nil
+}
+
+func copyDirectoryFromPreviousOutput(previousOutputPath string, outputPath string, relDir string) (bool, error) {
+	if strings.TrimSpace(previousOutputPath) == "" {
+		return false, nil
+	}
+
+	sourceRoot := filepath.Join(previousOutputPath, filepath.FromSlash(relDir))
+	info, err := os.Stat(sourceRoot)
+	if err != nil || !info.IsDir() {
+		return false, nil
+	}
+
+	var writeErr error
+	copied := false
+	err = filepath.Walk(sourceRoot, func(currentPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sourceRoot, currentPath)
+		if err != nil {
+			return err
+		}
+
+		data, err := os.ReadFile(currentPath)
+		if err != nil {
+			return err
+		}
+
+		targetRelPath := path.Join(relDir, filepath.ToSlash(relPath))
+		if err := writeOutputFile(outputPath, targetRelPath, data); err != nil {
+			writeErr = err
+			return err
+		}
+
+		copied = true
+		return nil
+	})
+	if err != nil {
+		_ = os.RemoveAll(filepath.Join(outputPath, filepath.FromSlash(relDir)))
+		if writeErr != nil {
+			return false, writeErr
+		}
+		return false, nil
+	}
+
+	return copied, nil
+}
+
 func pagefindBinaryVersion(binaryPath string, runCommand func(string, ...string) ([]byte, error)) (string, error) {
 	output, err := runCommand(binaryPath, "--version")
 	if err != nil {
@@ -583,11 +755,20 @@ func normalizePagefindVersion(value string) string {
 	return trimmed
 }
 
+type pagefindEntryManifest struct {
+	Languages map[string]pagefindEntryLanguage `json:"languages"`
+}
+
+type pagefindEntryLanguage struct {
+	Hash string `json:"hash"`
+	Wasm string `json:"wasm"`
+}
+
 func validatePagefindOutput(outputPath string) error {
+	entryRelPath := filepath.Join(pagefindOutputSubdir, "pagefind-entry.json")
 	for _, relPath := range []string{
-		filepath.Join(pagefindOutputSubdir, "pagefind-entry.json"),
+		entryRelPath,
 		filepath.Join(pagefindOutputSubdir, "pagefind.js"),
-		filepath.Join(pagefindOutputSubdir, "pagefind-worker.js"),
 		filepath.Join(pagefindOutputSubdir, "wasm.unknown.pagefind"),
 		filepath.Join(pagefindOutputSubdir, "pagefind-ui.css"),
 		filepath.Join(pagefindOutputSubdir, "pagefind-ui.js"),
@@ -595,6 +776,14 @@ func validatePagefindOutput(outputPath string) error {
 		if err := validatePagefindOutputFile(outputPath, relPath); err != nil {
 			return err
 		}
+	}
+
+	manifest, err := readPagefindEntryManifest(outputPath, entryRelPath)
+	if err != nil {
+		return err
+	}
+	if err := validateReferencedPagefindAssets(outputPath, entryRelPath, manifest); err != nil {
+		return err
 	}
 
 	for _, requiredPattern := range []struct {
@@ -608,6 +797,77 @@ func validatePagefindOutput(outputPath string) error {
 		if err := validatePagefindOutputHasFileWithSuffix(outputPath, requiredPattern.relDir, requiredPattern.suffix); err != nil {
 			return err
 		}
+	}
+
+	return nil
+}
+
+func readPagefindEntryManifest(outputPath string, relPath string) (pagefindEntryManifest, error) {
+	absolutePath := filepath.Join(outputPath, relPath)
+	manifestPath := filepath.ToSlash(relPath)
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return pagefindEntryManifest{}, fmt.Errorf("pagefind indexing did not produce %q", manifestPath)
+		}
+		return pagefindEntryManifest{}, fmt.Errorf("read generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+
+	var manifest pagefindEntryManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return pagefindEntryManifest{}, fmt.Errorf("parse generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+
+	return manifest, nil
+}
+
+func validateReferencedPagefindAssets(outputPath string, entryRelPath string, manifest pagefindEntryManifest) error {
+	if len(manifest.Languages) == 0 {
+		return nil
+	}
+
+	languages := make([]string, 0, len(manifest.Languages))
+	for language := range manifest.Languages {
+		languages = append(languages, language)
+	}
+	sort.Strings(languages)
+
+	for _, language := range languages {
+		entry := manifest.Languages[language]
+		hash := strings.TrimSpace(entry.Hash)
+		if hash == "" {
+			return fmt.Errorf("pagefind entry %q is missing hash for language %q", filepath.ToSlash(entryRelPath), language)
+		}
+
+		if err := validateReferencedPagefindAsset(outputPath, entryRelPath, language, filepath.Join(pagefindOutputSubdir, fmt.Sprintf("pagefind.%s.pf_meta", hash))); err != nil {
+			return err
+		}
+
+		wasmLanguage := strings.TrimSpace(entry.Wasm)
+		if wasmLanguage == "" {
+			continue
+		}
+
+		if err := validateReferencedPagefindAsset(outputPath, entryRelPath, language, filepath.Join(pagefindOutputSubdir, fmt.Sprintf("wasm.%s.pagefind", wasmLanguage))); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateReferencedPagefindAsset(outputPath string, entryRelPath string, language string, relPath string) error {
+	entryPath := filepath.ToSlash(entryRelPath)
+	assetPath := filepath.ToSlash(relPath)
+	info, err := os.Stat(filepath.Join(outputPath, relPath))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("pagefind entry %q references missing asset %q for language %q", entryPath, assetPath, language)
+		}
+		return fmt.Errorf("inspect generated Pagefind asset %q referenced by %q for language %q: %w", assetPath, entryPath, language, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("pagefind entry %q references directory %q for language %q, want file", entryPath, assetPath, language)
 	}
 
 	return nil
@@ -804,7 +1064,14 @@ func (publisher *stagedOutputPublisher) Finalize(success bool) error {
 		return nil
 	}
 	if success {
-		return publisher.publish()
+		if err := publisher.publish(); err != nil {
+			rollbackErr := publisher.rollback()
+			if rollbackErr != nil {
+				return errors.Join(err, rollbackErr)
+			}
+			return err
+		}
+		return nil
 	}
 	return publisher.rollback()
 }
@@ -818,17 +1085,17 @@ func (publisher *stagedOutputPublisher) publish() error {
 		if err != nil {
 			return err
 		}
-		if err := os.Rename(publisher.outputPath, backupPath); err != nil {
+		if err := stagedOutputRename(publisher.outputPath, backupPath); err != nil {
 			return fmt.Errorf("backup managed output %q: %w", publisher.outputPath, err)
 		}
 		publisher.backupPath = backupPath
 	}
-	if err := os.Rename(publisher.stagingPath, publisher.outputPath); err != nil {
+	if err := stagedOutputRename(publisher.stagingPath, publisher.outputPath); err != nil {
 		return fmt.Errorf("publish staged output %q -> %q: %w", publisher.stagingPath, publisher.outputPath, err)
 	}
 	publisher.stagingPath = ""
 	if publisher.backupPath != "" {
-		if err := os.RemoveAll(publisher.backupPath); err != nil {
+		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
 			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
 		}
 		publisher.backupPath = ""
@@ -843,7 +1110,7 @@ func (publisher *stagedOutputPublisher) rollback() error {
 
 	var cleanupErr error
 	if publisher.stagingPath != "" {
-		if err := os.RemoveAll(publisher.stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := stagedOutputRemoveAll(publisher.stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove staged output %q: %w", publisher.stagingPath, err))
 		}
 		publisher.stagingPath = ""
@@ -852,7 +1119,7 @@ func (publisher *stagedOutputPublisher) rollback() error {
 		return cleanupErr
 	}
 
-	if _, err := os.Stat(publisher.backupPath); err != nil {
+	if _, err := stagedOutputStat(publisher.backupPath); err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stat previous output backup %q: %w", publisher.backupPath, err))
 		}
@@ -860,8 +1127,8 @@ func (publisher *stagedOutputPublisher) rollback() error {
 		return cleanupErr
 	}
 
-	if _, err := os.Stat(publisher.outputPath); errors.Is(err, os.ErrNotExist) {
-		if restoreErr := os.Rename(publisher.backupPath, publisher.outputPath); restoreErr != nil {
+	if _, err := stagedOutputStat(publisher.outputPath); errors.Is(err, os.ErrNotExist) {
+		if restoreErr := stagedOutputRename(publisher.backupPath, publisher.outputPath); restoreErr != nil {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore previous output %q: %w", publisher.outputPath, restoreErr))
 		} else {
 			publisher.backupPath = ""
@@ -872,7 +1139,7 @@ func (publisher *stagedOutputPublisher) rollback() error {
 		return cleanupErr
 	}
 
-	if err := os.RemoveAll(publisher.backupPath); err != nil {
+	if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
 		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err))
 	} else {
 		publisher.backupPath = ""
@@ -1002,6 +1269,7 @@ func rebuildCachedRenderedNote(note *model.Note, entry cacheManifestNote) *rende
 	rendered.HTMLContent = entry.HTMLContent
 	rendered.HasMath = entry.HasMath
 	rendered.HasMermaid = entry.HasMermaid
+	rendered.Summary = render.VisibleSummary(rendered)
 
 	return &renderedNote{
 		source:   note,
@@ -1010,13 +1278,47 @@ func rebuildCachedRenderedNote(note *model.Note, entry cacheManifestNote) *rende
 	}
 }
 
+func buildRenderedSummaryMap(renderedByPath map[string]*renderedNote) map[string]string {
+	if len(renderedByPath) == 0 {
+		return map[string]string{}
+	}
+
+	summaries := make(map[string]string, len(renderedByPath))
+	for relPath, rendered := range renderedByPath {
+		if rendered == nil {
+			continue
+		}
+
+		note := rendered.rendered
+		if note == nil {
+			note = rendered.source
+		}
+		if note == nil {
+			continue
+		}
+
+		summaries[relPath] = note.Summary
+	}
+
+	return summaries
+}
+
+func noteSummary(note *model.Note, summaryByPath map[string]string) string {
+	if note == nil {
+		return ""
+	}
+	if summary, ok := summaryByPath[note.RelPath]; ok {
+		return summary
+	}
+	return note.Summary
+}
+
 func determineDirtyNotePages(
 	cfg model.SiteConfig,
 	idx *model.VaultIndex,
 	contentDirtyPaths map[string]struct{},
 	removedPaths map[string]struct{},
 	previous *CacheManifest,
-	currentGraph *model.LinkGraph,
 	currentDerivedSignatures map[string]map[string]string,
 	fullDirty bool,
 ) map[string]struct{} {
@@ -1039,25 +1341,28 @@ func determineDirtyNotePages(
 	if sidebarTreeDirty {
 		return allPublicNotePathSet(idx)
 	}
-	if len(contentDirtyPaths) == 0 && len(removedPaths) == 0 && len(relatedDirtyPaths) == 0 {
+
+	backlinkDirtyPaths := map[string]struct{}{}
+	if len(contentDirtyPaths) > 0 || len(removedPaths) > 0 {
+		var comparable bool
+		backlinkDirtyPaths, comparable = backlinkDerivedSignaturesChanged(idx, currentDerivedSignatures, previous, contentDirtyPaths)
+		if !comparable {
+			return allPublicNotePathSet(idx)
+		}
+	}
+	if len(contentDirtyPaths) == 0 && len(removedPaths) == 0 && len(relatedDirtyPaths) == 0 && len(backlinkDirtyPaths) == 0 {
 		return map[string]struct{}{}
 	}
 
-	dirty := make(map[string]struct{}, len(contentDirtyPaths)+len(relatedDirtyPaths))
-	var previousGraph *model.LinkGraph
-	if previous != nil {
-		previousGraph = &previous.Graph
-	}
+	dirty := make(map[string]struct{}, len(contentDirtyPaths)+len(relatedDirtyPaths)+len(backlinkDirtyPaths))
 
 	for relPath := range contentDirtyPaths {
 		dirty[relPath] = struct{}{}
-		addGraphNeighbors(dirty, previousGraph, relPath)
-		addGraphNeighbors(dirty, currentGraph, relPath)
-	}
-	for relPath := range removedPaths {
-		addGraphNeighbors(dirty, previousGraph, relPath)
 	}
 	for relPath := range relatedDirtyPaths {
+		dirty[relPath] = struct{}{}
+	}
+	for relPath := range backlinkDirtyPaths {
 		dirty[relPath] = struct{}{}
 	}
 
@@ -1069,22 +1374,6 @@ func determineDirtyNotePages(
 	}
 
 	return dirty
-}
-
-func addGraphNeighbors(target map[string]struct{}, graph *model.LinkGraph, relPath string) {
-	if graph == nil {
-		return
-	}
-	for _, neighbor := range graph.Forward[relPath] {
-		if neighbor != "" {
-			target[neighbor] = struct{}{}
-		}
-	}
-	for _, neighbor := range graph.Backward[relPath] {
-		if neighbor != "" {
-			target[neighbor] = struct{}{}
-		}
-	}
 }
 
 func allPublicNotePathSet(idx *model.VaultIndex) map[string]struct{} {
@@ -1130,6 +1419,95 @@ func mergeBuildAssetMap(dst map[string]*model.Asset, src map[string]*model.Asset
 			existing.DstPath = asset.DstPath
 		}
 	}
+}
+
+func rerenderNotesWithMismatchedAssetDestinations(idx *model.VaultIndex, assetSink markdown.AssetSink, states map[string]*noteBuildState, plannedDestinations map[string]string) (map[string]struct{}, error) {
+	dirty := make(map[string]struct{})
+	for _, relPath := range sortedNoteBuildStatePaths(states) {
+		state := states[relPath]
+		if state == nil || state.rendered == nil || state.rendered.source == nil {
+			continue
+		}
+		if assetDestinationsMatch(state.assets, plannedDestinations) {
+			continue
+		}
+
+		wasFromCache := state.fromCache
+		recorder := newNoteAssetRecorder(assetSink)
+		rendered, err := renderMarkdownNote(idx, state.rendered.source, recorder)
+		if err != nil {
+			return nil, err
+		}
+
+		state.rendered = rendered
+		state.assets = recorder.Snapshot()
+		state.fromCache = false
+		state.renderDiagnostics = nil
+		state.pageDiagnostics = nil
+		if rendered != nil && rendered.diag != nil {
+			state.renderDiagnostics = rendered.diag.Diagnostics()
+		}
+		if wasFromCache {
+			dirty[relPath] = struct{}{}
+		}
+	}
+
+	return dirty, nil
+}
+
+func assetDestinationsMatch(assets map[string]*model.Asset, plannedDestinations map[string]string) bool {
+	if len(assets) == 0 {
+		return true
+	}
+
+	for srcPath, asset := range assets {
+		if strings.TrimSpace(srcPath) == "" || asset == nil {
+			continue
+		}
+		if normalizeAssetDestinationPath(asset.DstPath) != normalizeAssetDestinationPath(plannedDestinations[srcPath]) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func applyAssetDestinationPlanToNoteStates(states map[string]*noteBuildState, plannedDestinations map[string]string) {
+	for _, relPath := range sortedNoteBuildStatePaths(states) {
+		state := states[relPath]
+		if state == nil {
+			continue
+		}
+		applyAssetDestinationPlan(state.assets, plannedDestinations)
+	}
+}
+
+func applyAssetDestinationPlan(assets map[string]*model.Asset, plannedDestinations map[string]string) {
+	if len(assets) == 0 {
+		return
+	}
+
+	for srcPath, asset := range assets {
+		if strings.TrimSpace(srcPath) == "" || asset == nil {
+			continue
+		}
+		asset.DstPath = normalizeAssetDestinationPath(plannedDestinations[srcPath])
+	}
+}
+
+func normalizeAssetDestinationPath(value string) string {
+	cleaned := strings.TrimSpace(strings.ReplaceAll(value, `\`, "/"))
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "" {
+		return ""
+	}
+
+	cleaned = path.Clean(cleaned)
+	if cleaned == "." {
+		return ""
+	}
+
+	return cleaned
 }
 
 func sortedNoteBuildStatePaths(states map[string]*noteBuildState) []string {
@@ -1276,6 +1654,24 @@ func stripSearchUIFromHTML(html []byte) ([]byte, bool, error) {
 	return buf.Bytes(), true, nil
 }
 
+func normalizeHTMLForSearchSignature(html []byte) []byte {
+	if len(html) == 0 {
+		return html
+	}
+
+	doc, err := xhtml.Parse(bytes.NewReader(html))
+	if err != nil {
+		return html
+	}
+
+	var buf bytes.Buffer
+	if err := xhtml.Render(&buf, doc); err != nil {
+		return html
+	}
+
+	return buf.Bytes()
+}
+
 func removeSearchUINodes(node *xhtml.Node) bool {
 	if node == nil {
 		return false
@@ -1337,20 +1733,6 @@ func htmlNodeHasAttr(node *xhtml.Node, key string) bool {
 	return false
 }
 
-func htmlNodeAttrValue(node *xhtml.Node, key string) string {
-	if node == nil {
-		return ""
-	}
-
-	for _, attr := range node.Attr {
-		if strings.EqualFold(attr.Key, key) {
-			return attr.Val
-		}
-	}
-
-	return ""
-}
-
 func tryCopySearchlessPageFromPreviousOutput(previous *CacheManifest, previousOutputPath string, outputPath string, relPath string, searchReadyInput any, fullDirty bool) (bool, error) {
 	signature, err := buildInputSignature(searchReadyInput)
 	if err != nil {
@@ -1361,6 +1743,41 @@ func tryCopySearchlessPageFromPreviousOutput(previous *CacheManifest, previousOu
 	}
 
 	return copyPageFromPreviousOutputWithoutSearchUI(previousOutputPath, outputPath, relPath)
+}
+
+func tryWriteCachedRenderedPage(outputPath string, relPath string, cachedPages map[string]render.RenderedPage, minifier *minify.M, popoverMarker *popoverLinkMarker) (model.PageData, bool, error) {
+	if len(cachedPages) == 0 {
+		return model.PageData{}, false, nil
+	}
+
+	page, ok := cachedPages[relPath]
+	if !ok {
+		return model.PageData{}, false, nil
+	}
+
+	if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
+		return model.PageData{}, false, err
+	}
+
+	return page.Page, true, nil
+}
+
+func writeSearchPreparedRenderedPage(outputPath string, relPath string, page render.RenderedPage, minifier *minify.M, popoverMarker *popoverLinkMarker, cachedPages map[string]render.RenderedPage) (model.PageData, error) {
+	html := page.HTML
+	if cachedPages != nil {
+		cachedPages[relPath] = page
+		prepared, _, err := stripSearchUIFromHTML(page.HTML)
+		if err != nil {
+			return model.PageData{}, fmt.Errorf("prepare staged pre-search page %q: %w", relPath, err)
+		}
+		html = prepared
+	}
+
+	if err := writeRenderedPage(outputPath, page.Page, html, minifier, popoverMarker); err != nil {
+		return model.PageData{}, err
+	}
+
+	return page.Page, nil
 }
 
 func mergePageSignatures(target map[string]string, source map[string]string) {
@@ -1717,7 +2134,7 @@ func writePopoverPayloads(cfg model.SiteConfig, renderedByPath map[string]*rende
 	return nil
 }
 
-func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
 	recentNotes := recentPublicNotes(idx)
 	paginatedNotes := paginate(recentNotes, cfg.Pagination.PageSize)
 	pages := make([]model.PageData, 0, len(paginatedNotes))
@@ -1729,7 +2146,7 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *Cach
 		currentRelPath := paginatedListPageRelPath(baseRelPath, currentPage)
 		input := render.IndexPageInput{
 			Site:         cfg,
-			RecentNotes:  buildNoteSummaries(currentRelPath, idx, notesPage),
+			RecentNotes:  buildNoteSummaries(currentRelPath, idx, notesPage, summaryByPath),
 			LastModified: lastModified,
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, baseRelPath, currentPage, len(paginatedNotes)),
@@ -1741,6 +2158,16 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *Cach
 			return nil, nil, fmt.Errorf("build index page signature %q: %w", currentRelPath, err)
 		}
 		signatures[currentRelPath] = signature
+		if searchReady {
+			page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
+			if err != nil {
+				return nil, nil, err
+			}
+			if copied {
+				pages = append(pages, page)
+				continue
+			}
+		}
 		if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 			copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 			if err != nil {
@@ -1764,20 +2191,28 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *Cach
 			}
 		}
 
-		page, err := renderIndexPage(input)
+		renderInput := input
+		var searchlessCache map[string]render.RenderedPage
+		if cfg.Search.Enabled && !searchReady {
+			renderInput.HasSearch = true
+			searchlessCache = searchReadyPages
+		}
+
+		page, err := renderIndexPage(renderInput)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render index: %w", err)
 		}
-		if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
+		writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
+		if err != nil {
 			return nil, nil, err
 		}
-		pages = append(pages, page.Page)
+		pages = append(pages, writtenPage)
 	}
 
 	return pages, signatures, nil
 }
 
-func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
 	tagNames := sortedTagNames(idx)
 	pages := make([]model.PageData, 0, len(tagNames))
 	signatures := make(map[string]string)
@@ -1799,7 +2234,7 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheM
 				Site:         cfg,
 				Tag:          tag,
 				ChildTags:    buildChildTagLinks(currentRelPath, idx, tag),
-				Notes:        buildNoteSummaries(currentRelPath, idx, notesPage),
+				Notes:        buildNoteSummaries(currentRelPath, idx, notesPage, summaryByPath),
 				LastModified: lastModified,
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, tagPageRelPath, currentPage, len(paginatedNotes)),
@@ -1811,6 +2246,16 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheM
 				return nil, nil, fmt.Errorf("build tag page signature %q: %w", currentRelPath, err)
 			}
 			signatures[currentRelPath] = signature
+			if searchReady {
+				page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
+				if err != nil {
+					return nil, nil, err
+				}
+				if copied {
+					pages = append(pages, page)
+					continue
+				}
+			}
 			if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 				copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 				if err != nil {
@@ -1834,21 +2279,29 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheM
 				}
 			}
 
-			page, err := renderTagPage(input)
+			renderInput := input
+			var searchlessCache map[string]render.RenderedPage
+			if cfg.Search.Enabled && !searchReady {
+				renderInput.HasSearch = true
+				searchlessCache = searchReadyPages
+			}
+
+			page, err := renderTagPage(renderInput)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render tag page %q: %w", tag.Name, err)
 			}
-			if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
+			writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
+			if err != nil {
 				return nil, nil, err
 			}
-			pages = append(pages, page.Page)
+			pages = append(pages, writtenPage)
 		}
 	}
 
 	return pages, signatures, nil
 }
 
-func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
 	pages := make([]model.PageData, 0, len(folders))
 	signatures := make(map[string]string)
 
@@ -1867,7 +2320,7 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, folders []fol
 			input := render.FolderPageInput{
 				Site:         cfg,
 				FolderPath:   folderPath,
-				Children:     buildNoteSummaries(currentRelPath, idx, notesPage),
+				Children:     buildNoteSummaries(currentRelPath, idx, notesPage, summaryByPath),
 				LastModified: lastModified,
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, folderPageRelPath, currentPage, len(paginatedNotes)),
@@ -1879,6 +2332,16 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, folders []fol
 				return nil, nil, fmt.Errorf("build folder page signature %q: %w", currentRelPath, err)
 			}
 			signatures[currentRelPath] = signature
+			if searchReady {
+				page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
+				if err != nil {
+					return nil, nil, err
+				}
+				if copied {
+					pages = append(pages, page)
+					continue
+				}
+			}
 			if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 				copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 				if err != nil {
@@ -1902,21 +2365,29 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, folders []fol
 				}
 			}
 
-			page, err := renderFolderPage(input)
+			renderInput := input
+			var searchlessCache map[string]render.RenderedPage
+			if cfg.Search.Enabled && !searchReady {
+				renderInput.HasSearch = true
+				searchlessCache = searchReadyPages
+			}
+
+			page, err := renderFolderPage(renderInput)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render folder page %q: %w", folderPath, err)
 			}
-			if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
+			writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
+			if err != nil {
 				return nil, nil, err
 			}
-			pages = append(pages, page.Page)
+			pages = append(pages, writtenPage)
 		}
 	}
 
 	return pages, signatures, nil
 }
 
-func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
 	if !cfg.Timeline.Enabled {
 		return nil, nil, nil
 	}
@@ -1933,7 +2404,7 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, previous *C
 		input := render.TimelinePageInput{
 			Site:         cfg,
 			TimelinePath: cfg.Timeline.Path,
-			Notes:        buildNoteSummaries(currentRelPath, idx, notesPage),
+			Notes:        buildNoteSummaries(currentRelPath, idx, notesPage, summaryByPath),
 			LastModified: lastModified,
 			AsHomepage:   cfg.Timeline.AsHomepage,
 			RelPath:      currentRelPath,
@@ -1946,6 +2417,16 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, previous *C
 			return nil, nil, fmt.Errorf("build timeline page signature %q: %w", currentRelPath, err)
 		}
 		signatures[currentRelPath] = signature
+		if searchReady {
+			page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
+			if err != nil {
+				return nil, nil, err
+			}
+			if copied {
+				pages = append(pages, page)
+				continue
+			}
+		}
 		if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 			copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 			if err != nil {
@@ -1969,14 +2450,22 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, previous *C
 			}
 		}
 
-		page, err := renderTimelinePage(input)
+		renderInput := input
+		var searchlessCache map[string]render.RenderedPage
+		if cfg.Search.Enabled && !searchReady {
+			renderInput.HasSearch = true
+			searchlessCache = searchReadyPages
+		}
+
+		page, err := renderTimelinePage(renderInput)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render timeline page: %w", err)
 		}
-		if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
+		writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
+		if err != nil {
 			return nil, nil, err
 		}
-		pages = append(pages, page.Page)
+		pages = append(pages, writtenPage)
 	}
 
 	return pages, signatures, nil
@@ -2009,23 +2498,30 @@ func minifyCSSFile(filePath string, minifier *minify.M) error {
 }
 
 func buildReservedAssetOutputPaths(customCSSPath string) []string {
+	reserved := render.RuntimeAssetOutputPaths()
 	if strings.TrimSpace(customCSSPath) == "" {
-		return nil
+		return reserved
 	}
 
-	return []string{customCSSOutputPath}
+	return append(reserved, customCSSOutputPath)
 }
 
-func resolveCustomCSSSource(customCSSPath string) (string, error) {
+func resolveCustomCSSSource(customCSSPath string, autoDetected bool) (string, error) {
 	trimmedPath := strings.TrimSpace(customCSSPath)
 	if trimmedPath == "" {
 		return "", nil
 	}
 
-	resolvedPath, _, err := internalasset.InspectRegularNonSymlinkFile(trimmedPath)
+	resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(trimmedPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) || errors.Is(err, internalasset.ErrUnsupportedRegularFileSource) {
+		if autoDetected && errors.Is(err, os.ErrNotExist) {
 			return "", nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("custom CSS %q does not exist", trimmedPath)
+		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+			return "", fmt.Errorf("custom CSS %q must be a regular non-symlink file", trimmedPath)
 		}
 		return "", fmt.Errorf("inspect custom CSS %q: %w", trimmedPath, err)
 	}
@@ -2159,12 +2655,11 @@ func hasURLScheme(value string) bool {
 }
 
 func writeOutputFile(outputRoot string, relPath string, content []byte) error {
-	cleanRelPath := cleanSitePath(relPath)
-	if cleanRelPath == "" {
-		return fmt.Errorf("output path is required")
+	cleanRelPath, absPath, err := resolveOutputWritePath(outputRoot, relPath)
+	if err != nil {
+		return err
 	}
 
-	absPath := filepath.Join(outputRoot, filepath.FromSlash(cleanRelPath))
 	if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
 		return fmt.Errorf("create output directory for %q: %w", cleanRelPath, err)
 	}
@@ -2174,8 +2669,30 @@ func writeOutputFile(outputRoot string, relPath string, content []byte) error {
 	return nil
 }
 
-func buildRecentNotes(idx *model.VaultIndex, currentRelPath string) []model.NoteSummary {
-	return buildNoteSummaries(currentRelPath, idx, recentPublicNotes(idx))
+func resolveOutputWritePath(outputRoot string, relPath string) (string, string, error) {
+	cleanRelPath := cleanSitePath(relPath)
+	if cleanRelPath == "" {
+		return "", "", fmt.Errorf("output path is required")
+	}
+
+	absOutputRoot, err := filepath.Abs(outputRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve output root %q: %w", outputRoot, err)
+	}
+	absPath := filepath.Join(absOutputRoot, filepath.FromSlash(cleanRelPath))
+	relToRoot, err := filepath.Rel(absOutputRoot, absPath)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve output path %q: %w", cleanRelPath, err)
+	}
+	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
+		return "", "", fmt.Errorf("output path %q must stay within output root", cleanRelPath)
+	}
+
+	return cleanRelPath, absPath, nil
+}
+
+func buildRecentNotes(idx *model.VaultIndex, currentRelPath string, summaryByPath map[string]string) []model.NoteSummary {
+	return buildNoteSummaries(currentRelPath, idx, recentPublicNotes(idx), summaryByPath)
 }
 
 func recentPublicNotes(idx *model.VaultIndex) []*model.Note {
@@ -2186,21 +2703,22 @@ func recentPublicNotes(idx *model.VaultIndex) []*model.Note {
 	return notes
 }
 
-func buildNoteSummaries(currentRelPath string, idx *model.VaultIndex, notes []*model.Note) []model.NoteSummary {
-	summaries := make([]model.NoteSummary, 0, len(notes))
+func buildNoteSummaries(currentRelPath string, idx *model.VaultIndex, notes []*model.Note, summaryByPath map[string]string) []model.NoteSummary {
+	noteSummaries := make([]model.NoteSummary, 0, len(notes))
 	for _, note := range notes {
 		if note == nil || note.Slug == "" {
 			continue
 		}
-		summaries = append(summaries, model.NoteSummary{
-			Title:   noteDisplayTitle(note),
-			Summary: note.Summary,
-			URL:     relativePageURL(currentRelPath, note.Slug, true),
-			Date:    note.PublishedAt(),
-			Tags:    buildTagLinks(currentRelPath, idx, note.Tags),
+		noteSummaries = append(noteSummaries, model.NoteSummary{
+			Title:        noteDisplayTitle(note),
+			Summary:      noteSummary(note, summaryByPath),
+			URL:          relativePageURL(currentRelPath, note.Slug, true),
+			Date:         note.PublishedAt(),
+			LastModified: note.LastModified,
+			Tags:         buildTagLinks(currentRelPath, idx, note.Tags),
 		})
 	}
-	return summaries
+	return noteSummaries
 }
 
 func buildTagLinks(currentRelPath string, idx *model.VaultIndex, tagNames []string) []model.TagLink {
@@ -2247,7 +2765,23 @@ func buildBacklinks(currentRelPath string, idx *model.VaultIndex, graph *model.L
 	return entries
 }
 
-func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, graph *model.LinkGraph) (map[string][]model.RelatedArticle, map[string]string, error) {
+func buildBacklinkDerivedSignatures(idx *model.VaultIndex, graph *model.LinkGraph) map[string]string {
+	if idx == nil || len(idx.Notes) == 0 {
+		return map[string]string{}
+	}
+
+	signatures := make(map[string]string, len(idx.Notes))
+	for _, note := range allPublicNotes(idx) {
+		if note == nil || strings.TrimSpace(note.RelPath) == "" {
+			continue
+		}
+		signatures[note.RelPath] = buildBacklinkDerivedSignature(buildBacklinks(notePageRelPath(note), idx, graph, note.RelPath))
+	}
+
+	return signatures
+}
+
+func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, graph *model.LinkGraph, summaryByPath map[string]string) (map[string][]model.RelatedArticle, map[string]string, error) {
 	if !cfg.Related.Enabled || cfg.Related.Count <= 0 || idx == nil {
 		return map[string][]model.RelatedArticle{}, map[string]string{}, nil
 	}
@@ -2273,7 +2807,7 @@ func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, gra
 			articles = append(articles, model.RelatedArticle{
 				Title:   noteDisplayTitle(candidate.Note),
 				URL:     relativePageURL(currentRelPath, candidate.Note.Slug, true),
-				Summary: candidate.Note.Summary,
+				Summary: noteSummary(candidate.Note, summaryByPath),
 				Score:   candidate.Score,
 				Tags:    buildTagLinks(currentRelPath, idx, candidate.Note.Tags),
 			})
@@ -2592,6 +3126,184 @@ func folderAncestors(folderPath string) []string {
 	}
 
 	return ancestors
+}
+
+type generatedPageRoute struct {
+	relPath string
+	source  string
+}
+
+type generatedPageRouteRegistry struct {
+	seen map[string]generatedPageRoute
+}
+
+func detectGeneratedPageRouteConflicts(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, diagnostics *diag.Collector) error {
+	routes := buildGeneratedPageRoutes(cfg, idx, folders)
+	if len(routes) == 0 {
+		return nil
+	}
+
+	registry := generatedPageRouteRegistry{seen: make(map[string]generatedPageRoute, len(routes))}
+	for _, route := range routes {
+		if err := registry.add(route, diagnostics); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func buildGeneratedPageRoutes(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec) []generatedPageRoute {
+	routes := make([]generatedPageRoute, 0)
+
+	for _, note := range allPublicNotes(idx) {
+		if note == nil || strings.TrimSpace(note.RelPath) == "" {
+			continue
+		}
+
+		relPath := notePageRelPath(note)
+		if relPath == "" {
+			continue
+		}
+
+		routes = append(routes, generatedPageRoute{relPath: relPath, source: note.RelPath})
+	}
+
+	for _, tagName := range sortedTagNames(idx) {
+		tag := idx.Tags[tagName]
+		if tag == nil {
+			continue
+		}
+
+		tagPageRelPath := path.Join(cleanSitePath(tag.Slug), "index.html")
+		if tagPageRelPath == "" {
+			continue
+		}
+
+		routes = appendGeneratedPaginatedRoutes(routes, tagPageRelPath, len(paginate(notesForTag(idx, tag), cfg.Pagination.PageSize)), func(pageNumber int) string {
+			return tagGeneratedPageRouteSource(tag.Slug, pageNumber)
+		})
+	}
+
+	for _, folder := range folders {
+		folderPath := cleanSitePath(folder.Path)
+		if folderPath == "" {
+			continue
+		}
+
+		folderPageRelPath := path.Join(folderPath, "index.html")
+		routes = appendGeneratedPaginatedRoutes(routes, folderPageRelPath, len(paginate(folder.Notes, cfg.Pagination.PageSize)), func(pageNumber int) string {
+			return folderGeneratedPageRouteSource(folderPath, pageNumber)
+		})
+	}
+
+	if cfg.Timeline.Enabled {
+		timelineRelPath := timelinePageRelPath(cfg.Timeline)
+		routes = appendGeneratedPaginatedRoutes(routes, timelineRelPath, len(paginate(recentPublicNotes(idx), cfg.Pagination.PageSize)), func(pageNumber int) string {
+			return timelineGeneratedPageRouteSource(cfg.Timeline, pageNumber)
+		})
+	}
+
+	if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
+		routes = appendGeneratedPaginatedRoutes(routes, "index.html", len(paginate(recentPublicNotes(idx), cfg.Pagination.PageSize)), indexGeneratedPageRouteSource)
+	}
+
+	routes = append(routes, generatedPageRoute{relPath: "404.html", source: "404 page"})
+
+	return routes
+}
+
+func appendGeneratedPaginatedRoutes(routes []generatedPageRoute, baseRelPath string, totalPages int, sourceForPage func(int) string) []generatedPageRoute {
+	for pageNumber := 1; pageNumber <= totalPages; pageNumber++ {
+		relPath := paginatedListPageRelPath(baseRelPath, pageNumber)
+		source := strings.TrimSpace(sourceForPage(pageNumber))
+		if relPath == "" || source == "" {
+			continue
+		}
+
+		routes = append(routes, generatedPageRoute{relPath: relPath, source: source})
+	}
+
+	return routes
+}
+
+func (r *generatedPageRouteRegistry) add(route generatedPageRoute, diagnostics *diag.Collector) error {
+	cleanRelPath := cleanSitePath(route.relPath)
+	source := strings.TrimSpace(route.source)
+	if cleanRelPath == "" || source == "" {
+		return nil
+	}
+
+	if r.seen == nil {
+		r.seen = make(map[string]generatedPageRoute)
+	}
+
+	key := internalslug.Canonicalize(cleanRelPath)
+	if existing, ok := r.seen[key]; ok {
+		message := fmt.Sprintf("generated route %q conflicts with %s, %s", cleanRelPath, existing.source, source)
+		if diagnostics != nil {
+			diagnostics.Errorf(diag.KindSlugConflict, diag.Location{Path: existing.source}, "%s", message)
+			diagnostics.Errorf(diag.KindSlugConflict, diag.Location{Path: source}, "%s", message)
+		}
+
+		return fmt.Errorf("generated route conflict for %q across %s, %s", cleanRelPath, existing.source, source)
+	}
+
+	r.seen[key] = generatedPageRoute{relPath: cleanRelPath, source: source}
+	return nil
+}
+
+func indexGeneratedPageRouteSource(pageNumber int) string {
+	if pageNumber <= 1 {
+		return "index page /"
+	}
+
+	return fmt.Sprintf("index pagination / page %d", pageNumber)
+}
+
+func folderGeneratedPageRouteSource(folderPath string, pageNumber int) string {
+	source := folderConflictSource(folderPath)
+	if pageNumber <= 1 {
+		return source
+	}
+
+	return fmt.Sprintf("folder pagination %s page %d", source, pageNumber)
+}
+
+func tagGeneratedPageRouteSource(tagPath string, pageNumber int) string {
+	source := tagPageConflictSource(tagPath)
+	if pageNumber <= 1 {
+		return source
+	}
+
+	clean := cleanSitePath(tagPath)
+	if clean == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("tag pagination %s/ page %d", clean, pageNumber)
+}
+
+func timelineGeneratedPageRouteSource(cfg model.TimelineConfig, pageNumber int) string {
+	if cfg.AsHomepage {
+		if pageNumber <= 1 {
+			return "timeline page /"
+		}
+
+		return fmt.Sprintf("timeline pagination / page %d", pageNumber)
+	}
+
+	source := timelinePageConflictSource(cfg.Path)
+	if pageNumber <= 1 {
+		return source
+	}
+
+	clean := cleanSitePath(cfg.Path)
+	if clean == "" {
+		return ""
+	}
+
+	return fmt.Sprintf("timeline pagination %s/ page %d", clean, pageNumber)
 }
 
 func detectFolderPageConflicts(idx *model.VaultIndex, folders []folderPageSpec, diagnostics *diag.Collector) error {
@@ -2984,6 +3696,7 @@ func cloneNote(note *model.Note) *model.Note {
 	cloned.RawContent = append([]byte(nil), note.RawContent...)
 	cloned.OutLinks = append([]model.LinkRef(nil), note.OutLinks...)
 	cloned.Embeds = append([]model.EmbedRef(nil), note.Embeds...)
+	cloned.ImageRefs = append([]model.ImageRef(nil), note.ImageRefs...)
 	if len(note.HeadingSections) > 0 {
 		cloned.HeadingSections = make(map[string]model.SectionRange, len(note.HeadingSections))
 		for id, section := range note.HeadingSections {

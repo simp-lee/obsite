@@ -6,8 +6,8 @@ language: en
 defaultPublish: true
 search:
   enabled: true
-  pagefindPath: pagefind_extended
-  pagefindVersion: 1.4.0
+  pagefindPath: tools/pagefind_extended
+  pagefindVersion: 1.5.2
 pagination:
   pageSize: 2
 sidebar:

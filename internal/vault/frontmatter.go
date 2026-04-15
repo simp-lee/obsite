@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
 	"gopkg.in/yaml.v3"
 )
 
@@ -29,6 +30,8 @@ type FrontmatterResult struct {
 // ParseFrontmatter reads each scanned Markdown file, extracts YAML frontmatter
 // when present, and partitions notes according to publish/defaultPublish.
 func ParseFrontmatter(scanResult ScanResult, cfg model.SiteConfig) (FrontmatterResult, error) {
+	defaultPublish := cfg.EffectiveDefaultPublish()
+
 	result := FrontmatterResult{
 		PublicNotes: make([]*model.Note, 0, len(scanResult.MarkdownFiles)),
 		Unpublished: model.UnpublishedLookup{
@@ -69,12 +72,11 @@ func ParseFrontmatter(scanResult ScanResult, cfg model.SiteConfig) (FrontmatterR
 			LastModified:  effectiveLastModified,
 			Aliases:       cloneStrings(frontmatter.Aliases),
 			Tags:          cloneStrings(frontmatter.Tags),
-			Publish:       frontmatter.Publish,
 			RawContent:    body,
 			BodyStartLine: bodyStartLine,
 		}
 
-		if shouldPublish(frontmatter.Publish, cfg.DefaultPublish) {
+		if shouldPublish(frontmatter.Publish, defaultPublish) {
 			result.PublicNotes = append(result.PublicNotes, note)
 			continue
 		}
@@ -445,11 +447,11 @@ func noteLookupName(relPath string) string {
 	if ext := path.Ext(base); ext != "" {
 		base = strings.TrimSuffix(base, ext)
 	}
-	return strings.ToLower(base)
+	return slug.Canonicalize(strings.TrimSpace(base))
 }
 
 func aliasLookupName(alias string) string {
-	return strings.ToLower(strings.TrimSpace(alias))
+	return slug.Canonicalize(strings.TrimSpace(alias))
 }
 
 func cloneStrings(values []string) []string {

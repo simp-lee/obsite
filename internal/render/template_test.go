@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -135,7 +136,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"pagefind-ui.css",
 				"pagefind-ui.js",
 				`data-obsite-search-ui="true"`,
-				`<div id="search"></div>`,
+				`<div id="obsite-search-root"></div>`,
 			},
 		},
 		{
@@ -157,10 +158,10 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 			want: []string{
 				`<link rel="stylesheet" href="../../_pagefind/pagefind-ui.css" data-obsite-search-ui="true">`,
 				`<div class="site-search" data-obsite-search-ui="true">`,
-				`<div id="search"></div>`,
+				`<div id="obsite-search-root"></div>`,
 				`<script src="../../_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>`,
 				`<script data-obsite-search-ui="true">`,
-				`new PagefindUI({ element: "#search" });`,
+				`new PagefindUI({ element: "#obsite-search-root" });`,
 			},
 			wantAbsent: []string{
 				`showSubResults`,
@@ -265,6 +266,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				Kind:        model.Page404,
 				SiteRootRel: "./",
 				Site: model.SiteConfig{
+					BaseURL:     "https://example.com/blog/",
 					Title:       "Field Notes",
 					Description: "An editorial notebook.",
 					Language:    "en",
@@ -274,6 +276,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				RecentNotes: []model.NoteSummary{{Title: "Composable Systems", URL: "composable-systems/"}},
 			},
 			want: []string{
+				`<base href="/blog/">`,
 				"<link rel=\"stylesheet\" href=\"./style.css\">",
 				"<a class=\"action-link\" href=\"./\">Return to the homepage</a>",
 				"<li><a href=\"composable-systems/\">Composable Systems</a></li>",
@@ -321,7 +324,7 @@ func TestRenderIndexKeepsSearchDisabledUntilReady(t *testing.T) {
 		[]byte(`pagefind-ui.css`),
 		[]byte(`pagefind-ui.js`),
 		[]byte(`data-obsite-search-ui`),
-		[]byte(`id="search"`),
+		[]byte(`id="obsite-search-root"`),
 		[]byte(`PagefindUI`),
 	} {
 		if bytes.Contains(got.HTML, forbidden) {
@@ -334,33 +337,39 @@ func TestDefaultTemplatesUseModuleSafeMermaidLoader(t *testing.T) {
 	t.Parallel()
 
 	tmpl := parseDefaultTemplateSet(t)
-	site, err := config.Load("", config.Overrides{
+	loadedSite, err := config.LoadForBuild("", config.Overrides{
 		Title:   "Field Notes",
 		BaseURL: "https://example.com/",
 	})
 	if err != nil {
-		t.Fatalf("config.Load() error = %v", err)
+		t.Fatalf("config.LoadForBuild() error = %v", err)
 	}
-	if !strings.HasSuffix(site.MermaidJSURL, "/dist/mermaid.esm.min.mjs") {
+	site := loadedSite.Config
+	if !strings.HasSuffix(site.MermaidJSURL, "mermaid.esm.min.mjs") {
 		t.Fatalf("default MermaidJSURL = %q, want ESM .mjs asset contract", site.MermaidJSURL)
 	}
-	escapedMermaidURL := strings.ReplaceAll(site.MermaidJSURL, "/", `\/`)
+	escapedMermaidURL := strings.ReplaceAll("../"+site.MermaidJSURL, "/", `\/`)
 
 	got := renderTemplate(t, tmpl, model.PageData{
 		Kind:        model.PageNote,
 		SiteRootRel: "../",
 		Site:        site,
 		Title:       "Mermaid Note",
-		Content:     template.HTML("<pre class=\"mermaid\">graph TD;A-->B</pre>"),
+		Content:     template.HTML("<div class=\"math math-display\">$$E = mc^2$$</div><pre class=\"mermaid\">graph TD;A-->B</pre>"),
+		HasMath:     true,
 		HasMermaid:  true,
 	})
 
 	assertContains(t, got, "<script type=\"module\">")
+	assertContains(t, got, "<link rel=\"stylesheet\" href=\"../"+site.KaTeXCSSURL+"\">")
+	assertContains(t, got, "<script defer src=\"../"+site.KaTeXJSURL+"\"></script>")
+	assertContains(t, got, "<script defer src=\"../"+site.KaTeXAutoRenderURL+"\"></script>")
 	assertContains(t, got, "import mermaid from \""+escapedMermaidURL+"\";")
 	assertContains(t, got, "mermaid.initialize({")
 	assertContains(t, got, "startOnLoad: true,")
 	assertContains(t, got, "theme: \"neutral\"")
 	assertContains(t, got, "securityLevel: \"loose\"")
+	assertNotContains(t, got, "cdn.jsdelivr.net")
 	assertNotContains(t, got, "window.mermaid")
 	assertNotContains(t, got, "<script defer src=\""+site.MermaidJSURL+"\"></script>")
 }
@@ -439,6 +448,109 @@ func TestTemplateDirCachesParsedTemplateSetByNormalizedDir(t *testing.T) {
 
 	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
 		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) = %d, want %d", templateDir, got, 1)
+	}
+}
+
+func TestTemplateDirReusesCachedOverrideSnapshotUntilFilesChange(t *testing.T) {
+	templateDir := t.TempDir()
+	t.Cleanup(func() {
+		clearTemplateSetCacheEntriesForDir(t, templateDir)
+	})
+
+	overridePath := filepath.Join(templateDir, "base.html")
+	baseV1 := `{{define "base"}}<!doctype html><html><body data-snapshot-cache="v1">{{template "content" .}}</body></html>{{end}}`
+	if err := os.WriteFile(overridePath, []byte(baseV1), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
+	}
+
+	readCount := trackTemplateOverrideFileReadsForDir(t, templateDir)
+	site := testSiteConfig()
+	site.TemplateDir = filepath.Join(templateDir, ".")
+
+	first, err := loadTemplateSet(site)
+	if err != nil {
+		t.Fatalf("loadTemplateSet() error = %v", err)
+	}
+	if got := readCount(); got != 1 {
+		t.Fatalf("template override reads after first load = %d, want %d", got, 1)
+	}
+
+	second, err := loadTemplateSet(site)
+	if err != nil {
+		t.Fatalf("loadTemplateSet() second error = %v", err)
+	}
+	if first != second {
+		t.Fatal("loadTemplateSet() returned different template set instances for unchanged override snapshot")
+	}
+	if got := readCount(); got != 2 {
+		t.Fatalf("template override reads after unchanged reload = %d, want %d", got, 2)
+	}
+
+	baseV2 := baseV1 + "\n"
+	if err := os.WriteFile(overridePath, []byte(baseV2), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
+	}
+
+	third, err := loadTemplateSet(site)
+	if err != nil {
+		t.Fatalf("loadTemplateSet() third error = %v", err)
+	}
+	if third == second {
+		t.Fatal("loadTemplateSet() returned cached template set after override file changed")
+	}
+	if got := readCount(); got != 3 {
+		t.Fatalf("template override reads after changed reload = %d, want %d", got, 3)
+	}
+}
+
+func TestCachedTemplateOverrideSnapshotReloadsWhenContentsChangeUnderSameState(t *testing.T) {
+	templateDir := t.TempDir()
+	overridePath := filepath.Join(templateDir, "base.html")
+	baseV1 := `{{define "base"}}<!doctype html><html><body data-same-state="v1">{{template "content" .}}</body></html>{{end}}`
+	if err := os.WriteFile(overridePath, []byte(baseV1), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
+	}
+
+	state, err := scanTemplateOverrideState(templateDir)
+	if err != nil {
+		t.Fatalf("scanTemplateOverrideState(%q) error = %v", templateDir, err)
+	}
+
+	var cached cachedTemplateOverrideSnapshot
+	first, err := cached.load(state)
+	if err != nil {
+		t.Fatalf("cached.load(state) first error = %v", err)
+	}
+	if len(first.files) != 1 {
+		t.Fatalf("len(first.files) = %d, want %d", len(first.files), 1)
+	}
+	if !strings.Contains(first.files[0].contents, `data-same-state="v1"`) {
+		t.Fatalf("first snapshot contents = %q, want v1 template contents", first.files[0].contents)
+	}
+
+	baseV2 := strings.Replace(baseV1, "v1", "v2", 1)
+	if len(baseV2) != len(baseV1) {
+		t.Fatalf("len(baseV2) = %d, want same length as len(baseV1) = %d", len(baseV2), len(baseV1))
+	}
+	if err := os.WriteFile(overridePath, []byte(baseV2), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
+	}
+
+	second, err := cached.load(state)
+	if err != nil {
+		t.Fatalf("cached.load(state) second error = %v", err)
+	}
+	if second.signature == first.signature {
+		t.Fatalf("second.signature = %q, want a new signature after same-state content edit", second.signature)
+	}
+	if len(second.files) != 1 {
+		t.Fatalf("len(second.files) = %d, want %d", len(second.files), 1)
+	}
+	if !strings.Contains(second.files[0].contents, `data-same-state="v2"`) {
+		t.Fatalf("second snapshot contents = %q, want v2 template contents", second.files[0].contents)
+	}
+	if strings.Contains(second.files[0].contents, `data-same-state="v1"`) {
+		t.Fatalf("second snapshot contents = %q, want stale v1 contents to be replaced", second.files[0].contents)
 	}
 }
 
@@ -704,6 +816,7 @@ func TestDefaultTemplatesIncludeThemeToggleAndThemeScript(t *testing.T) {
 		SiteRootRel: "./",
 		Site: model.SiteConfig{
 			Title:       "Field Notes",
+			BaseURL:     "https://example.com/blog/",
 			Description: "An editorial notebook.",
 			Language:    "en",
 		},
@@ -720,6 +833,10 @@ func TestDefaultTemplatesIncludeThemeToggleAndThemeScript(t *testing.T) {
 	assertContains(t, got, "<span class=\"theme-toggle-value\" aria-hidden=\"true\" data-theme-toggle-value>Mode</span>")
 	assertContains(t, got, "data-theme-toggle-state")
 	assertContains(t, got, "data-theme-toggle-source")
+	assertContains(t, got, `var storageKey = "obsite.theme.v1:\/blog\/"`)
+	assertContains(t, got, `var legacyStorageKey = "theme"`)
+	assertContains(t, got, "function migrateStoredTheme(value)")
+	assertContains(t, got, "localStorage.removeItem(legacyStorageKey)")
 	assertContains(t, got, "localStorage.getItem(storageKey)")
 	assertContains(t, got, "localStorage.setItem(storageKey, nextTheme)")
 	assertContains(t, got, "prefers-color-scheme: dark")
@@ -846,6 +963,7 @@ func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
 		SiteRootRel: "../",
 		Site: model.SiteConfig{
 			Title:    "Field Notes",
+			BaseURL:  "https://example.com/blog/",
 			Language: "en",
 			Sidebar:  model.SidebarConfig{Enabled: true},
 		},
@@ -868,7 +986,9 @@ func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
 	assertContains(t, enabled, `data-site-root-rel="../"`)
 	assertContains(t, enabled, `data-sidebar-overlay`)
 	assertContains(t, enabled, `id="sidebar-data" type="application/json">[{"name":"notes","url":"notes/","isDir":true,"isActive":false,"children":[{"name":"Guide","url":"guide/","isDir":false,"isActive":true}]}]</script>`)
-	assertContains(t, enabled, `obsite.sidebar.expanded.v1`)
+	assertContains(t, enabled, `obsite.sidebar.expanded.v1:\/blog\/`)
+	assertContains(t, enabled, `var legacyStorageKey = "obsite.sidebar.expanded.v1"`)
+	assertContains(t, enabled, `localStorage.removeItem(legacyStorageKey)`)
 	assertContains(t, enabled, `JSON.parse(dataNode.textContent || "[]")`)
 	assertContains(t, enabled, `data-sidebar-ready`)
 
@@ -877,6 +997,7 @@ func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
 		SiteRootRel: "../",
 		Site: model.SiteConfig{
 			Title:    "Field Notes",
+			BaseURL:  "https://example.com/blog/",
 			Language: "en",
 		},
 		Title:   "Guide",
@@ -885,7 +1006,7 @@ func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
 
 	assertNotContains(t, disabled, `sidebar-data`)
 	assertNotContains(t, disabled, `data-sidebar-toggle`)
-	assertNotContains(t, disabled, `obsite.sidebar.expanded.v1`)
+	assertNotContains(t, disabled, `obsite.sidebar.expanded.v1:\/blog\/`)
 }
 
 func TestDefaultTemplatesConditionallyRenderRelatedArticlesSection(t *testing.T) {
@@ -1053,12 +1174,44 @@ func TestDefaultStylesExposeHeadingAnchorAffordance(t *testing.T) {
 	}
 }
 
+func TestDefaultStylesStylePaginationNavigation(t *testing.T) {
+	t.Parallel()
+
+	css := readTemplateAsset(t, "style.css")
+	navPattern := regexp.MustCompile(`(?s)\.pagination-nav\s*\{.*?display:\s*flex;.*?flex-wrap:\s*wrap;`)
+	if !navPattern.MatchString(css) {
+		t.Fatalf("style.css missing wrapped pagination nav layout")
+	}
+
+	pagesPattern := regexp.MustCompile(`(?s)\.pagination-pages\s*\{.*?display:\s*flex;.*?list-style:\s*none;`)
+	if !pagesPattern.MatchString(css) {
+		t.Fatalf("style.css missing inline pagination pages styling")
+	}
+
+	currentPattern := regexp.MustCompile(`(?s)\.pagination-page\[aria-current="page"\]\s*\{.*?background:\s*var\(--tag-bg\);`)
+	if !currentPattern.MatchString(css) {
+		t.Fatalf("style.css missing current-page pagination emphasis")
+	}
+
+	if !strings.Contains(css, `.pagination-link-prev {`) || !strings.Contains(css, `margin-right: auto;`) {
+		t.Fatalf("style.css missing previous-link pagination alignment")
+	}
+	if !strings.Contains(css, `.pagination-link-next {`) || !strings.Contains(css, `margin-left: auto;`) {
+		t.Fatalf("style.css missing next-link pagination alignment")
+	}
+	if !strings.Contains(css, `flex-basis: 100%;`) || !strings.Contains(css, `justify-content: flex-start;`) {
+		t.Fatalf("style.css missing narrow-screen pagination wrapping rules")
+	}
+}
+
 func parseDefaultTemplateSet(t *testing.T) *template.Template {
 	t.Helper()
 
 	root := repoRoot(t)
 	tmpl, err := template.New("base").Funcs(template.FuncMap{
-		"toJSON": templateJSON,
+		"toJSON":       templateJSON,
+		"pageAssetURL": pageAssetURL,
+		"siteBasePath": siteBasePath,
 	}).ParseFiles(
 		filepath.Join(root, "templates", "base.html"),
 		filepath.Join(root, "templates", "note.html"),
@@ -1253,6 +1406,38 @@ func clearTemplateSetCacheEntriesForDir(t *testing.T, templateDir string) {
 	})
 	for _, key := range keys {
 		templateSetCache.Delete(key)
+	}
+	templateOverrideSnapshotCache.Delete(normalizedDir)
+}
+
+func trackTemplateOverrideFileReadsForDir(t *testing.T, templateDir string) func() int {
+	t.Helper()
+
+	normalizedDir, err := normalizeTemplateDir(templateDir)
+	if err != nil {
+		t.Fatalf("normalizeTemplateDir(%q) error = %v", templateDir, err)
+	}
+
+	var reads atomic.Int64
+	templateOverrideFileReader.mu.Lock()
+	previous := templateOverrideFileReader.read
+	templateOverrideFileReader.read = func(filePath string) ([]byte, error) {
+		data, err := previous(filePath)
+		if strings.HasPrefix(filePath, normalizedDir+string(filepath.Separator)) {
+			reads.Add(1)
+		}
+		return data, err
+	}
+	templateOverrideFileReader.mu.Unlock()
+
+	t.Cleanup(func() {
+		templateOverrideFileReader.mu.Lock()
+		templateOverrideFileReader.read = previous
+		templateOverrideFileReader.mu.Unlock()
+	})
+
+	return func() int {
+		return int(reads.Load())
 	}
 }
 

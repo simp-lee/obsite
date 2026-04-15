@@ -60,15 +60,6 @@ func (e *ArticleJSONLDError) Error() string {
 	return fmt.Sprintf("article JSON-LD requires %s", strings.Join(e.MissingFields, ", "))
 }
 
-// BuildJSONLD pre-serializes page JSON-LD for templates.
-//
-// Note pages still return an explicit error when the required Article schema
-// fields are incomplete, but any valid BreadcrumbList JSON-LD is preserved in
-// the serialized payload.
-func BuildJSONLD(page model.PageData, note *model.Note) (template.JS, error) {
-	return buildJSONLD(page, note, Build(page, note))
-}
-
 func buildJSONLD(page model.PageData, note *model.Note, metadata Metadata) (template.JS, error) {
 	payload := make([]any, 0, 2)
 	var articleErr error
@@ -180,6 +171,10 @@ func buildBreadcrumbListJSONLD(page model.PageData, metadata Metadata) *breadcru
 }
 
 func normalizeBreadcrumbs(page model.PageData, metadata Metadata) []normalizedBreadcrumb {
+	if len(page.Breadcrumbs) == 0 {
+		return nil
+	}
+
 	normalized := make([]normalizedBreadcrumb, 0, len(page.Breadcrumbs)+1)
 	for _, breadcrumb := range page.Breadcrumbs {
 		name := strings.TrimSpace(breadcrumb.Name)
@@ -200,8 +195,9 @@ func normalizeBreadcrumbs(page model.PageData, metadata Metadata) []normalizedBr
 	}
 	if len(normalized) > 0 {
 		last := &normalized[len(normalized)-1]
-		if last.URL == "" && last.Name == title {
+		if last.URL == "" {
 			last.URL = canonical
+			return normalized
 		}
 		if sameAbsoluteLocation(last.URL, canonical) {
 			return normalized

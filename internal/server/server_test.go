@@ -113,7 +113,7 @@ func TestServerServesCleanURLsAndCustom404(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET /alpha/ error = %v", err)
 		}
-		defer resp.Body.Close()
+		defer closeServerResponseBody(t, resp)
 
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("GET /alpha/ status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -139,7 +139,7 @@ func TestServerServesCleanURLsAndCustom404(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET /alpha error = %v", err)
 		}
-		defer resp.Body.Close()
+		defer closeServerResponseBody(t, resp)
 
 		if resp.StatusCode != http.StatusMovedPermanently {
 			t.Fatalf("GET /alpha status = %d, want %d", resp.StatusCode, http.StatusMovedPermanently)
@@ -156,7 +156,7 @@ func TestServerServesCleanURLsAndCustom404(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GET /missing/path error = %v", err)
 		}
-		defer resp.Body.Close()
+		defer closeServerResponseBody(t, resp)
 
 		if resp.StatusCode != http.StatusNotFound {
 			t.Fatalf("GET /missing/path status = %d, want %d", resp.StatusCode, http.StatusNotFound)
@@ -169,14 +169,151 @@ func TestServerServesCleanURLsAndCustom404(t *testing.T) {
 	})
 }
 
+func TestServerRedirectsNonCanonicalPathsToCleanURLs(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "alpha/index.html", "<html><body>alpha page</body></html>")
+	writeServerTestFile(t, outputPath, "style.css", "body { color: black; }")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	client := &http.Client{
+		Transport: ts.Client().Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	tests := []struct {
+		name         string
+		requestPath  string
+		wantLocation string
+	}{
+		{
+			name:         "duplicate separators keep query",
+			requestPath:  "/alpha//?view=1",
+			wantLocation: "/alpha/?view=1",
+		},
+		{
+			name:         "dot segment redirects to directory canonical path",
+			requestPath:  "/./alpha/",
+			wantLocation: "/alpha/",
+		},
+		{
+			name:         "file trailing slash redirects to file path",
+			requestPath:  "/style.css/",
+			wantLocation: "/style.css",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			resp, err := client.Get(ts.URL + tt.requestPath)
+			if err != nil {
+				t.Fatalf("GET %s error = %v", tt.requestPath, err)
+			}
+			defer closeServerResponseBody(t, resp)
+
+			if resp.StatusCode != http.StatusMovedPermanently {
+				t.Fatalf("GET %s status = %d, want %d", tt.requestPath, resp.StatusCode, http.StatusMovedPermanently)
+			}
+			if location := resp.Header.Get("Location"); location != tt.wantLocation {
+				t.Fatalf("GET %s Location = %q, want %q", tt.requestPath, location, tt.wantLocation)
+			}
+		})
+	}
+}
+
+func TestIsUnsafePreviewRequestPathRejectsWindowsDriveAndUNCPrefixes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		requestPath string
+		want        bool
+	}{
+		{name: "site root", requestPath: "/", want: false},
+		{name: "normal clean url", requestPath: "/alpha/", want: false},
+		{name: "redundant separators inside path", requestPath: "/alpha//", want: false},
+		{name: "single segment double slash is not unc", requestPath: "//alpha/", want: false},
+		{name: "windows drive prefix", requestPath: "/C:/alpha/", want: true},
+		{name: "lowercase windows drive prefix", requestPath: "/c:/alpha/", want: true},
+		{name: "windows drive with backslashes", requestPath: `\C:\alpha\`, want: true},
+		{name: "unc slash prefix", requestPath: "//server/share/page/", want: true},
+		{name: "unc backslash prefix", requestPath: `\\server\share\page\`, want: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := isUnsafePreviewRequestPath(tt.requestPath); got != tt.want {
+				t.Fatalf("isUnsafePreviewRequestPath(%q) = %v, want %v", tt.requestPath, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerRejectsUNCStylePreviewRequestsBeforeCanonicalization(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "server/share/page/index.html", "<html><body>trap page</body></html>")
+	writeServerTestFile(t, outputPath, "404.html", "<html><body>custom missing page</body></html>")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	client := &http.Client{
+		Transport: ts.Client().Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Get(ts.URL + "//server/share/page/")
+	if err != nil {
+		t.Fatalf("GET //server/share/page/ error = %v", err)
+	}
+	defer closeServerResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET //server/share/page/ status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if location := resp.Header.Get("Location"); location != "" {
+		t.Fatalf("GET //server/share/page/ Location = %q, want empty redirect target", location)
+	}
+	if body := readServerResponseBody(t, resp); !strings.Contains(body, "custom missing page") {
+		t.Fatalf("GET //server/share/page/ body = %q, want custom 404 content", body)
+	}
+}
+
 func TestServerNestedMissingPathUsesSiteRootForFallbackLinks(t *testing.T) {
 	t.Parallel()
 
 	outputPath := t.TempDir()
 	writeServerTestFile(t, outputPath, "index.html", "<html><body>home</body></html>")
+	writeServerTestFile(t, outputPath, "style.css", "body { color: black; }")
 	writeServerTestFile(t, outputPath, "404.html", `<!doctype html>
 <html>
 <head>
+	<base href="/blog/">
   <link id="preview-style" rel="stylesheet" href="./style.css">
 </head>
 <body>
@@ -189,27 +326,53 @@ func TestServerNestedMissingPathUsesSiteRootForFallbackLinks(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "/missing/path", nil)
-	recorder := httptest.NewRecorder()
-	srv.ServeHTTP(recorder, req)
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
 
-	resp := recorder.Result()
-	defer resp.Body.Close()
+	resp, err := ts.Client().Get(ts.URL + "/missing/path")
+	if err != nil {
+		t.Fatalf("GET /missing/path error = %v", err)
+	}
+	defer closeServerResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("ServeHTTP(/missing/path) status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+		t.Fatalf("GET /missing/path status = %d, want %d", resp.StatusCode, http.StatusNotFound)
 	}
 
 	body := readServerResponseBody(t, resp)
+	if got := strings.Count(strings.ToLower(body), "<base"); got != 1 {
+		t.Fatalf("GET /missing/path base tag count = %d, want %d", got, 1)
+	}
 	baseHref := mustMatchServerTestAttribute(t, body, `<base[^>]*href="([^"]+)"`)
 	styleHref := mustMatchServerTestAttribute(t, body, `<link[^>]*id="preview-style"[^>]*href="([^"]+)"`)
 	homeHref := mustMatchServerTestAttribute(t, body, `<a[^>]*id="home-link"[^>]*href="([^"]+)"`)
 
-	if got := resolveServerPreviewHref(t, "/missing/path", baseHref, styleHref); got != "/style.css" {
-		t.Fatalf("stylesheet path = %q, want %q", got, "/style.css")
+	if baseHref != "/" {
+		t.Fatalf("GET /missing/path base href = %q, want %q", baseHref, "/")
 	}
-	if got := resolveServerPreviewHref(t, "/missing/path", baseHref, homeHref); got != "/" {
-		t.Fatalf("home link path = %q, want %q", got, "/")
+
+	styleResp, err := ts.Client().Get(ts.URL + resolveServerPreviewHref(t, "/missing/path", baseHref, styleHref))
+	if err != nil {
+		t.Fatalf("GET resolved stylesheet error = %v", err)
+	}
+	defer closeServerResponseBody(t, styleResp)
+	if styleResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET resolved stylesheet status = %d, want %d", styleResp.StatusCode, http.StatusOK)
+	}
+	if styleBody := readServerResponseBody(t, styleResp); styleBody != "body { color: black; }" {
+		t.Fatalf("resolved stylesheet body = %q, want %q", styleBody, "body { color: black; }")
+	}
+
+	homeResp, err := ts.Client().Get(ts.URL + resolveServerPreviewHref(t, "/missing/path", baseHref, homeHref))
+	if err != nil {
+		t.Fatalf("GET resolved home link error = %v", err)
+	}
+	defer closeServerResponseBody(t, homeResp)
+	if homeResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET resolved home link status = %d, want %d", homeResp.StatusCode, http.StatusOK)
+	}
+	if homeBody := readServerResponseBody(t, homeResp); !strings.Contains(homeBody, "home") {
+		t.Fatalf("resolved home link body = %q, want home page content", homeBody)
 	}
 }
 
@@ -239,7 +402,7 @@ func TestServerNestedMissingPathResolvesPopoverPayloadFromInjectedBase(t *testin
 	srv.ServeHTTP(recorder, req)
 
 	resp := recorder.Result()
-	defer resp.Body.Close()
+	defer closeServerResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("ServeHTTP(/missing/path) status = %d, want %d", resp.StatusCode, http.StatusNotFound)
@@ -252,6 +415,55 @@ func TestServerNestedMissingPathResolvesPopoverPayloadFromInjectedBase(t *testin
 
 	if got := resolveServerPreviewHref(t, "/missing/path", baseHref, popoverRoot+notePath+".json"); got != "/_popover/alpha.json" {
 		t.Fatalf("popover payload path = %q, want %q", got, "/_popover/alpha.json")
+	}
+}
+
+func TestInjectPreviewBaseHrefReplacesOnlyActualBaseElement(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`<!doctype html>
+<html>
+<head>
+  <!-- <base href="/comment/"> -->
+  <script>const probe = "<base href=\"/script/\">";</script>
+  <template><base href="/template/"></template>
+  <base href="/blog/">
+</head>
+<body>missing</body>
+</html>`)
+
+	got := string(injectPreviewBaseHref(body))
+	if !strings.Contains(got, `<!-- <base href="/comment/"> -->`) {
+		t.Fatalf("injectPreviewBaseHref() comment content changed unexpectedly\n%s", got)
+	}
+	if !strings.Contains(got, `<script>const probe = "<base href=\"/script/\">";</script>`) {
+		t.Fatalf("injectPreviewBaseHref() script content changed unexpectedly\n%s", got)
+	}
+	if !strings.Contains(got, `<template><base href="/template/"></template>`) {
+		t.Fatalf("injectPreviewBaseHref() template content changed unexpectedly\n%s", got)
+	}
+	if !strings.Contains(got, `<base href="/">`) {
+		t.Fatalf("injectPreviewBaseHref() missing preview root base tag\n%s", got)
+	}
+	if strings.Contains(got, `<base href="/blog/">`) {
+		t.Fatalf("injectPreviewBaseHref() kept original base tag instead of rewriting it\n%s", got)
+	}
+}
+
+func TestInjectPreviewBaseHrefRewritesImplicitHeadBaseElement(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`<!doctype html><html lang=en><meta charset=utf-8><title>Missing</title><base href=/blog/><link rel=stylesheet href=./style.css><body><a href=./>Retry</a></body></html>`)
+
+	got := string(injectPreviewBaseHref(body))
+	if count := strings.Count(strings.ToLower(got), "<base"); count != 1 {
+		t.Fatalf("injectPreviewBaseHref() base tag count = %d, want %d\n%s", count, 1, got)
+	}
+	if !strings.Contains(got, `<base href="/">`) {
+		t.Fatalf("injectPreviewBaseHref() missing preview root base tag for implicit head HTML\n%s", got)
+	}
+	if strings.Contains(got, `<base href=/blog/>`) || strings.Contains(got, `<base href="/blog/">`) {
+		t.Fatalf("injectPreviewBaseHref() kept original implicit-head base tag instead of rewriting it\n%s", got)
 	}
 }
 
@@ -271,7 +483,7 @@ func TestServerReturnsDefault404WhenFallbackPageIsMissing(t *testing.T) {
 	srv.ServeHTTP(recorder, req)
 
 	resp := recorder.Result()
-	defer resp.Body.Close()
+	defer closeServerResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("ServeHTTP(/missing) status = %d, want %d", resp.StatusCode, http.StatusNotFound)
@@ -280,6 +492,143 @@ func TestServerReturnsDefault404WhenFallbackPageIsMissing(t *testing.T) {
 	body := readServerResponseBody(t, resp)
 	if body != "404 page not found\n" {
 		t.Fatalf("ServeHTTP(/missing) body = %q, want default http.NotFound response", body)
+	}
+}
+
+func TestServerWatchModePreservesLiveReloadNamedFolderPage(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "_livereload/index.html", "<html><body>live reload folder page</body></html>")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	srv.EnableLiveReload()
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	redirectClient := &http.Client{
+		Transport: ts.Client().Transport,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	redirectResp, err := redirectClient.Get(ts.URL + "/_livereload")
+	if err != nil {
+		t.Fatalf("GET /_livereload error = %v", err)
+	}
+	defer closeServerResponseBody(t, redirectResp)
+
+	if redirectResp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("GET /_livereload status = %d, want %d", redirectResp.StatusCode, http.StatusMovedPermanently)
+	}
+	if location := redirectResp.Header.Get("Location"); location != "/_livereload/" {
+		t.Fatalf("GET /_livereload Location = %q, want %q", location, "/_livereload/")
+	}
+
+	pageResp, err := ts.Client().Get(ts.URL + "/_livereload/")
+	if err != nil {
+		t.Fatalf("GET /_livereload/ error = %v", err)
+	}
+	defer closeServerResponseBody(t, pageResp)
+
+	if pageResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /_livereload/ status = %d, want %d", pageResp.StatusCode, http.StatusOK)
+	}
+
+	pageBody := readServerResponseBody(t, pageResp)
+	if !strings.Contains(pageBody, "live reload folder page") {
+		t.Fatalf("GET /_livereload/ body = %q, want folder page content", pageBody)
+	}
+	if !strings.Contains(pageBody, "data-obsite-livereload") {
+		t.Fatalf("GET /_livereload/ body = %q, want live reload script injection", pageBody)
+	}
+
+	streamReq, err := http.NewRequest(http.MethodGet, ts.URL+liveReloadEndpoint+"?"+liveReloadQueryParam+"=1", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(live reload stream) error = %v", err)
+	}
+	streamReq.Header.Set("Accept", "text/event-stream")
+
+	streamResp, err := ts.Client().Do(streamReq)
+	if err != nil {
+		t.Fatalf("GET live reload stream error = %v", err)
+	}
+	defer closeServerResponseBody(t, streamResp)
+
+	if contentType := streamResp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("live reload stream Content-Type = %q, want text/event-stream", contentType)
+	}
+}
+
+func TestServerWatchModeInjectsLiveReloadInto404Fallback(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "index.html", "<html><body>home</body></html>")
+	writeServerTestFile(t, outputPath, "404.html", `<!doctype html>
+<html>
+<head>
+	<base href="/blog/">
+  <title>Missing</title>
+</head>
+<body>
+  <a id="retry-link" href="./">Retry</a>
+  <p>custom missing page</p>
+</body>
+</html>`)
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	srv.EnableLiveReload()
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	resp, err := ts.Client().Get(ts.URL + "/missing/path")
+	if err != nil {
+		t.Fatalf("GET /missing/path error = %v", err)
+	}
+	defer closeServerResponseBody(t, resp)
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /missing/path status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	body := readServerResponseBody(t, resp)
+	if !strings.Contains(body, "custom missing page") {
+		t.Fatalf("GET /missing/path body = %q, want original 404 content", body)
+	}
+	if got := strings.Count(body, `<script data-obsite-livereload>`); got != 1 {
+		t.Fatalf("GET /missing/path live reload script count = %d, want %d", got, 1)
+	}
+	if got := strings.Count(strings.ToLower(body), "<base"); got != 1 {
+		t.Fatalf("GET /missing/path base tag count = %d, want %d", got, 1)
+	}
+
+	baseHref := mustMatchServerTestAttribute(t, body, `<base[^>]*href="([^"]+)"`)
+	homeHref := mustMatchServerTestAttribute(t, body, `<a[^>]*id="retry-link"[^>]*href="([^"]+)"`)
+
+	if baseHref != "/" {
+		t.Fatalf("GET /missing/path base href = %q, want %q", baseHref, "/")
+	}
+
+	homeResp, err := ts.Client().Get(ts.URL + resolveServerPreviewHref(t, "/missing/path", baseHref, homeHref))
+	if err != nil {
+		t.Fatalf("GET resolved retry link error = %v", err)
+	}
+	defer closeServerResponseBody(t, homeResp)
+	if homeResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET resolved retry link status = %d, want %d", homeResp.StatusCode, http.StatusOK)
+	}
+	if homeBody := readServerResponseBody(t, homeResp); !strings.Contains(homeBody, "home") {
+		t.Fatalf("resolved retry link body = %q, want home page content", homeBody)
 	}
 }
 
@@ -301,7 +650,7 @@ func TestServerStaticModeDoesNotInjectLiveReloadOrExposeEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /alpha/ error = %v", err)
 	}
-	defer htmlResp.Body.Close()
+	defer closeServerResponseBody(t, htmlResp)
 
 	htmlBody := readServerResponseBody(t, htmlResp)
 	if strings.Contains(htmlBody, "data-obsite-livereload") {
@@ -312,7 +661,7 @@ func TestServerStaticModeDoesNotInjectLiveReloadOrExposeEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /_livereload error = %v", err)
 	}
-	defer liveReloadResp.Body.Close()
+	defer closeServerResponseBody(t, liveReloadResp)
 
 	if liveReloadResp.StatusCode != http.StatusNotFound {
 		t.Fatalf("GET /_livereload status = %d, want %d in static mode", liveReloadResp.StatusCode, http.StatusNotFound)
@@ -343,7 +692,7 @@ func TestServerInjectsLiveReloadScriptIntoHTMLResponsesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /alpha/ error = %v", err)
 	}
-	defer htmlResp.Body.Close()
+	defer closeServerResponseBody(t, htmlResp)
 
 	htmlBody := readServerResponseBody(t, htmlResp)
 	if !strings.Contains(htmlBody, "data-obsite-livereload") {
@@ -367,7 +716,7 @@ func TestServerInjectsLiveReloadScriptIntoHTMLResponsesOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /style.css error = %v", err)
 	}
-	defer cssResp.Body.Close()
+	defer closeServerResponseBody(t, cssResp)
 
 	cssBody := readServerResponseBody(t, cssResp)
 	if strings.Contains(cssBody, "data-obsite-livereload") {
@@ -394,7 +743,7 @@ func TestServerInjectsLiveReloadScriptWhenPageMentionsMarkerText(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET /alpha/ error = %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeServerResponseBody(t, resp)
 
 	body := readServerResponseBody(t, resp)
 	if !strings.Contains(body, `<p>Example marker: data-obsite-livereload</p>`) {
@@ -433,7 +782,7 @@ func TestServerNonHTMLGetBypassesInjectedResponseBuffering(t *testing.T) {
 	srv.serveOutput(recorder, req, "/image.png")
 
 	resp := recorder.Result()
-	defer resp.Body.Close()
+	defer closeServerResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("serveOutput(/image.png) status = %d, want %d", resp.StatusCode, http.StatusOK)
@@ -475,7 +824,7 @@ func TestServerRangeRequestsBypassHTMLInjection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Do(range request) error = %v", err)
 	}
-	defer resp.Body.Close()
+	defer closeServerResponseBody(t, resp)
 
 	if resp.StatusCode != http.StatusPartialContent {
 		t.Fatalf("range GET /alpha/index.html status = %d, want %d", resp.StatusCode, http.StatusPartialContent)
@@ -511,11 +860,17 @@ func TestServerLiveReloadEndpointStreamsReloadEvent(t *testing.T) {
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
-	resp, err := ts.Client().Get(ts.URL + "/_livereload")
+	req, err := http.NewRequest(http.MethodGet, ts.URL+liveReloadEndpoint+"?"+liveReloadQueryParam+"=1", nil)
 	if err != nil {
-		t.Fatalf("GET /_livereload error = %v", err)
+		t.Fatalf("http.NewRequest(live reload stream) error = %v", err)
 	}
-	defer resp.Body.Close()
+	req.Header.Set("Accept", "text/event-stream")
+
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("GET live reload stream error = %v", err)
+	}
+	defer closeServerResponseBody(t, resp)
 
 	if contentType := resp.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
 		t.Fatalf("Content-Type = %q, want text/event-stream", contentType)
@@ -571,6 +926,17 @@ func writeServerTestFile(t *testing.T, root string, relPath string, contents str
 	}
 	if err := os.WriteFile(filePath, []byte(contents), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+	}
+}
+
+func closeServerResponseBody(t *testing.T, resp *http.Response) {
+	t.Helper()
+
+	if resp == nil || resp.Body == nil {
+		return
+	}
+	if err := resp.Body.Close(); err != nil {
+		t.Errorf("resp.Body.Close() error = %v", err)
 	}
 }
 

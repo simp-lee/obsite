@@ -5,7 +5,6 @@ import (
 	"fmt"
 	stdhtml "html"
 
-	"github.com/simp-lee/obsite/internal/model"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
@@ -231,47 +230,6 @@ func HasMath(root gast.Node) bool {
 	})
 
 	return found
-}
-
-// MarkNoteHasMath writes the AST math detection result onto note.HasMath and returns that result.
-func MarkNoteHasMath(note *model.Note, root gast.Node) bool {
-	hasMath := detectedHasMath(root)
-	if note != nil {
-		note.HasMath = hasMath
-	}
-	return hasMath
-}
-
-func detectedHasMath(root gast.Node) bool {
-	if root == nil {
-		return false
-	}
-
-	if doc, ok := root.(*gast.Document); ok {
-		if hasMath, ok := documentMetaHasMath(doc); ok {
-			return hasMath
-		}
-	}
-
-	return HasMath(root)
-}
-
-func documentMetaHasMath(doc *gast.Document) (bool, bool) {
-	if doc == nil {
-		return false, false
-	}
-
-	metaValue, ok := doc.Meta()[DocumentMetaHasMath]
-	if !ok {
-		return false, false
-	}
-
-	hasMath, ok := metaValue.(bool)
-	if !ok {
-		return false, false
-	}
-
-	return hasMath, true
 }
 
 type extender struct{}

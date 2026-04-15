@@ -6,12 +6,17 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"sync"
 	"testing"
 
+	"github.com/go-ego/gse"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-const trimpathTokenizerChildEnv = "OBSITE_TRIMPATH_TOKENIZER_CHILD"
+const (
+	trimpathTokenizerChildEnv = "OBSITE_TRIMPATH_TOKENIZER_CHILD"
+	lazyTokenizerChildEnv     = "OBSITE_LAZY_TOKENIZER_CHILD"
+)
 
 func TestTokenizeSupportsEnglishCJKAndMixedText(t *testing.T) {
 	t.Parallel()
@@ -73,6 +78,66 @@ func TestTokenizeSupportsEmbeddedDictionaryUnderTrimpath(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go test -trimpath tokenizer regression failed: %v\n%s", err, output)
+	}
+}
+
+func TestTokenizeDefersDictionaryLoadingForLatinOnlyInput(t *testing.T) {
+	if os.Getenv(lazyTokenizerChildEnv) == "1" {
+		defaultSegmenterOnce = sync.Once{}
+		defaultSegmenter = gse.Segmenter{}
+		defaultSegmenterErr = nil
+
+		originalLoader := loadEmbeddedSegmenter
+		defer func() {
+			loadEmbeddedSegmenter = originalLoader
+		}()
+
+		loadCalls := 0
+		loadEmbeddedSegmenter = func(segmenter *gse.Segmenter) error {
+			loadCalls++
+			segmenter.SkipLog = true
+			return segmenter.LoadDictEmbed()
+		}
+
+		latin, err := Tokenize("Static site generator release pipeline")
+		if err != nil {
+			t.Fatalf("Tokenize(latin) error = %v", err)
+		}
+		if !reflect.DeepEqual(latin, []string{"static", "site", "generator", "release", "pipeline"}) {
+			t.Fatalf("Tokenize(latin) = %#v, want Latin tokens without gse dependency", latin)
+		}
+		if loadCalls != 0 {
+			t.Fatalf("loadEmbeddedSegmenter calls after Latin-only Tokenize = %d, want %d", loadCalls, 0)
+		}
+
+		if _, err := Tokenize("你好世界"); err != nil {
+			t.Fatalf("Tokenize(cjk) error = %v", err)
+		}
+		if loadCalls != 1 {
+			t.Fatalf("loadEmbeddedSegmenter calls after first CJK Tokenize = %d, want %d", loadCalls, 1)
+		}
+
+		if _, err := Tokenize("静态站点 生成器"); err != nil {
+			t.Fatalf("Tokenize(second cjk) error = %v", err)
+		}
+		if loadCalls != 1 {
+			t.Fatalf("loadEmbeddedSegmenter calls after repeated CJK Tokenize = %d, want %d", loadCalls, 1)
+		}
+		return
+	}
+
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("os.Getwd() error = %v", err)
+	}
+
+	cmd := exec.Command("go", "test", ".", "-run", "^TestTokenizeDefersDictionaryLoadingForLatinOnlyInput$", "-count=1")
+	cmd.Dir = workingDir
+	cmd.Env = append(os.Environ(), lazyTokenizerChildEnv+"=1")
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("go test tokenizer lazy-load regression failed: %v\n%s", err, output)
 	}
 }
 
@@ -161,9 +226,9 @@ func TestBM25ScoreStableAcrossRepeatedCalls(t *testing.T) {
 		b:         defaultBM25B,
 	}
 
-	want := math.Float64bits(bm25.Score(queryTerms, "candidate"))
+	want := math.Float64bits(scoreBM25ForTest(bm25, queryTerms, "candidate"))
 	for iteration := 0; iteration < 256; iteration++ {
-		got := math.Float64bits(bm25.Score(queryTerms, "candidate"))
+		got := math.Float64bits(scoreBM25ForTest(bm25, queryTerms, "candidate"))
 		if got != want {
 			t.Fatalf("Score() bits changed between repeated calls: got %#x, want %#x", got, want)
 		}
@@ -188,8 +253,8 @@ func TestRecommenderBoostsSharedTagsAndMutualLinks(t *testing.T) {
 		alpha := idx.Notes["notes/alpha.md"]
 		beta := idx.Notes["notes/beta.md"]
 		gamma := idx.Notes["notes/gamma.md"]
-		betaScore := recommender.Score(alpha, beta)
-		gammaScore := recommender.Score(alpha, gamma)
+		betaScore := scoreRelatedPairForTest(recommender, alpha, beta)
+		gammaScore := scoreRelatedPairForTest(recommender, alpha, gamma)
 		if gammaScore <= betaScore {
 			t.Fatalf("Score(alpha, gamma) = %v, want greater than Score(alpha, beta) = %v", gammaScore, betaScore)
 		}
@@ -229,8 +294,8 @@ func TestRecommenderBoostsSharedTagsAndMutualLinks(t *testing.T) {
 		alpha := idx.Notes["notes/alpha.md"]
 		beta := idx.Notes["notes/beta.md"]
 		aaron := idx.Notes["notes/aaron.md"]
-		betaScore := recommender.Score(alpha, beta)
-		aaronScore := recommender.Score(alpha, aaron)
+		betaScore := scoreRelatedPairForTest(recommender, alpha, beta)
+		aaronScore := scoreRelatedPairForTest(recommender, alpha, aaron)
 		if betaScore <= aaronScore {
 			t.Fatalf("Score(alpha, beta) = %v, want greater than Score(alpha, aaron) = %v", betaScore, aaronScore)
 		}
@@ -243,6 +308,129 @@ func TestRecommenderBoostsSharedTagsAndMutualLinks(t *testing.T) {
 			t.Fatalf("Related(alpha)[0].Score = %v, want Score(alpha, beta) = %v", related[0].Score, betaScore)
 		}
 	})
+}
+
+func TestRecommenderRecallsBoostOnlyStructuralMatches(t *testing.T) {
+	t.Parallel()
+
+	t.Run("shared tags alone can recall and outrank weak lexical matches", func(t *testing.T) {
+		idx := testRecommendIndex(
+			testRecommendNote("notes/alpha.md", "alpha", "Alpha", "common consensus quorum leases", "systems"),
+			testRecommendNote("notes/beta.md", "beta", "Beta", "common lexical overlap"),
+			testRecommendNote("notes/gamma.md", "gamma", "Gamma", "sourdough starter hydration crumb", "systems"),
+			testRecommendNote("notes/delta.md", "delta", "Delta", "common fallback term"),
+		)
+
+		recommender, err := New(idx, &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}})
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		alpha := idx.Notes["notes/alpha.md"]
+		beta := idx.Notes["notes/beta.md"]
+		gamma := idx.Notes["notes/gamma.md"]
+		betaScore := scoreRelatedPairForTest(recommender, alpha, beta)
+		gammaScore := scoreRelatedPairForTest(recommender, alpha, gamma)
+		if betaScore <= 0 {
+			t.Fatalf("Score(alpha, beta) = %v, want positive BM25 baseline for weak lexical match", betaScore)
+		}
+		if gammaScore != sharedTagBoostWeight {
+			t.Fatalf("Score(alpha, gamma) = %v, want shared-tag-only score %v", gammaScore, sharedTagBoostWeight)
+		}
+		if gammaScore <= betaScore {
+			t.Fatalf("Score(alpha, gamma) = %v, want greater than Score(alpha, beta) = %v so boost-only candidates can compete", gammaScore, betaScore)
+		}
+
+		related := recommender.Related(alpha, 2)
+		if got := relatedRelPaths(related); !reflect.DeepEqual(got, []string{"notes/gamma.md", "notes/beta.md"}) {
+			t.Fatalf("Related(alpha) paths = %#v, want %#v", got, []string{"notes/gamma.md", "notes/beta.md"})
+		}
+	})
+
+	t.Run("mutual wikilinks alone can recall unrelated notes", func(t *testing.T) {
+		idx := testRecommendIndex(
+			testRecommendNote("notes/alpha.md", "alpha", "Alpha", "orchard pruning espalier trellis"),
+			testRecommendNote("notes/beta.md", "beta", "Beta", "vector databases embedding recall latency"),
+		)
+
+		graph := &model.LinkGraph{
+			Forward: map[string][]string{
+				"notes/alpha.md": {"notes/beta.md"},
+				"notes/beta.md":  {"notes/alpha.md"},
+			},
+			Backward: map[string][]string{
+				"notes/alpha.md": {"notes/beta.md"},
+				"notes/beta.md":  {"notes/alpha.md"},
+			},
+		}
+
+		recommender, err := New(idx, graph)
+		if err != nil {
+			t.Fatalf("New() error = %v", err)
+		}
+
+		alpha := idx.Notes["notes/alpha.md"]
+		beta := idx.Notes["notes/beta.md"]
+		if got := scoreRelatedPairForTest(recommender, alpha, beta); got != mutualWikilinkBoost {
+			t.Fatalf("Score(alpha, beta) = %v, want mutual-wikilink-only score %v", got, mutualWikilinkBoost)
+		}
+		if got := relatedRelPaths(recommender.Related(alpha, 1)); !reflect.DeepEqual(got, []string{"notes/beta.md"}) {
+			t.Fatalf("Related(alpha) paths = %#v, want %#v", got, []string{"notes/beta.md"})
+		}
+	})
+}
+
+func TestRecommenderCandidateSetIncludesBoostOnlyDocs(t *testing.T) {
+	t.Parallel()
+
+	idx := testRecommendIndex(
+		testRecommendNote("notes/alpha.md", "alpha", "Alpha", "distributed consensus lease quorum", "systems"),
+		testRecommendNote("notes/beta.md", "beta", "Beta", "distributed quorum failover", "systems"),
+		testRecommendNote("notes/gamma.md", "gamma", "Gamma", "sourdough starter hydration crumb", "systems"),
+		testRecommendNote("notes/delta.md", "delta", "Delta", "vector database embedding latency"),
+	)
+
+	graph := &model.LinkGraph{
+		Forward: map[string][]string{
+			"notes/alpha.md": {"notes/delta.md"},
+			"notes/delta.md": {"notes/alpha.md"},
+		},
+		Backward: map[string][]string{
+			"notes/alpha.md": {"notes/delta.md"},
+			"notes/delta.md": {"notes/alpha.md"},
+		},
+	}
+
+	recommender, err := New(idx, graph)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	queryProfile := recommender.docMap["notes/alpha.md"]
+	if got := recommender.relatedCandidatePaths(queryProfile); !reflect.DeepEqual(got, []string{"notes/beta.md", "notes/delta.md", "notes/gamma.md"}) {
+		t.Fatalf("relatedCandidatePaths(alpha) = %#v, want BM25, shared-tag, and mutual-link candidates", got)
+	}
+}
+
+func TestBuildDeterministicAcrossRepeatedCalls(t *testing.T) {
+	t.Parallel()
+
+	idx, graph := buildBenchmarkRecommendFixture(64)
+	baseline, err := Build(idx, graph, 5)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	want := relatedByPathRelPaths(baseline)
+
+	for iteration := 0; iteration < 32; iteration++ {
+		got, err := Build(idx, graph, 5)
+		if err != nil {
+			t.Fatalf("Build() iteration %d error = %v", iteration, err)
+		}
+		if gotPaths := relatedByPathRelPaths(got); !reflect.DeepEqual(gotPaths, want) {
+			t.Fatalf("Build() iteration %d paths = %#v, want %#v", iteration, gotPaths, want)
+		}
+	}
 }
 
 func TestRecommenderOrdersTiesDeterministically(t *testing.T) {
@@ -265,6 +453,180 @@ func TestRecommenderOrdersTiesDeterministically(t *testing.T) {
 			t.Fatalf("Related(query) paths = %#v, want %#v", got, []string{"notes/aaron.md", "notes/beta.md"})
 		}
 	}
+}
+
+func BenchmarkRelatedStructuralCandidateFanout(b *testing.B) {
+	idx, graph := buildBoostOnlyFanoutFixture(3000, 16)
+	recommender, err := New(idx, graph)
+	if err != nil {
+		b.Fatalf("New() error = %v", err)
+	}
+
+	query := idx.Notes["notes/query.md"]
+	if query == nil {
+		b.Fatal("benchmark query note missing")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		related := recommender.Related(query, 8)
+		if len(related) != 8 {
+			b.Fatalf("Related(query) len = %d, want %d", len(related), 8)
+		}
+	}
+}
+
+func BenchmarkRelatedLargeMixedCorpus(b *testing.B) {
+	idx, graph := buildBenchmarkRecommendFixture(3000)
+	recommender, err := New(idx, graph)
+	if err != nil {
+		b.Fatalf("New() error = %v", err)
+	}
+
+	query := idx.Notes["notes/note-0000.md"]
+	if query == nil {
+		b.Fatal("benchmark query note missing")
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		related := recommender.Related(query, 8)
+		if len(related) != 8 {
+			b.Fatalf("Related(query) len = %d, want %d", len(related), 8)
+		}
+	}
+}
+
+func BenchmarkBuildLargeMixedCorpus(b *testing.B) {
+	idx, graph := buildBenchmarkRecommendFixture(5000)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for iteration := 0; iteration < b.N; iteration++ {
+		relatedByPath, err := Build(idx, graph, 8)
+		if err != nil {
+			b.Fatalf("Build() error = %v", err)
+		}
+		if len(relatedByPath) != len(idx.Notes) {
+			b.Fatalf("Build() related note count = %d, want %d", len(relatedByPath), len(idx.Notes))
+		}
+		if got := len(relatedByPath["notes/note-0000.md"]); got != 8 {
+			b.Fatalf("Build()[note-0000] len = %d, want %d", got, 8)
+		}
+	}
+}
+
+func buildBenchmarkRecommendNotes(count int) []*model.Note {
+	topics := []struct {
+		tag     string
+		content string
+	}{
+		{tag: "systems", content: "distributed systems quorum replica lease failover 站点 构建 发布"},
+		{tag: "search", content: "bm25 retrieval ranking tokenizer inverted index 推荐 相关文章"},
+		{tag: "writing", content: "editorial workflow draft revision evergreen notes 写作 发布"},
+		{tag: "ops", content: "incident response latency tracing rollback alerting 运维 监控"},
+		{tag: "product", content: "roadmap discovery positioning adoption feedback 产品 规划"},
+	}
+
+	notes := make([]*model.Note, 0, count)
+	for index := 0; index < count; index++ {
+		topic := topics[index%len(topics)]
+		relPath := fmt.Sprintf("notes/note-%04d.md", index)
+		slug := fmt.Sprintf("note-%04d", index)
+		title := fmt.Sprintf("Benchmark Note %04d", index)
+		content := fmt.Sprintf(
+			"%s cohort%d sibling%d shard%d lexicon%d",
+			topic.content,
+			index%64,
+			index%17,
+			(index/len(topics))%13,
+			(index/len(topics))%29,
+		)
+		notes = append(notes, testRecommendNote(relPath, slug, title, content, topic.tag, fmt.Sprintf("cohort-%02d", index%64)))
+	}
+
+	return notes
+}
+
+func buildBoostOnlyFanoutFixture(boostOnlyCount int, bm25MatchCount int) (*model.VaultIndex, *model.LinkGraph) {
+	notes := make([]*model.Note, 0, 1+bm25MatchCount+(boostOnlyCount*2))
+	query := testRecommendNote("notes/query.md", "query", "Query", "distributed consensus lease quorum", "systems")
+	notes = append(notes, query)
+
+	graph := &model.LinkGraph{
+		Forward:  map[string][]string{"notes/query.md": {}},
+		Backward: map[string][]string{"notes/query.md": {}},
+	}
+
+	for index := 0; index < bm25MatchCount; index++ {
+		relPath := fmt.Sprintf("notes/match-%04d.md", index)
+		notes = append(notes, testRecommendNote(
+			relPath,
+			fmt.Sprintf("match-%04d", index),
+			fmt.Sprintf("Match %04d", index),
+			fmt.Sprintf("distributed consensus lease quorum shard%d", index),
+			"systems",
+		))
+	}
+
+	for index := 0; index < boostOnlyCount; index++ {
+		relPath := fmt.Sprintf("notes/tag-only-%04d.md", index)
+		notes = append(notes, testRecommendNote(
+			relPath,
+			fmt.Sprintf("tag-only-%04d", index),
+			fmt.Sprintf("Tag Only %04d", index),
+			fmt.Sprintf("sourdough starter hydration crumb%d", index),
+			"systems",
+		))
+	}
+
+	for index := 0; index < boostOnlyCount; index++ {
+		relPath := fmt.Sprintf("notes/link-only-%04d.md", index)
+		notes = append(notes, testRecommendNote(
+			relPath,
+			fmt.Sprintf("link-only-%04d", index),
+			fmt.Sprintf("Link Only %04d", index),
+			fmt.Sprintf("vector database embedding latency%d", index),
+		))
+		graph.Forward["notes/query.md"] = append(graph.Forward["notes/query.md"], relPath)
+		graph.Forward[relPath] = []string{"notes/query.md"}
+		graph.Backward["notes/query.md"] = append(graph.Backward["notes/query.md"], relPath)
+		graph.Backward[relPath] = []string{"notes/query.md"}
+	}
+
+	return testRecommendIndex(notes...), graph
+}
+
+func buildBenchmarkRecommendFixture(count int) (*model.VaultIndex, *model.LinkGraph) {
+	notes := buildBenchmarkRecommendNotes(count)
+	idx := testRecommendIndex(notes...)
+	graph := &model.LinkGraph{
+		Forward:  make(map[string][]string, len(notes)),
+		Backward: make(map[string][]string, len(notes)),
+	}
+
+	pathsByTopic := make(map[string][]string)
+	for _, note := range notes {
+		if note == nil || len(note.Tags) == 0 {
+			continue
+		}
+		pathsByTopic[note.Tags[0]] = append(pathsByTopic[note.Tags[0]], note.RelPath)
+	}
+
+	for _, paths := range pathsByTopic {
+		for index := 0; index+1 < len(paths); index += 2 {
+			left := paths[index]
+			right := paths[index+1]
+			graph.Forward[left] = append(graph.Forward[left], right)
+			graph.Forward[right] = append(graph.Forward[right], left)
+			graph.Backward[left] = append(graph.Backward[left], right)
+			graph.Backward[right] = append(graph.Backward[right], left)
+		}
+	}
+
+	return idx, graph
 }
 
 func testRecommendIndex(notes ...*model.Note) *model.VaultIndex {
@@ -290,6 +652,31 @@ func testRecommendNote(relPath string, slug string, title string, content string
 	}
 }
 
+func scoreBM25ForTest(bm25 *BM25, query map[string]int, candidateID string) float64 {
+	if bm25 == nil {
+		return 0
+	}
+
+	return bm25.scoreQueryTerms(sortedQueryTerms(query), candidateID)
+}
+
+func scoreRelatedPairForTest(recommender *Recommender, queryNote *model.Note, candidateNote *model.Note) float64 {
+	if recommender == nil || queryNote == nil || candidateNote == nil {
+		return 0
+	}
+
+	queryProfile, ok := recommender.docMap[queryNote.RelPath]
+	if !ok {
+		return 0
+	}
+	candidateProfile, ok := recommender.docMap[candidateNote.RelPath]
+	if !ok {
+		return 0
+	}
+
+	return recommender.scoreProfiles(queryProfile, candidateProfile)
+}
+
 func containsToken(tokens []string, want string) bool {
 	for _, token := range tokens {
 		if token == want {
@@ -297,6 +684,19 @@ func containsToken(tokens []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func relatedByPathRelPaths(rankedByPath map[string][]RankedNote) map[string][]string {
+	if len(rankedByPath) == 0 {
+		return map[string][]string{}
+	}
+
+	paths := make(map[string][]string, len(rankedByPath))
+	for relPath, ranked := range rankedByPath {
+		paths[relPath] = relatedRelPaths(ranked)
+	}
+
+	return paths
 }
 
 func containsCJKToken(tokens []string) bool {

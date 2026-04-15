@@ -147,12 +147,15 @@ func rssSortKey(value string) string {
 func rssLastBuildDate(notes []model.NoteSummary) time.Time {
 	latest := time.Time{}
 	for _, note := range notes {
-		publishedAt := normalizeRSSTime(note.Date)
-		if publishedAt.IsZero() {
+		updatedAt := normalizeRSSTime(note.LastModified)
+		if updatedAt.IsZero() {
+			updatedAt = normalizeRSSTime(note.Date)
+		}
+		if updatedAt.IsZero() {
 			continue
 		}
-		if latest.IsZero() || publishedAt.After(latest) {
-			latest = publishedAt
+		if latest.IsZero() || updatedAt.After(latest) {
+			latest = updatedAt
 		}
 	}
 	if latest.IsZero() {

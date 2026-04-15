@@ -49,6 +49,7 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		t.Fatalf("os.ReadFile(%q) error = %v", configPath, err)
 	}
 	content := string(data)
+	expectedPagefindPath := filepath.Join(vaultPath, "tools", "pagefind_extended")
 	for _, want := range []string{
 		"# baseURL must be the public site URL used for canonical links and sitemap entries.",
 		"baseURL: https://example.com/",
@@ -57,8 +58,9 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		"description: Notes published with obsite.",
 		"defaultPublish: true",
 		"search:",
-		"pagefindPath: pagefind_extended",
-		"pagefindVersion: 1.4.0",
+		"# pagefindPath points to the pagefind_extended executable used during build, relative to this obsite.yaml file.",
+		"pagefindPath: tools/pagefind_extended",
+		"pagefindVersion: 1.5.2",
 		"pagination:",
 		"pageSize: 20",
 		"related:",
@@ -75,10 +77,11 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		}
 	}
 
-	cfg, err := internalconfig.Load(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	loaded, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
-		t.Fatalf("config.Load(%q) error = %v", configPath, err)
+		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
+	cfg := loaded.Config
 	if cfg.BaseURL != "https://example.com/" {
 		t.Fatalf("cfg.BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/")
 	}
@@ -94,7 +97,7 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 	if !cfg.DefaultPublish {
 		t.Fatal("cfg.DefaultPublish = false, want true")
 	}
-	if cfg.Search.PagefindPath != "pagefind_extended" || cfg.Search.PagefindVersion != "1.4.0" {
+	if cfg.Search.PagefindPath != expectedPagefindPath || cfg.Search.PagefindVersion != "1.5.2" {
 		t.Fatalf("cfg.Search = %#v, want default Pagefind settings", cfg.Search)
 	}
 	if cfg.Pagination.PageSize != 20 {

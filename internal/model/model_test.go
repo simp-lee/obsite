@@ -1,6 +1,7 @@
 package model
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -35,15 +36,47 @@ func TestLinkRefRetainsRawAndResolvedTargets(t *testing.T) {
 	}
 }
 
-func TestSiteConfigDefaultPublishStoresExplicitPolicy(t *testing.T) {
-	cfg := SiteConfig{DefaultPublish: true}
-	if !cfg.DefaultPublish {
-		t.Fatal("explicit DefaultPublish=true should be preserved")
+func TestSiteConfigEffectiveDefaultPublishUsesDocumentedDefaultUntilSet(t *testing.T) {
+	cfg := SiteConfig{}
+	if !cfg.EffectiveDefaultPublish() {
+		t.Fatal("EffectiveDefaultPublish() = false, want documented default true")
 	}
 
-	cfg.DefaultPublish = false
-	if cfg.DefaultPublish {
-		t.Fatal("explicit DefaultPublish=false should be preserved")
+	cfg = SiteConfig{DefaultPublish: false, DefaultPublishSet: true}
+	if cfg.EffectiveDefaultPublish() {
+		t.Fatal("EffectiveDefaultPublish() = true, want explicit false")
+	}
+}
+
+func TestSiteConfigEffectiveRSSEnabledUsesDocumentedDefaultUntilSet(t *testing.T) {
+	cfg := SiteConfig{}
+	if !cfg.EffectiveRSSEnabled() {
+		t.Fatal("EffectiveRSSEnabled() = false, want documented default true")
+	}
+
+	cfg = SiteConfig{RSS: RSSConfig{Enabled: false, EnabledSet: true}}
+	if cfg.EffectiveRSSEnabled() {
+		t.Fatal("EffectiveRSSEnabled() = true, want explicit false")
+	}
+}
+
+func TestNoteFrontmatterPublishStoresSinglePublishPolicy(t *testing.T) {
+	published := true
+	hidden := false
+
+	note := Note{Frontmatter: Frontmatter{Publish: &published}}
+	if note.Frontmatter.Publish == nil || !*note.Frontmatter.Publish {
+		t.Fatalf("Frontmatter.Publish = %v, want true", note.Frontmatter.Publish)
+	}
+
+	note = Note{Frontmatter: Frontmatter{Publish: &hidden}}
+	if note.Frontmatter.Publish == nil || *note.Frontmatter.Publish {
+		t.Fatalf("Frontmatter.Publish = %v, want false", note.Frontmatter.Publish)
+	}
+
+	note = Note{}
+	if note.Frontmatter.Publish != nil {
+		t.Fatalf("Frontmatter.Publish = %v, want nil", note.Frontmatter.Publish)
 	}
 }
 
@@ -74,6 +107,28 @@ func TestVaultIndexUnpublishedLookupSupportsResolverKeys(t *testing.T) {
 
 	if got := idx.Unpublished.AliasByName["docs"]; len(got) != 1 || got[0] != note {
 		t.Fatalf("unpublished alias lookup = %#v, want [%p]", got, note)
+	}
+}
+
+func TestVaultIndexResourceLookupInitializesLazilyFromExactPaths(t *testing.T) {
+	idx := &VaultIndex{
+		Resources: map[string]string{
+			"boards/Cafe\u0301.canvas": "boards/Cafe\u0301.canvas",
+			"archive/Café.canvas":      "archive/Café.canvas",
+		},
+	}
+
+	if got := idx.ResolveResourcePath("boards/Cafe\u0301.canvas"); got != "boards/Cafe\u0301.canvas" {
+		t.Fatalf("ResolveResourcePath(exact) = %q, want %q", got, "boards/Cafe\u0301.canvas")
+	}
+
+	lookup := idx.LookupResourceBaseName("CAFÉ.canvas")
+	if lookup.Path != "" {
+		t.Fatalf("LookupResourceBaseName().Path = %q, want empty for ambiguous basename fallback", lookup.Path)
+	}
+	want := []string{"archive/Café.canvas", "boards/Cafe\u0301.canvas"}
+	if !reflect.DeepEqual(lookup.Ambiguous, want) {
+		t.Fatalf("LookupResourceBaseName().Ambiguous = %#v, want %#v", lookup.Ambiguous, want)
 	}
 }
 
@@ -162,7 +217,7 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 		Search: SearchConfig{
 			Enabled:         true,
 			PagefindPath:    "pagefind_extended",
-			PagefindVersion: "1.4.0",
+			PagefindVersion: "1.5.2",
 		},
 		Pagination: PaginationConfig{PageSize: 30},
 		Sidebar:    SidebarConfig{Enabled: true},

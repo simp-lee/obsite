@@ -7,6 +7,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 var (
@@ -32,6 +34,12 @@ type Conflict struct {
 type InvalidSlug struct {
 	Source string
 	Slug   string
+}
+
+// Canonicalize returns the shared lowercase NFC form used by slug generation
+// and note or alias lookup keys.
+func Canonicalize(input string) string {
+	return canonicalize(input)
 }
 
 // Generate returns the normalized slug for a note.
@@ -64,15 +72,16 @@ func DetectConflicts(candidates []Candidate) ([]Conflict, []InvalidSlug) {
 	sourcesBySlug := make(map[string]map[string]struct{}, len(candidates))
 	invalidBySource := make(map[string]InvalidSlug)
 	for _, candidate := range candidates {
-		if strings.TrimSpace(candidate.Slug) == "" {
+		canonicalSlug := canonicalize(candidate.Slug)
+		if strings.TrimSpace(canonicalSlug) == "" {
 			invalidBySource[candidate.Source] = InvalidSlug(candidate)
 			continue
 		}
 
-		sources := sourcesBySlug[candidate.Slug]
+		sources := sourcesBySlug[canonicalSlug]
 		if sources == nil {
 			sources = make(map[string]struct{})
-			sourcesBySlug[candidate.Slug] = sources
+			sourcesBySlug[canonicalSlug] = sources
 		}
 		sources[candidate.Source] = struct{}{}
 	}
@@ -129,7 +138,7 @@ func normalize(input string) string {
 	var builder strings.Builder
 	lastHyphen := false
 
-	for _, r := range strings.ToLower(input) {
+	for _, r := range canonicalize(input) {
 		switch {
 		case isASCIIControl(r):
 			continue
@@ -148,6 +157,10 @@ func normalize(input string) string {
 	}
 
 	return strings.Trim(builder.String(), "-")
+}
+
+func canonicalize(input string) string {
+	return norm.NFC.String(strings.ToLower(norm.NFC.String(input)))
 }
 
 func isASCIIControl(r rune) bool {

@@ -159,32 +159,6 @@ func fenceOpenerAt(line []byte, start int) (byte, int, bool) {
 	return char, count, true
 }
 
-func isFenceCloserAt(line []byte, start int, char byte, minCount int) bool {
-	index := leadingFenceIndentAt(line, start)
-	if index < 0 || index >= len(line) {
-		return false
-	}
-
-	count := 0
-	for index+count < len(line) && line[index+count] == char {
-		count++
-	}
-	if count < minCount {
-		return false
-	}
-
-	for i := index + count; i < len(line); i++ {
-		switch line[i] {
-		case ' ', '\t', '\r', '\n':
-			continue
-		default:
-			return false
-		}
-	}
-
-	return true
-}
-
 func stripFenceCloserLine(line []byte, start int, char byte, minCount int) ([]byte, bool, bool) {
 	index := leadingFenceIndentAt(line, start)
 	if index < 0 || index >= len(line) {

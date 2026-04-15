@@ -3,8 +3,10 @@ package vault
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -55,17 +57,47 @@ func TestScanCollectsMarkdownAndResourceCandidates(t *testing.T) {
 		t.Fatalf("ResourceFiles = %#v, want %#v", got.ResourceFiles, wantResources)
 	}
 
-	if !got.HasResource("assets/uploads/photo.jpg") {
+	if got.LookupResourcePath("assets/uploads/photo.jpg").Path == "" {
 		t.Fatal("HasResource(photo.jpg) = false, want true")
 	}
-	if got.HasResource(".obsidian/workspace.json") {
+	if got.LookupResourcePath(".obsidian/workspace.json").Path != "" {
 		t.Fatal("HasResource(.obsidian/workspace.json) = true, want false")
 	}
-	if got.HasResource("node_modules/pkg/readme.md") {
+	if got.LookupResourcePath("node_modules/pkg/readme.md").Path != "" {
 		t.Fatal("HasResource(node_modules/pkg/readme.md) = true, want false")
 	}
-	if got.HasResource(".hidden/private.md") {
+	if got.LookupResourcePath(".hidden/private.md").Path != "" {
 		t.Fatal("HasResource(.hidden/private.md) = true, want false")
+	}
+}
+
+func TestScanLookupResourcePathRefusesCanonicalUnicodeCollisions(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/post.md", "# Post")
+	writeVaultFile(t, vaultPath, "images/Cafe\u0301 Chart.png", "png")
+	writeVaultFile(t, vaultPath, "images/Café Chart.png", "png")
+
+	got, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	if exact := got.LookupResourcePath("images/Café Chart.png").Path; exact != "images/Café Chart.png" {
+		t.Fatalf("ResolveResourcePath(exact) = %q, want %q", exact, "images/Café Chart.png")
+	}
+
+	lookup := got.LookupResourcePath("images/CAFÉ Chart.png")
+	if lookup.Path != "" {
+		t.Fatalf("LookupResourcePath().Path = %q, want empty for ambiguous canonical fallback", lookup.Path)
+	}
+	want := []string{"images/Cafe\u0301 Chart.png", "images/Café Chart.png"}
+	if !reflect.DeepEqual(lookup.Ambiguous, want) {
+		t.Fatalf("LookupResourcePath().Ambiguous = %#v, want %#v", lookup.Ambiguous, want)
+	}
+	if got := got.LookupResourcePath("images/CAFÉ Chart.png").Path; got != "" {
+		t.Fatalf("ResolveResourcePath(ambiguous) = %q, want empty", got)
 	}
 }
 
@@ -89,7 +121,7 @@ func TestScanNormalizesAttachmentFolderPath(t *testing.T) {
 	}
 }
 
-func TestScanRejectsWindowsAbsoluteAttachmentFolderPath(t *testing.T) {
+func TestScanRejectsAbsoluteAttachmentFolderPath(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -98,6 +130,8 @@ func TestScanRejectsWindowsAbsoluteAttachmentFolderPath(t *testing.T) {
 	}{
 		{name: "windows backslash absolute path", raw: `C:\attachments`},
 		{name: "windows slash absolute path", raw: "C:/attachments"},
+		{name: "unc backslash absolute path", raw: `\\server\share`},
+		{name: "unc slash absolute path", raw: "//server/share"},
 	}
 
 	for _, tt := range tests {
@@ -114,6 +148,39 @@ func TestScanRejectsWindowsAbsoluteAttachmentFolderPath(t *testing.T) {
 				t.Fatalf("Scan() error = %v, want vault boundary rejection", err)
 			}
 		})
+	}
+}
+
+func TestScanSkipsTopLevelObsidianFileWhenNotDirectory(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, ".obsidian", "hidden file")
+	writeVaultFile(t, vaultPath, "notes/post.md", "# Post")
+
+	got, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	if got.AttachmentFolderPath != "" {
+		t.Fatalf("AttachmentFolderPath = %q, want empty", got.AttachmentFolderPath)
+	}
+
+	wantMarkdown := []string{"notes/post.md"}
+	if !reflect.DeepEqual(got.MarkdownFiles, wantMarkdown) {
+		t.Fatalf("MarkdownFiles = %#v, want %#v", got.MarkdownFiles, wantMarkdown)
+	}
+
+	if len(got.ResourceFiles) != 0 {
+		t.Fatalf("ResourceFiles = %#v, want empty", got.ResourceFiles)
+	}
+
+	if !scanContainsMarkdown(got, "notes/post.md") {
+		t.Fatal("HasMarkdown(notes/post.md) = false, want true")
+	}
+	if got.LookupResourcePath(".obsidian").Path != "" {
+		t.Fatal("HasResource(.obsidian) = true, want false")
 	}
 }
 
@@ -220,24 +287,24 @@ func TestScanKeepsConfiguredAttachmentFolderInsideSkippedSubtreeExcluded(t *test
 			}
 
 			for _, relPath := range tt.attachmentResources {
-				if got.HasResource(relPath) {
+				if got.LookupResourcePath(relPath).Path != "" {
 					t.Fatalf("HasResource(%q) = true, want false", relPath)
 				}
 			}
 			for _, relPath := range tt.skippedMarkdown {
-				if got.HasMarkdown(relPath) {
+				if scanContainsMarkdown(got, relPath) {
 					t.Fatalf("HasMarkdown(%q) = true, want false", relPath)
 				}
 			}
 			for _, relPath := range tt.skippedResources {
-				if got.HasResource(relPath) {
+				if got.LookupResourcePath(relPath).Path != "" {
 					t.Fatalf("HasResource(%q) = true, want false", relPath)
 				}
 			}
-			if !got.HasMarkdown("notes/post.md") {
+			if !scanContainsMarkdown(got, "notes/post.md") {
 				t.Fatal("HasMarkdown(notes/post.md) = false, want true")
 			}
-			if !got.HasResource("assets/public/logo.png") {
+			if got.LookupResourcePath("assets/public/logo.png").Path == "" {
 				t.Fatal("HasResource(assets/public/logo.png) = false, want true")
 			}
 		})
@@ -274,19 +341,19 @@ func TestScanTreatsConfiguredAttachmentFolderPathAsMetadataInsideSkippedSubtree(
 		t.Fatalf("ResourceFiles = %#v, want empty", got.ResourceFiles)
 	}
 
-	if !got.HasMarkdown("notes/post.md") {
+	if !scanContainsMarkdown(got, "notes/post.md") {
 		t.Fatal("HasMarkdown(notes/post.md) = false, want true")
 	}
-	if got.HasResource(".hidden/attachments/photo.png") {
+	if got.LookupResourcePath(".hidden/attachments/photo.png").Path != "" {
 		t.Fatal("HasResource(.hidden/attachments/photo.png) = true, want false")
 	}
-	if got.HasResource(".hidden/attachments/.hidden/secret.png") {
+	if got.LookupResourcePath(".hidden/attachments/.hidden/secret.png").Path != "" {
 		t.Fatal("HasResource(.hidden/attachments/.hidden/secret.png) = true, want false")
 	}
-	if got.HasResource(".hidden/attachments/.obsidian/workspace.json") {
+	if got.LookupResourcePath(".hidden/attachments/.obsidian/workspace.json").Path != "" {
 		t.Fatal("HasResource(.hidden/attachments/.obsidian/workspace.json) = true, want false")
 	}
-	if got.HasResource(".hidden/attachments/node_modules/pkg/file.bin") {
+	if got.LookupResourcePath(".hidden/attachments/node_modules/pkg/file.bin").Path != "" {
 		t.Fatal("HasResource(.hidden/attachments/node_modules/pkg/file.bin) = true, want false")
 	}
 }
@@ -321,11 +388,63 @@ func TestScanSkipsSymlinkEntries(t *testing.T) {
 		t.Fatalf("ResourceFiles = %#v, want %#v", got.ResourceFiles, wantResources)
 	}
 
-	if got.HasMarkdown("notes/link.md") {
+	if scanContainsMarkdown(got, "notes/link.md") {
 		t.Fatal("HasMarkdown(notes/link.md) = true, want false")
 	}
-	if got.HasResource("assets/link.png") {
+	if got.LookupResourcePath("assets/link.png").Path != "" {
 		t.Fatal("HasResource(assets/link.png) = true, want false")
+	}
+}
+
+func TestScanSkipsNonRegularMarkdownAndResourceCandidates(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/post.md", "# Post")
+	writeVaultNamedPipe(t, filepath.Join(vaultPath, "notes", "blocked.md"))
+	writeVaultNamedPipe(t, filepath.Join(vaultPath, "assets", "blocked.png"))
+
+	got, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatalf("Scan() error = %v", err)
+	}
+
+	wantMarkdown := []string{"notes/post.md"}
+	if !reflect.DeepEqual(got.MarkdownFiles, wantMarkdown) {
+		t.Fatalf("MarkdownFiles = %#v, want %#v", got.MarkdownFiles, wantMarkdown)
+	}
+	if len(got.ResourceFiles) != 0 {
+		t.Fatalf("ResourceFiles = %#v, want empty", got.ResourceFiles)
+	}
+	if scanContainsMarkdown(got, "notes/blocked.md") {
+		t.Fatal("HasMarkdown(notes/blocked.md) = true, want false")
+	}
+	if got.LookupResourcePath("assets/blocked.png").Path != "" {
+		t.Fatal("HasResource(assets/blocked.png) = true, want false")
+	}
+}
+
+func scanContainsMarkdown(result ScanResult, relPath string) bool {
+	_, ok := result.markdownSet[normalizeLookupPath(relPath)]
+	return ok
+}
+
+func TestScanRejectsNonRegularObsidianAppJSON(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/post.md", "# Post")
+	if err := os.MkdirAll(filepath.Join(vaultPath, ".obsidian"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(.obsidian) error = %v", err)
+	}
+	writeVaultNamedPipe(t, filepath.Join(vaultPath, ".obsidian", "app.json"))
+
+	_, err := Scan(vaultPath)
+	if err == nil {
+		t.Fatal("Scan() error = nil, want non-regular app.json rejection")
+	}
+	if !strings.Contains(err.Error(), "must be a regular file") {
+		t.Fatalf("Scan() error = %v, want regular-file rejection", err)
 	}
 }
 
@@ -395,5 +514,25 @@ func writeVaultSymlink(t *testing.T, targetPath string, linkPath string) {
 	}
 	if err := os.Symlink(targetPath, linkPath); err != nil {
 		t.Skipf("Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
+	}
+}
+
+func writeVaultNamedPipe(t *testing.T, pipePath string) {
+	t.Helper()
+
+	if runtime.GOOS == "windows" {
+		t.Skip("mkfifo-based regression is not supported on Windows")
+	}
+	if err := os.MkdirAll(filepath.Dir(pipePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(%q) error = %v", filepath.Dir(pipePath), err)
+	}
+
+	mkfifoPath, err := exec.LookPath("mkfifo")
+	if err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	output, err := exec.Command(mkfifoPath, pipePath).CombinedOutput()
+	if err != nil {
+		t.Skipf("mkfifo(%q) unsupported: %v (%s)", pipePath, err, strings.TrimSpace(string(output)))
 	}
 }

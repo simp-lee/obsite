@@ -397,39 +397,3 @@ func TestApplyKeepsPageMetadataAndBreadcrumbJSONLDWhenArticleJSONLDIsIncomplete(
 	assertBreadcrumbItem(t, items[2], 3, "guides", "https://example.com/blog/notes/guides/")
 	assertBreadcrumbItem(t, items[3], 4, "Guide", "https://example.com/blog/guide/")
 }
-
-func TestFuncMapExposesTemplateHelpers(t *testing.T) {
-	t.Parallel()
-
-	funcs := FuncMap(model.PageData{
-		Kind: model.PageNote,
-		Site: model.SiteConfig{
-			BaseURL:    "https://example.com/blog/",
-			DefaultImg: "images/og-default.png",
-		},
-		Slug: "notes/guide",
-	}, &model.Note{
-		RelPath: "notes/guide.md",
-		Summary: "Summary from note body.",
-	})
-
-	seoHelper, ok := funcs["seo"].(func() Metadata)
-	if !ok {
-		t.Fatalf("FuncMap missing seo helper")
-	}
-	canonicalHelper, ok := funcs["seoCanonical"].(func() string)
-	if !ok {
-		t.Fatalf("FuncMap missing seoCanonical helper")
-	}
-
-	metadata := seoHelper()
-	if metadata.Canonical != "https://example.com/blog/notes/guide/" {
-		t.Fatalf("seo().Canonical = %q, want %q", metadata.Canonical, "https://example.com/blog/notes/guide/")
-	}
-	if metadata.OG.Image != "https://example.com/blog/images/og-default.png" {
-		t.Fatalf("seo().OG.Image = %q, want %q", metadata.OG.Image, "https://example.com/blog/images/og-default.png")
-	}
-	if got := canonicalHelper(); got != metadata.Canonical {
-		t.Fatalf("seoCanonical() = %q, want %q", got, metadata.Canonical)
-	}
-}

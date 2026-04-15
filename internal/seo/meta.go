@@ -1,7 +1,6 @@
 package seo
 
 import (
-	"html/template"
 	"net/url"
 	"path"
 	"strings"
@@ -79,32 +78,6 @@ func Apply(page *model.PageData, note *model.Note) (Metadata, error) {
 	}
 
 	return metadata, nil
-}
-
-// FuncMap exposes SEO helpers that templates can call without mutating PageData.
-func FuncMap(page model.PageData, note *model.Note) template.FuncMap {
-	metadata := Build(page, note)
-
-	return template.FuncMap{
-		"seo": func() Metadata {
-			return metadata
-		},
-		"seoTitle": func() string {
-			return metadata.Title
-		},
-		"seoDescription": func() string {
-			return metadata.Description
-		},
-		"seoCanonical": func() string {
-			return metadata.Canonical
-		},
-		"seoOpenGraph": func() model.OpenGraph {
-			return metadata.OG
-		},
-		"seoTwitterCard": func() string {
-			return metadata.TwitterCard
-		},
-	}
 }
 
 func pickTitle(page model.PageData, note *model.Note) string {

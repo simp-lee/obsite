@@ -45,6 +45,50 @@ func TestGenerate(t *testing.T) {
 			want:            "hello-world-name",
 		},
 		{
+			name:            "frontmatter slug normalizes decomposed unicode",
+			frontmatterSlug: stringPtr("Cafe\u0301 Notes"),
+			relPath:         "notes/ignored.md",
+			want:            "café-notes",
+		},
+		{
+			name:            "frontmatter slug normalizes composed unicode",
+			frontmatterSlug: stringPtr("Café Notes"),
+			relPath:         "notes/ignored.md",
+			want:            "café-notes",
+		},
+		{
+			name:            "frontmatter slug renormalizes after lowercasing uppercase decomposed unicode",
+			frontmatterSlug: stringPtr("J\u030c Notes"),
+			relPath:         "notes/ignored.md",
+			want:            "ǰ-notes",
+		},
+		{
+			name:            "frontmatter slug matches lowercase precomposed unicode",
+			frontmatterSlug: stringPtr("ǰ Notes"),
+			relPath:         "notes/ignored.md",
+			want:            "ǰ-notes",
+		},
+		{
+			name:    "filename fallback normalizes decomposed unicode",
+			relPath: "notes/Cafe\u0301 Notes.md",
+			want:    "café-notes",
+		},
+		{
+			name:    "filename fallback normalizes composed unicode",
+			relPath: "notes/Café Notes.md",
+			want:    "café-notes",
+		},
+		{
+			name:    "filename fallback renormalizes after lowercasing uppercase decomposed unicode",
+			relPath: "notes/J\u030c Notes.md",
+			want:    "ǰ-notes",
+		},
+		{
+			name:    "filename fallback matches lowercase precomposed unicode",
+			relPath: "notes/ǰ Notes.md",
+			want:    "ǰ-notes",
+		},
+		{
 			name:            "invalid frontmatter slug is rejected",
 			frontmatterSlug: stringPtr("!!!???[]{}"),
 			relPath:         "notes/Fallback Name.md",
@@ -144,5 +188,27 @@ func TestDetectConflictsReportsInvalidEmptySlugs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotInvalid, wantInvalid) {
 		t.Fatalf("DetectConflicts() invalid = %#v, want %#v", gotInvalid, wantInvalid)
+	}
+}
+
+func TestDetectConflictsCanonicalizesUnicodeCase(t *testing.T) {
+	t.Parallel()
+
+	candidates := []Candidate{
+		{Source: "notes/decomposed.md", Slug: "J\u030c"},
+		{Source: "notes/precomposed.md", Slug: "ǰ"},
+	}
+
+	gotConflicts, gotInvalid := DetectConflicts(candidates)
+	wantConflicts := []Conflict{{
+		Slug:    "ǰ",
+		Sources: []string{"notes/decomposed.md", "notes/precomposed.md"},
+	}}
+
+	if !reflect.DeepEqual(gotConflicts, wantConflicts) {
+		t.Fatalf("DetectConflicts() conflicts = %#v, want %#v", gotConflicts, wantConflicts)
+	}
+	if gotInvalid != nil {
+		t.Fatalf("DetectConflicts() invalid = %#v, want nil", gotInvalid)
 	}
 }
