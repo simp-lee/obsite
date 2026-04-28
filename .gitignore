@@ -10,5 +10,7 @@ bin/
 coverage.out
 .coverprofile
 
+.codex
+
 # Local OS files
 .DS_Store
