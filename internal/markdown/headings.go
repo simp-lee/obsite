@@ -5,8 +5,8 @@ import (
 	"io"
 	"strconv"
 	"strings"
-	"unicode"
 
+	"github.com/simp-lee/obsite/internal/markdown/headingid"
 	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
 	gast "github.com/yuin/goldmark/ast"
@@ -157,35 +157,7 @@ func composeWikilinkTarget(target string, fragment string) string {
 }
 
 func normalizeHeadingID(value string) string {
-	value = normalizeHeadingWhitespace(value)
-	if value == "" {
-		return "heading"
-	}
-
-	var builder strings.Builder
-	lastHyphen := false
-
-	for _, r := range strings.ToLower(value) {
-		switch {
-		case isHeadingASCIIControl(r):
-			continue
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			builder.WriteRune(r)
-			lastHyphen = false
-		case unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) || r == '_' || r == '-':
-			if lastHyphen || builder.Len() == 0 {
-				continue
-			}
-			builder.WriteByte('-')
-			lastHyphen = true
-		}
-	}
-
-	normalized := strings.Trim(builder.String(), "-")
-	if normalized == "" {
-		return "heading"
-	}
-	return normalized
+	return headingid.Normalize(value)
 }
 
 func uniqueHeadingID(base string, used map[string]struct{}) string {
@@ -208,15 +180,7 @@ func uniqueHeadingID(base string, used map[string]struct{}) string {
 }
 
 func normalizeHeadingWhitespace(value string) string {
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return ""
-	}
-	return strings.Join(fields, " ")
-}
-
-func isHeadingASCIIControl(r rune) bool {
-	return (r >= 0 && r < 0x20) || r == 0x7f
+	return headingid.NormalizeWhitespace(value)
 }
 
 type headingTextCollector struct {

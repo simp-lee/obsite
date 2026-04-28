@@ -65,11 +65,15 @@ const initConfigTemplate = "" +
 	"  asHomepage: false\n" +
 	"  path: notes\n" +
 	"\n" +
-	"# templateDir optionally points to a directory that overrides embedded templates.\n" +
-	"templateDir:\n" +
+	"# themes optionally declares named build-time themes. themes.<name>.root is resolved relative to this obsite.yaml file unless absolute.\n" +
+	"# themes:\n" +
+	"#   feature:\n" +
+	"#     root: themes/feature\n" +
+	"# defaultTheme selects one of the configured theme names when --theme is omitted.\n" +
+	"# defaultTheme: feature\n" +
 	"\n" +
-	"# customCSS optionally points to a CSS file. When omitted, obsite auto-detects custom.css in the config directory first, then the vault root.\n" +
-	"customCSS:\n"
+	"# Obsite only auto-detects a global override stylesheet at <vault>/custom.css, loaded after the generated site stylesheet.\n" +
+	"# Each selected theme root must provide every required HTML template.\n"
 
 func newInitCommand() *cobra.Command {
 	var vaultPath string

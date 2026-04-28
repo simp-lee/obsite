@@ -1,0 +1,40 @@
+{{define "content-index"}}
+<section class="page-shell landing-page">
+  <header class="page-header intro-block">
+    <p class="page-eyebrow">Index</p>
+    <h1 class="page-title">{{if .Site.Title}}{{.Site.Title}}{{else if .Title}}{{.Title}}{{else}}Notes index{{end}}</h1>
+    <p class="page-deck">{{if .Site.Description}}{{.Site.Description}}{{else if .Description}}{{.Description}}{{else}}A linked notebook of essays, references, and working notes.{{end}}</p>
+    {{if .Site.Author}}<p class="intro-signoff">By {{.Site.Author}}</p>{{end}}
+  </header>
+
+  <section class="support-panel" aria-labelledby="recent-notes-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Fresh reading</p>
+      <h2 id="recent-notes-heading">Recent notes</h2>
+    </div>
+    {{if .RecentNotes}}
+    <ol class="note-list">
+      {{range .RecentNotes}}
+      <li class="note-card">
+        <div class="note-card-main">
+          <h3><a href="{{.URL}}">{{.Title}}</a></h3>
+          {{if not .Date.IsZero}}<time datetime="{{.Date.Format "2006-01-02T15:04:05Z07:00"}}">{{.Date.Format "02 Jan 2006"}}</time>{{end}}
+        </div>
+        {{if .Tags}}
+        <div class="tag-row">
+          {{range .Tags}}
+          <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </li>
+      {{end}}
+    </ol>
+    {{else}}
+    <p class="empty-state">No public notes have been published yet.</p>
+    {{end}}
+  </section>
+
+  {{template "pagination-nav" .}}
+</section>
+{{end}}

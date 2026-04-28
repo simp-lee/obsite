@@ -1,0 +1,7 @@
+{{define "content-tag"}}
+<section data-theme-page="tag">
+  <h1>#{{if .TagName}}{{.TagName}}{{else}}untagged{{end}}</h1>
+  {{range .ChildTags}}<a href="{{.URL}}">#{{.Name}}</a>{{end}}
+  {{range .TagNotes}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
+</section>
+{{end}}

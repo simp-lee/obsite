@@ -1,0 +1,6 @@
+{{define "content-timeline"}}
+<section data-theme-page="timeline">
+  <h1>{{if .Title}}{{.Title}}{{else}}Recent notes{{end}}</h1>
+  {{range .TimelineNotes}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
+</section>
+{{end}}

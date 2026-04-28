@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	internalembed "github.com/simp-lee/obsite/internal/markdown/embed"
 	markdownwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
@@ -80,6 +81,11 @@ func templateAssetNamesForCacheSignature() []string {
 		filtered = append(filtered, name)
 	}
 	return filtered
+}
+
+type themeTemplateSignatureFile struct {
+	relPath string
+	absPath string
 }
 
 type noteRenderSignatureBuilder struct {
@@ -226,60 +232,156 @@ func buildConfigSignature(cfg model.SiteConfig) (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func buildTemplateSignature(templateDir string) (string, error) {
-	trimmedDir := strings.TrimSpace(templateDir)
-	if trimmedDir == "" {
+func buildTemplateSignature(themeName string, themeRoot string, themeAssets []internalrender.ThemeStaticAsset) (string, error) {
+	trimmedRoot := strings.TrimSpace(themeRoot)
+	if trimmedRoot == "" {
 		return buildEmbeddedTemplateSignature()
 	}
 
-	cleanDir := filepath.Clean(trimmedDir)
-	hasher := sha256.New()
-	_, _ = hasher.Write([]byte(cacheSignatureSaltKey))
-	_, _ = hasher.Write([]byte{0})
-	_, _ = hasher.Write([]byte(cleanDir))
-
-	if info, err := os.Stat(cleanDir); err != nil {
+	cleanRoot := filepath.Clean(trimmedRoot)
+	if info, err := os.Stat(cleanRoot); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			_, _ = hasher.Write([]byte{0})
-			_, _ = hasher.Write([]byte(missingTemplateSigKey))
-			return hex.EncodeToString(hasher.Sum(nil)), nil
+			return missingThemeTemplateSignature(themeName, cleanRoot, missingTemplateSigKey), nil
 		}
-		return "", fmt.Errorf("stat template dir %q: %w", cleanDir, err)
+		return "", fmt.Errorf("stat theme root %q: %w", cleanRoot, err)
 	} else if !info.IsDir() {
-		_, _ = hasher.Write([]byte{0})
-		_, _ = hasher.Write([]byte("not-a-directory"))
-		return hex.EncodeToString(hasher.Sum(nil)), nil
+		return missingThemeTemplateSignature(themeName, cleanRoot, "not-a-directory"), nil
 	}
 
-	// The effective template set always starts from embedded defaults; local
-	// overrides only layer on top of that base.
-	embeddedSignature, err := buildEmbeddedTemplateSignature()
+	htmlFiles, err := listThemeTemplateFilesForSignature(cleanRoot)
 	if err != nil {
 		return "", err
 	}
-	_, _ = hasher.Write([]byte{0})
-	_, _ = hasher.Write([]byte(defaultTemplateSigKey))
-	_, _ = hasher.Write([]byte{0})
-	_, _ = hasher.Write([]byte(embeddedSignature))
 
-	for _, name := range templateAssetNamesForCacheSignature() {
-		_, _ = hasher.Write([]byte{0})
-		_, _ = hasher.Write([]byte(name))
+	hasher := newCacheSignatureHasher("theme-templates")
+	cacheHashWriteString(hasher, strings.TrimSpace(themeName))
+	cacheHashWriteString(hasher, cleanRoot)
 
-		data, err := os.ReadFile(filepath.Join(cleanDir, name))
+	for _, file := range htmlFiles {
+		data, err := os.ReadFile(file.absPath)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				_, _ = hasher.Write([]byte{0, 0})
-				continue
-			}
-			return "", fmt.Errorf("read template override %q: %w", filepath.Join(cleanDir, name), err)
+			return "", fmt.Errorf("read theme template %q: %w", file.relPath, err)
 		}
+		cacheHashWriteString(hasher, "html")
+		cacheHashWriteString(hasher, file.relPath)
+		cacheHashWriteString(hasher, string(data))
+	}
 
-		_, _ = hasher.Write([]byte{0, 1})
-		_, _ = hasher.Write(data)
+	stylePath := filepath.Join(cleanRoot, "style.css")
+	styleData, styleFound, err := readThemeStyleSignatureFile(stylePath)
+	if err != nil {
+		return "", err
+	}
+	if styleFound {
+		cacheHashWriteString(hasher, "style.css")
+		cacheHashWriteString(hasher, string(styleData))
+	}
+
+	for _, asset := range sortThemeStaticAssetsForSignature(themeAssets) {
+		data, err := os.ReadFile(asset.SourcePath)
+		if err != nil {
+			return "", fmt.Errorf("read theme static asset %q: %w", asset.ThemeRelativePath, err)
+		}
+		cacheHashWriteString(hasher, "asset")
+		cacheHashWriteString(hasher, strings.TrimSpace(asset.ThemeRelativePath))
+		cacheHashWriteString(hasher, strings.TrimSpace(asset.OutputPath))
+		cacheHashWriteString(hasher, string(data))
 	}
 
 	return hex.EncodeToString(hasher.Sum(nil)), nil
+}
+
+func missingThemeTemplateSignature(themeName string, themeRoot string, marker string) string {
+	hasher := newCacheSignatureHasher("theme-templates")
+	cacheHashWriteString(hasher, strings.TrimSpace(themeName))
+	cacheHashWriteString(hasher, strings.TrimSpace(themeRoot))
+	cacheHashWriteString(hasher, strings.TrimSpace(marker))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func listThemeTemplateFilesForSignature(themeRoot string) ([]themeTemplateSignatureFile, error) {
+	if strings.TrimSpace(themeRoot) == "" {
+		return nil, nil
+	}
+
+	files := make([]themeTemplateSignatureFile, 0, len(internalrender.RequiredHTMLTemplateNames))
+	err := filepath.WalkDir(themeRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk theme root %q: %w", themeRoot, walkErr)
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(themeRoot, currentPath)
+		if err != nil {
+			return fmt.Errorf("relative theme template path %q: %w", currentPath, err)
+		}
+		relPath = filepath.ToSlash(relPath)
+		if !strings.EqualFold(filepath.Ext(relPath), ".html") {
+			return nil
+		}
+
+		resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(currentPath)
+		if err != nil {
+			if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+				return fmt.Errorf("theme HTML template %q must be a regular non-symlink file", currentPath)
+			}
+
+			return fmt.Errorf("stat theme HTML template %q: %w", currentPath, err)
+		}
+
+		files = append(files, themeTemplateSignatureFile{
+			relPath: relPath,
+			absPath: resolvedPath,
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(files, func(i int, j int) bool {
+		return files[i].relPath < files[j].relPath
+	})
+
+	return files, nil
+}
+
+func readThemeStyleSignatureFile(stylePath string) ([]byte, bool, error) {
+	resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(stylePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, false, nil
+		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+			return nil, false, fmt.Errorf("theme stylesheet %q must be a regular non-symlink file", stylePath)
+		}
+		return nil, false, fmt.Errorf("stat theme stylesheet %q: %w", stylePath, err)
+	}
+
+	data, err := os.ReadFile(resolvedPath)
+	if err != nil {
+		return nil, false, fmt.Errorf("read theme stylesheet %q: %w", resolvedPath, err)
+	}
+
+	return data, true, nil
+}
+
+func sortThemeStaticAssetsForSignature(themeAssets []internalrender.ThemeStaticAsset) []internalrender.ThemeStaticAsset {
+	if len(themeAssets) == 0 {
+		return nil
+	}
+
+	ordered := append([]internalrender.ThemeStaticAsset(nil), themeAssets...)
+	sort.Slice(ordered, func(i int, j int) bool {
+		if ordered[i].ThemeRelativePath == ordered[j].ThemeRelativePath {
+			return ordered[i].OutputPath < ordered[j].OutputPath
+		}
+		return ordered[i].ThemeRelativePath < ordered[j].ThemeRelativePath
+	})
+
+	return ordered
 }
 
 func buildEmbeddedTemplateSignature() (string, error) {
@@ -710,7 +812,7 @@ func (b *noteRenderSignatureBuilder) linkSignature(source *model.Note, ref model
 func (b *noteRenderSignatureBuilder) imageSignature(source *model.Note, ref model.ImageRef) string {
 	hasher := newCacheSignatureHasher("note-image")
 	cacheHashWriteString(hasher, strings.TrimSpace(ref.RawTarget))
-	cacheHashWriteString(hasher, b.assetResolutionSignature(source, ref.RawTarget))
+	cacheHashWriteString(hasher, b.assetResolutionSignature(source, ref.RawTarget, false))
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
@@ -720,7 +822,7 @@ func (b *noteRenderSignatureBuilder) embedSignature(source *model.Note, ref mode
 	cacheHashWriteString(hasher, strings.TrimSpace(ref.Fragment))
 
 	if isImageEmbedRef(ref) {
-		cacheHashWriteString(hasher, b.assetResolutionSignature(source, ref.Target))
+		cacheHashWriteString(hasher, b.assetResolutionSignature(source, ref.Target, true))
 		return hex.EncodeToString(hasher.Sum(nil))
 	}
 
@@ -745,18 +847,24 @@ func (b *noteRenderSignatureBuilder) embedSignature(source *model.Note, ref mode
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func (b *noteRenderSignatureBuilder) assetResolutionSignature(source *model.Note, rawDestination string) string {
+func (b *noteRenderSignatureBuilder) assetResolutionSignature(source *model.Note, rawDestination string, imageEmbed bool) string {
 	var idx *model.VaultIndex
 	if b != nil && b.idx != nil {
 		idx = b.idx
 	}
 
-	resolved := resourcepath.ResolveIndexedAssetPath(source, idx, rawDestination)
-	if strings.TrimSpace(resolved) == "" {
-		return "missing-asset"
+	lookup := resourcepath.LookupIndexedAssetPath(source, idx, rawDestination)
+	if imageEmbed {
+		lookup = resourcepath.LookupIndexedImageEmbedAssetPath(source, idx, rawDestination)
+	}
+	hasher := newCacheSignatureHasher("asset-resolution")
+	cacheHashWriteString(hasher, strings.TrimSpace(lookup.Path))
+	cacheHashWriteInt(hasher, len(lookup.Ambiguous))
+	for _, candidate := range lookup.Ambiguous {
+		cacheHashWriteString(hasher, candidate)
 	}
 
-	return resolved
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func isImageEmbedRef(ref model.EmbedRef) bool {

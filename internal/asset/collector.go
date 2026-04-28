@@ -24,9 +24,10 @@ type AssetCollector struct {
 	scanInventoryHook  func() error
 }
 
-// NewCollectorWithResourceFiles creates a collector that reuses a caller-provided
-// resource inventory, typically vault.Scan's ResourceFiles, instead of walking
-// the vault again.
+// NewCollectorWithResourceFiles creates a collector that optionally reuses a
+// caller-provided emitted-resource inventory instead of walking the vault.
+// Passing nil keeps collision planning scoped to indexed assets plus later
+// pass-2 registrations.
 func NewCollectorWithResourceFiles(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, resourceFiles []string) (*AssetCollector, error) {
 	return newCollectorWithReservedPaths(vaultRoot, indexed, reservedOutputPaths, resourceInventoryGroups(resourceFiles), nil)
 }
@@ -249,9 +250,14 @@ func (c *AssetCollector) planGroupLocked(srcPath string) {
 
 func (c *AssetCollector) groupSourcesLocked(groupKey string, srcPath string) []string {
 	inventory := c.inventoryByGroup[groupKey]
-	sources := make(map[string]struct{}, 1+len(c.seededByGroup[groupKey])+len(inventory))
+	sources := make(map[string]struct{}, 1+len(c.assets)+len(c.seededByGroup[groupKey])+len(inventory))
 	if srcPath != "" {
 		sources[srcPath] = struct{}{}
+	}
+	for candidate := range c.assets {
+		if plainAssetKey(candidate) == groupKey {
+			sources[candidate] = struct{}{}
+		}
 	}
 	for _, candidate := range c.seededByGroup[groupKey] {
 		sources[candidate] = struct{}{}

@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
@@ -82,7 +83,7 @@ func (t *paragraphTransformer) Transform(node *gast.Paragraph, reader text.Reade
 			}
 			content.Lines().Append(segment)
 		}
-		callout.AppendChild(callout, content)
+		callout.AppendChild(callout, math.RewriteParagraph(content, reader.Source()))
 	}
 
 	parent.ReplaceChild(parent, node, callout)

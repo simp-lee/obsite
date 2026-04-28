@@ -54,6 +54,20 @@ func TestTokenizeSupportsEnglishCJKAndMixedText(t *testing.T) {
 	}
 }
 
+func TestTokenizeKeepsWhitespaceDelimitedEngineeringTermsIntact(t *testing.T) {
+	t.Parallel()
+
+	got, err := Tokenize("Node.JS C++ snake_case kebab-case path/to/file")
+	if err != nil {
+		t.Fatalf("Tokenize(engineering terms) error = %v", err)
+	}
+
+	want := []string{"node.js", "c++", "snake_case", "kebab-case", "path/to/file"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Tokenize(engineering terms) = %#v, want %#v", got, want)
+	}
+}
+
 func TestTokenizeSupportsEmbeddedDictionaryUnderTrimpath(t *testing.T) {
 	if os.Getenv(trimpathTokenizerChildEnv) == "1" {
 		cjk, err := Tokenize("你好世界")
@@ -310,10 +324,10 @@ func TestRecommenderBoostsSharedTagsAndMutualLinks(t *testing.T) {
 	})
 }
 
-func TestRecommenderRecallsBoostOnlyStructuralMatches(t *testing.T) {
+func TestRecommenderRequiresPositiveBM25ForStructuralBoosts(t *testing.T) {
 	t.Parallel()
 
-	t.Run("shared tags alone can recall and outrank weak lexical matches", func(t *testing.T) {
+	t.Run("shared tags alone do not recall unrelated notes", func(t *testing.T) {
 		idx := testRecommendIndex(
 			testRecommendNote("notes/alpha.md", "alpha", "Alpha", "common consensus quorum leases", "systems"),
 			testRecommendNote("notes/beta.md", "beta", "Beta", "common lexical overlap"),
@@ -334,20 +348,17 @@ func TestRecommenderRecallsBoostOnlyStructuralMatches(t *testing.T) {
 		if betaScore <= 0 {
 			t.Fatalf("Score(alpha, beta) = %v, want positive BM25 baseline for weak lexical match", betaScore)
 		}
-		if gammaScore != sharedTagBoostWeight {
-			t.Fatalf("Score(alpha, gamma) = %v, want shared-tag-only score %v", gammaScore, sharedTagBoostWeight)
-		}
-		if gammaScore <= betaScore {
-			t.Fatalf("Score(alpha, gamma) = %v, want greater than Score(alpha, beta) = %v so boost-only candidates can compete", gammaScore, betaScore)
+		if gammaScore != 0 {
+			t.Fatalf("Score(alpha, gamma) = %v, want zero without BM25 baseline", gammaScore)
 		}
 
 		related := recommender.Related(alpha, 2)
-		if got := relatedRelPaths(related); !reflect.DeepEqual(got, []string{"notes/gamma.md", "notes/beta.md"}) {
-			t.Fatalf("Related(alpha) paths = %#v, want %#v", got, []string{"notes/gamma.md", "notes/beta.md"})
+		if got := relatedRelPaths(related); !reflect.DeepEqual(got, []string{"notes/beta.md", "notes/delta.md"}) {
+			t.Fatalf("Related(alpha) paths = %#v, want %#v", got, []string{"notes/beta.md", "notes/delta.md"})
 		}
 	})
 
-	t.Run("mutual wikilinks alone can recall unrelated notes", func(t *testing.T) {
+	t.Run("mutual wikilinks alone do not recall unrelated notes", func(t *testing.T) {
 		idx := testRecommendIndex(
 			testRecommendNote("notes/alpha.md", "alpha", "Alpha", "orchard pruning espalier trellis"),
 			testRecommendNote("notes/beta.md", "beta", "Beta", "vector databases embedding recall latency"),
@@ -371,16 +382,16 @@ func TestRecommenderRecallsBoostOnlyStructuralMatches(t *testing.T) {
 
 		alpha := idx.Notes["notes/alpha.md"]
 		beta := idx.Notes["notes/beta.md"]
-		if got := scoreRelatedPairForTest(recommender, alpha, beta); got != mutualWikilinkBoost {
-			t.Fatalf("Score(alpha, beta) = %v, want mutual-wikilink-only score %v", got, mutualWikilinkBoost)
+		if got := scoreRelatedPairForTest(recommender, alpha, beta); got != 0 {
+			t.Fatalf("Score(alpha, beta) = %v, want zero without BM25 baseline", got)
 		}
-		if got := relatedRelPaths(recommender.Related(alpha, 1)); !reflect.DeepEqual(got, []string{"notes/beta.md"}) {
-			t.Fatalf("Related(alpha) paths = %#v, want %#v", got, []string{"notes/beta.md"})
+		if got := relatedRelPaths(recommender.Related(alpha, 1)); len(got) != 0 {
+			t.Fatalf("Related(alpha) paths = %#v, want no zero-BM25 recall", got)
 		}
 	})
 }
 
-func TestRecommenderCandidateSetIncludesBoostOnlyDocs(t *testing.T) {
+func TestRecommenderCandidateSetExcludesBoostOnlyDocs(t *testing.T) {
 	t.Parallel()
 
 	idx := testRecommendIndex(
@@ -407,8 +418,8 @@ func TestRecommenderCandidateSetIncludesBoostOnlyDocs(t *testing.T) {
 	}
 
 	queryProfile := recommender.docMap["notes/alpha.md"]
-	if got := recommender.relatedCandidatePaths(queryProfile); !reflect.DeepEqual(got, []string{"notes/beta.md", "notes/delta.md", "notes/gamma.md"}) {
-		t.Fatalf("relatedCandidatePaths(alpha) = %#v, want BM25, shared-tag, and mutual-link candidates", got)
+	if got := recommender.relatedCandidatePaths(queryProfile); !reflect.DeepEqual(got, []string{"notes/beta.md"}) {
+		t.Fatalf("relatedCandidatePaths(alpha) = %#v, want only BM25 candidates", got)
 	}
 }
 

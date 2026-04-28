@@ -61,6 +61,68 @@ func TestResolveIndexedAssetPathSupportsDecodedAndAttachmentFolderTargets(t *tes
 	}
 }
 
+func TestResolveIndexedAssetPathKeepsExplicitRelativeMissesUnresolved(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"poster.png":        {SrcPath: "poster.png"},
+			"images/poster.png": {SrcPath: "images/poster.png"},
+		},
+	}
+
+	for _, target := range []string{"./poster.png", "images/poster.png"} {
+		target := target
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+
+			lookup := LookupIndexedAssetPath(note, idx, target)
+			if lookup.Path != "" {
+				t.Fatalf("LookupIndexedAssetPath(%q).Path = %q, want empty when note-relative lookup misses", target, lookup.Path)
+			}
+			if len(lookup.Ambiguous) != 0 {
+				t.Fatalf("LookupIndexedAssetPath(%q).Ambiguous = %#v, want no fallback ambiguity", target, lookup.Ambiguous)
+			}
+			if got := ResolveIndexedAssetPath(note, idx, target); got != "" {
+				t.Fatalf("ResolveIndexedAssetPath(%q) = %q, want empty when explicit relative lookup misses", target, got)
+			}
+		})
+	}
+}
+
+func TestLookupIndexedImageEmbedAssetPathSupportsVaultRelativeSlashPathFallback(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/deep/current.md"}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"assets/diagram.png": {SrcPath: "assets/diagram.png"},
+		},
+	}
+
+	if got := ResolveIndexedAssetPath(note, idx, "assets/diagram.png"); got != "" {
+		t.Fatalf("ResolveIndexedAssetPath(%q) = %q, want empty so non-embed resource lookup semantics stay unchanged", "assets/diagram.png", got)
+	}
+
+	lookup := LookupIndexedImageEmbedAssetPath(note, idx, "assets/diagram.png")
+	if lookup.Path != "assets/diagram.png" {
+		t.Fatalf("LookupIndexedImageEmbedAssetPath(%q).Path = %q, want %q", "assets/diagram.png", lookup.Path, "assets/diagram.png")
+	}
+	if len(lookup.Ambiguous) != 0 {
+		t.Fatalf("LookupIndexedImageEmbedAssetPath(%q).Ambiguous = %#v, want no ambiguity", "assets/diagram.png", lookup.Ambiguous)
+	}
+	if got := ResolveIndexedImageEmbedAssetPath(note, idx, "assets/diagram.png"); got != "assets/diagram.png" {
+		t.Fatalf("ResolveIndexedImageEmbedAssetPath(%q) = %q, want %q", "assets/diagram.png", got, "assets/diagram.png")
+	}
+	if got := ResolveIndexedImageEmbedAssetPath(note, idx, "./diagram.png"); got != "" {
+		t.Fatalf("ResolveIndexedImageEmbedAssetPath(%q) = %q, want empty when explicit relative targets miss", "./diagram.png", got)
+	}
+	if got := ResolveIndexedImageEmbedAssetPath(note, idx, "../assets/diagram.png"); got != "" {
+		t.Fatalf("ResolveIndexedImageEmbedAssetPath(%q) = %q, want empty when parent-relative targets miss", "../assets/diagram.png", got)
+	}
+}
+
 func TestResolveIndexedAssetPathCanonicalizesUnicodeLookupKeys(t *testing.T) {
 	t.Parallel()
 

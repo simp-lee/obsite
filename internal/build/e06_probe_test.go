@@ -2,7 +2,10 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,6 +14,7 @@ import (
 	"time"
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 type e06RenderCalls struct {
@@ -61,6 +65,25 @@ type e06ProbeReport struct {
 		MutationStableFiles  []string `json:"mutationStableFiles"`
 		MutationManifestDiff []string `json:"mutationManifestDiff"`
 	} `json:"monitored"`
+	ThemeSwitch e06ThemeSwitchProbeReport `json:"themeSwitch,omitempty"`
+}
+
+type e06ThemeSwitchProbeReport struct {
+	ComparedFiles          []string            `json:"comparedFiles,omitempty"`
+	AlphaBaseline          e06BuildObservation `json:"alphaBaseline"`
+	AlphaToBeta            e06BuildObservation `json:"alphaToBeta"`
+	AlphaToEmbeddedDefault e06BuildObservation `json:"alphaToEmbeddedDefault"`
+	ArtifactChecks         struct {
+		AlphaToBetaStyleChanged                  bool `json:"alphaToBetaStyleChanged"`
+		AlphaToBetaThemeAssetsChanged            bool `json:"alphaToBetaThemeAssetsChanged"`
+		AlphaToEmbeddedDefaultStyleChanged       bool `json:"alphaToEmbeddedDefaultStyleChanged"`
+		AlphaToEmbeddedDefaultThemeAssetsChanged bool `json:"alphaToEmbeddedDefaultThemeAssetsChanged"`
+	} `json:"artifactChecks"`
+}
+
+type e06OutputSnapshot struct {
+	Exists bool
+	Data   []byte
 }
 
 func TestScopeE06FeatureVaultProbe(t *testing.T) {
@@ -84,11 +107,6 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 		t.Fatalf("copyFixtureVaultToPath() error = %v", err)
 	}
 
-	pagefindPath := filepath.Join(vaultPath, "tools", "pagefind_extended")
-	if err := os.Chmod(pagefindPath, 0o755); err != nil {
-		t.Fatalf("os.Chmod(%q) error = %v", pagefindPath, err)
-	}
-
 	configPath := filepath.Join(vaultPath, "obsite.yaml")
 	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
 	if err != nil {
@@ -97,10 +115,7 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 	cfg := loadedCfg.Config
 
 	var baselineDiagnostics bytes.Buffer
-	baselineResult, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
-		concurrency:       2,
-		diagnosticsWriter: &baselineDiagnostics,
-	})
+	baselineResult, err := buildWithOptions(cfg, vaultPath, outputPath, e06FeatureVaultBuildOptions(t, cfg, &baselineDiagnostics))
 	if err != nil {
 		t.Fatalf("first buildWithOptions() error = %v", err)
 	}
@@ -167,10 +182,7 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 		getRenderedTimelinePaths := captureRenderedTimelinePagePaths(t)
 
 		var diagnostics bytes.Buffer
-		result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
-			concurrency:       2,
-			diagnosticsWriter: &diagnostics,
-		})
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, e06FeatureVaultBuildOptions(t, cfg, &diagnostics))
 		if err != nil {
 			t.Fatalf("second buildWithOptions() error = %v", err)
 		}
@@ -226,10 +238,7 @@ Archive entry captures a focused incremental rebuild probe with lighthouse ledge
 		getRenderedTimelinePaths := captureRenderedTimelinePagePaths(t)
 
 		var diagnostics bytes.Buffer
-		result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
-			concurrency:       2,
-			diagnosticsWriter: &diagnostics,
-		})
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, e06FeatureVaultBuildOptions(t, cfg, &diagnostics))
 		if err != nil {
 			t.Fatalf("third buildWithOptions() error = %v", err)
 		}
@@ -271,9 +280,291 @@ Archive entry captures a focused incremental rebuild probe with lighthouse ledge
 		report.ContentChecks.NotesPageThreeHasArchiveLink = bytesContainsAny(notesPageThreeHTML, []byte(`href="../../../archive/"`), []byte(`href=../../../archive/`))
 	})
 
+	report.ThemeSwitch = runE06ThemeSwitchProbe(t, workRoot)
+
 	if err := writeE06ProbeReport(reportPath, report); err != nil {
 		t.Fatalf("writeE06ProbeReport(%q) error = %v", reportPath, err)
 	}
+}
+
+func e06FeatureVaultBuildOptions(t *testing.T, cfg model.SiteConfig, diagnosticsWriter io.Writer) buildOptions {
+	t.Helper()
+
+	return buildOptions{
+		concurrency:       2,
+		diagnosticsWriter: diagnosticsWriter,
+		pagefindLookPath: func(name string) (string, error) {
+			if name != cfg.Search.PagefindPath {
+				t.Fatalf("pagefindLookPath() name = %q, want %q", name, cfg.Search.PagefindPath)
+			}
+			return "/usr/local/bin/pagefind_extended", nil
+		},
+		pagefindCommand: func(name string, args ...string) ([]byte, error) {
+			if name != "/usr/local/bin/pagefind_extended" {
+				t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
+			}
+			if len(args) == 1 && args[0] == "--version" {
+				return []byte("pagefind_extended 1.5.2\n"), nil
+			}
+			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
+				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
+			}
+
+			bundlePath := filepath.Join(args[1], pagefindOutputSubdir)
+			writeMinimalPagefindBundle(t, bundlePath)
+			writeBuildTestFile(t, bundlePath, "pagefind-entry.json", fmt.Sprintf(
+				`{"version":"1.5.2","e06Digest":"%s","languages":{"en":{"hash":"en-test","page_count":1}}}`,
+				e06PagefindContentDigest(t, args[1]),
+			))
+			return []byte("Indexed 10 pages\n"), nil
+		},
+	}
+}
+
+func e06PagefindContentDigest(t *testing.T, sitePath string) string {
+	t.Helper()
+
+	hasher := sha256.New()
+	relPaths := make([]string, 0, 16)
+	pagefindRoot := filepath.Join(sitePath, pagefindOutputSubdir)
+	err := filepath.Walk(sitePath, func(currentPath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info == nil {
+			return nil
+		}
+		if info.IsDir() {
+			if filepath.Clean(currentPath) == filepath.Clean(pagefindRoot) {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(filepath.Ext(currentPath), ".html") {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(sitePath, currentPath)
+		if err != nil {
+			return err
+		}
+		relPaths = append(relPaths, filepath.ToSlash(relPath))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("filepath.Walk(%q) error = %v", sitePath, err)
+	}
+
+	sort.Strings(relPaths)
+	for _, relPath := range relPaths {
+		absPath := filepath.Join(sitePath, filepath.FromSlash(relPath))
+		data, err := os.ReadFile(absPath)
+		if err != nil {
+			t.Fatalf("os.ReadFile(%q) error = %v", absPath, err)
+		}
+		_, _ = hasher.Write([]byte(relPath))
+		_, _ = hasher.Write([]byte{0})
+		_, _ = hasher.Write(data)
+		_, _ = hasher.Write([]byte{0})
+	}
+
+	return fmt.Sprintf("%x", hasher.Sum(nil))
+}
+
+func runE06ThemeSwitchProbe(t *testing.T, workRoot string) e06ThemeSwitchProbeReport {
+	t.Helper()
+
+	themeWorkRoot := filepath.Join(workRoot, "theme-switch")
+	vaultPath := filepath.Join(themeWorkRoot, "vault")
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+	const (
+		alphaAssetRelPath = "assets/theme/nested/alpha/theme-marker.txt"
+		betaAssetRelPath  = "assets/theme/nested/beta/theme-marker.txt"
+	)
+	comparedFiles := []string{
+		"switchboard/index.html",
+		"style.css",
+		alphaAssetRelPath,
+		betaAssetRelPath,
+	}
+
+	if err := copyFixtureVaultToPath("theme-switch-vault", vaultPath); err != nil {
+		t.Fatalf("copyFixtureVaultToPath(theme-switch-vault) error = %v", err)
+	}
+
+	loadCfg := func(t *testing.T, theme string) model.SiteConfig {
+		t.Helper()
+
+		overrides := internalconfig.Overrides{VaultPath: vaultPath}
+		if trimmedTheme := strings.TrimSpace(theme); trimmedTheme != "" {
+			overrides.Theme = trimmedTheme
+		}
+
+		loadedCfg, err := internalconfig.LoadForBuild(configPath, overrides)
+		if err != nil {
+			t.Fatalf("config.LoadForBuild(%q, theme=%q) error = %v", configPath, theme, err)
+		}
+
+		cfg := loadedCfg.Config
+		cfg.Search.Enabled = false
+		return cfg
+	}
+
+	runBuild := func(t *testing.T, label string, cfg model.SiteConfig, outputPath string) e06BuildObservation {
+		t.Helper()
+
+		var diagnostics bytes.Buffer
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{concurrency: 2, diagnosticsWriter: &diagnostics})
+		if err != nil {
+			t.Fatalf("%s buildWithOptions() error = %v", label, err)
+		}
+		if result == nil {
+			t.Fatalf("%s buildWithOptions() = nil result", label)
+		}
+		if result.NotePages != 2 {
+			t.Fatalf("%s result.NotePages = %d, want %d", label, result.NotePages, 2)
+		}
+		if strings.TrimSpace(diagnostics.String()) != "" {
+			t.Fatalf("%s diagnostics summary = %q, want empty summary", label, diagnostics.String())
+		}
+
+		return e06BuildObservation{
+			NotePages:   result.NotePages,
+			Diagnostics: strings.TrimSpace(diagnostics.String()),
+		}
+	}
+
+	assertAlphaHTML := func(t *testing.T, outputPath string) {
+		t.Helper()
+
+		alphaHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, snippets := range [][]byte{
+			[]byte(`data-theme-shell="alpha-shell"`),
+			[]byte(`data-theme-note="alpha-note"`),
+			[]byte(`href="../assets/theme/nested/alpha/theme-marker.txt"`),
+		} {
+			if !bytesContainsAny(alphaHTML, snippets, bytes.ReplaceAll(snippets, []byte(`"`), nil)) {
+				t.Fatalf("alpha switchboard missing marker %q\n%s", snippets, alphaHTML)
+			}
+		}
+		alphaStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if !bytesContainsAny(alphaStyle, []byte("--theme-switch-marker: alpha"), []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("style.css missing alpha marker\n%s", alphaStyle)
+		}
+		alphaAsset := readBuildOutputFile(t, outputPath, alphaAssetRelPath)
+		if !bytes.Contains(alphaAsset, []byte("alpha asset marker")) {
+			t.Fatalf("%s missing alpha marker\n%s", alphaAssetRelPath, alphaAsset)
+		}
+	}
+
+	assertBetaOutputs := func(t *testing.T, outputPath string) {
+		t.Helper()
+
+		betaHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, snippets := range [][]byte{
+			[]byte(`data-theme-shell="beta-shell"`),
+			[]byte(`data-theme-note="beta-note"`),
+			[]byte(`href="../assets/theme/nested/beta/theme-marker.txt"`),
+		} {
+			if !bytesContainsAny(betaHTML, snippets, bytes.ReplaceAll(snippets, []byte(`"`), nil)) {
+				t.Fatalf("beta switchboard missing marker %q\n%s", snippets, betaHTML)
+			}
+		}
+		for _, forbidden := range []string{"alpha-shell", "alpha-note", `../assets/theme/nested/alpha/theme-marker.txt`} {
+			if bytes.Contains(betaHTML, []byte(forbidden)) {
+				t.Fatalf("beta switchboard retained alpha marker %q\n%s", forbidden, betaHTML)
+			}
+		}
+		betaStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if !bytesContainsAny(betaStyle, []byte("--theme-switch-marker: beta"), []byte("--theme-switch-marker:beta")) {
+			t.Fatalf("style.css missing beta marker\n%s", betaStyle)
+		}
+		if bytesContainsAny(betaStyle, []byte("--theme-switch-marker: alpha"), []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("style.css retained alpha marker after beta rebuild\n%s", betaStyle)
+		}
+		betaAsset := readBuildOutputFile(t, outputPath, betaAssetRelPath)
+		if !bytes.Contains(betaAsset, []byte("beta asset marker")) {
+			t.Fatalf("%s missing beta marker\n%s", betaAssetRelPath, betaAsset)
+		}
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(alphaAssetRelPath)))
+	}
+
+	assertEmbeddedDefaultOutputs := func(t *testing.T, outputPath string) {
+		t.Helper()
+
+		defaultHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, forbidden := range []string{"alpha-shell", "alpha-note", `../assets/theme/nested/alpha/theme-marker.txt`} {
+			if bytes.Contains(defaultHTML, []byte(forbidden)) {
+				t.Fatalf("embedded default switchboard retained alpha marker %q\n%s", forbidden, defaultHTML)
+			}
+		}
+		if !bytesContainsAny(defaultHTML, []byte(`href="../assets/custom.css"`), []byte(`href=../assets/custom.css`)) {
+			t.Fatalf("embedded default switchboard missing vault custom.css link\n%s", defaultHTML)
+		}
+		defaultStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if bytesContainsAny(defaultStyle, []byte("--theme-switch-marker: alpha"), []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("embedded default style.css retained alpha marker\n%s", defaultStyle)
+		}
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(alphaAssetRelPath)))
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(betaAssetRelPath)))
+	}
+
+	report := e06ThemeSwitchProbeReport{}
+	report.ComparedFiles = append([]string(nil), comparedFiles...)
+
+	t.Run("theme-switch alpha to beta", func(t *testing.T) {
+		outputPath := filepath.Join(themeWorkRoot, "site-alpha-beta")
+		alphaCfg := loadCfg(t, "alpha")
+		report.AlphaBaseline = runBuild(t, "theme alpha baseline", alphaCfg, outputPath)
+		assertAlphaHTML(t, outputPath)
+		alphaSnapshot := snapshotOptionalOutputFiles(t, outputPath, comparedFiles)
+
+		betaCfg := loadCfg(t, "beta")
+		report.AlphaToBeta = runBuild(t, "theme beta rebuild", betaCfg, outputPath)
+		assertBetaOutputs(t, outputPath)
+		changedFiles, stableFiles := diffOptionalSnapshotFiles(alphaSnapshot, snapshotOptionalOutputFiles(t, outputPath, comparedFiles))
+		report.AlphaToBeta.FileChanged = changedFiles
+		report.AlphaToBeta.FileStable = stableFiles
+		report.ArtifactChecks.AlphaToBetaStyleChanged = slicesContainsString(changedFiles, "style.css")
+		report.ArtifactChecks.AlphaToBetaThemeAssetsChanged = slicesContainsString(changedFiles, alphaAssetRelPath) && slicesContainsString(changedFiles, betaAssetRelPath)
+		if !report.ArtifactChecks.AlphaToBetaStyleChanged {
+			t.Fatalf("theme alpha->beta snapshot diff did not include style.css\nchanged=%#v\nstable=%#v", changedFiles, stableFiles)
+		}
+		if !report.ArtifactChecks.AlphaToBetaThemeAssetsChanged {
+			t.Fatalf("theme alpha->beta snapshot diff did not include both theme asset changes\nchanged=%#v\nstable=%#v", changedFiles, stableFiles)
+		}
+	})
+
+	t.Run("theme-switch alpha to embedded default", func(t *testing.T) {
+		outputPath := filepath.Join(themeWorkRoot, "site-alpha-default")
+		alphaCfg := loadCfg(t, "alpha")
+		runBuild(t, "theme alpha baseline for embedded default", alphaCfg, outputPath)
+		assertAlphaHTML(t, outputPath)
+		alphaSnapshot := snapshotOptionalOutputFiles(t, outputPath, comparedFiles)
+
+		defaultCfg := loadCfg(t, "")
+		if defaultCfg.ActiveThemeName != "" {
+			t.Fatalf("defaultCfg.ActiveThemeName = %q, want empty string", defaultCfg.ActiveThemeName)
+		}
+		if defaultCfg.ThemeRoot != "" {
+			t.Fatalf("defaultCfg.ThemeRoot = %q, want empty string", defaultCfg.ThemeRoot)
+		}
+		report.AlphaToEmbeddedDefault = runBuild(t, "embedded default rebuild", defaultCfg, outputPath)
+		assertEmbeddedDefaultOutputs(t, outputPath)
+		changedFiles, stableFiles := diffOptionalSnapshotFiles(alphaSnapshot, snapshotOptionalOutputFiles(t, outputPath, comparedFiles))
+		report.AlphaToEmbeddedDefault.FileChanged = changedFiles
+		report.AlphaToEmbeddedDefault.FileStable = stableFiles
+		report.ArtifactChecks.AlphaToEmbeddedDefaultStyleChanged = slicesContainsString(changedFiles, "style.css")
+		report.ArtifactChecks.AlphaToEmbeddedDefaultThemeAssetsChanged = slicesContainsString(changedFiles, alphaAssetRelPath)
+		if !report.ArtifactChecks.AlphaToEmbeddedDefaultStyleChanged {
+			t.Fatalf("theme alpha->embedded-default snapshot diff did not include style.css\nchanged=%#v\nstable=%#v", changedFiles, stableFiles)
+		}
+		if !report.ArtifactChecks.AlphaToEmbeddedDefaultThemeAssetsChanged {
+			t.Fatalf("theme alpha->embedded-default snapshot diff did not include theme asset removal\nchanged=%#v\nstable=%#v", changedFiles, stableFiles)
+		}
+	})
+
+	return report
 }
 
 func copyFixtureVaultToPath(fixtureName string, dstRoot string) error {
@@ -334,6 +625,27 @@ func subsetSnapshot(snapshot map[string][]byte, relPaths []string) map[string][]
 	return filtered
 }
 
+func snapshotOptionalOutputFiles(t *testing.T, outputRoot string, relPaths []string) map[string]e06OutputSnapshot {
+	t.Helper()
+
+	snapshot := make(map[string]e06OutputSnapshot, len(relPaths))
+	for _, relPath := range relPaths {
+		absPath := filepath.Join(outputRoot, filepath.FromSlash(relPath))
+		if _, err := os.Stat(absPath); err != nil {
+			if os.IsNotExist(err) {
+				snapshot[relPath] = e06OutputSnapshot{}
+				continue
+			}
+			t.Fatalf("os.Stat(%q) error = %v", absPath, err)
+		}
+		snapshot[relPath] = e06OutputSnapshot{
+			Exists: true,
+			Data:   append([]byte(nil), readBuildOutputFile(t, outputRoot, relPath)...),
+		}
+	}
+	return snapshot
+}
+
 func diffSnapshotFiles(left map[string][]byte, right map[string][]byte) ([]string, []string) {
 	changed := make([]string, 0, len(right))
 	stable := make([]string, 0, len(right))
@@ -343,6 +655,31 @@ func diffSnapshotFiles(left map[string][]byte, right map[string][]byte) ([]strin
 			continue
 		}
 		changed = append(changed, relPath)
+	}
+	sort.Strings(changed)
+	sort.Strings(stable)
+	return changed, stable
+}
+
+func diffOptionalSnapshotFiles(left map[string]e06OutputSnapshot, right map[string]e06OutputSnapshot) ([]string, []string) {
+	keySet := make(map[string]struct{}, len(left)+len(right))
+	for key := range left {
+		keySet[key] = struct{}{}
+	}
+	for key := range right {
+		keySet[key] = struct{}{}
+	}
+
+	changed := make([]string, 0, len(keySet))
+	stable := make([]string, 0, len(keySet))
+	for key := range keySet {
+		leftSnapshot := left[key]
+		rightSnapshot := right[key]
+		if leftSnapshot.Exists == rightSnapshot.Exists && bytes.Equal(leftSnapshot.Data, rightSnapshot.Data) {
+			stable = append(stable, key)
+			continue
+		}
+		changed = append(changed, key)
 	}
 	sort.Strings(changed)
 	sort.Strings(stable)
@@ -375,6 +712,15 @@ func diffManifestPages(left map[string]string, right map[string]string) ([]strin
 func bytesContainsAny(data []byte, needles ...[]byte) bool {
 	for _, needle := range needles {
 		if bytes.Contains(data, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func slicesContainsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

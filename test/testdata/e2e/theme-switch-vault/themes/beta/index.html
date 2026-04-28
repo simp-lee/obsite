@@ -1,0 +1,6 @@
+{{define "content-index"}}
+<section data-theme-page="index">
+  <h1>{{if .Site.Title}}{{.Site.Title}}{{else}}Index{{end}}</h1>
+  {{range .RecentNotes}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
+</section>
+{{end}}

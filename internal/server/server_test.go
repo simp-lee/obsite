@@ -304,6 +304,86 @@ func TestServerRejectsUNCStylePreviewRequestsBeforeCanonicalization(t *testing.T
 	}
 }
 
+func TestServerRejectsSymlinkedPathsEscapingOutputRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		requestPath  string
+		wantLeakText string
+		setup        func(t *testing.T, outputPath string, outsideRoot string)
+	}{
+		{
+			name:         "file symlink",
+			requestPath:  "/escape.txt",
+			wantLeakText: "outside secret file",
+			setup: func(t *testing.T, outputPath string, outsideRoot string) {
+				t.Helper()
+
+				targetPath := filepath.Join(outsideRoot, "secret.txt")
+				if err := os.WriteFile(targetPath, []byte("outside secret file"), 0o644); err != nil {
+					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
+				}
+
+				linkPath := filepath.Join(outputPath, "escape.txt")
+				if err := os.Symlink(targetPath, linkPath); err != nil {
+					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
+				}
+			},
+		},
+		{
+			name:         "directory symlink",
+			requestPath:  "/escape-dir/",
+			wantLeakText: "outside directory index",
+			setup: func(t *testing.T, outputPath string, outsideRoot string) {
+				t.Helper()
+
+				targetDir := filepath.Join(outsideRoot, "outside-dir")
+				if err := os.MkdirAll(targetDir, 0o755); err != nil {
+					t.Fatalf("os.MkdirAll(%q) error = %v", targetDir, err)
+				}
+				writeServerTestFile(t, targetDir, "index.html", "<html><body>outside directory index</body></html>")
+
+				linkPath := filepath.Join(outputPath, "escape-dir")
+				if err := os.Symlink(targetDir, linkPath); err != nil {
+					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetDir, linkPath, err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			outputPath := t.TempDir()
+			outsideRoot := t.TempDir()
+			tt.setup(t, outputPath, outsideRoot)
+
+			srv, err := New(outputPath, DefaultPort)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			ts := httptest.NewServer(srv)
+			t.Cleanup(ts.Close)
+
+			resp, err := ts.Client().Get(ts.URL + tt.requestPath)
+			if err != nil {
+				t.Fatalf("GET %s error = %v", tt.requestPath, err)
+			}
+			defer closeServerResponseBody(t, resp)
+
+			if resp.StatusCode != http.StatusNotFound {
+				t.Fatalf("GET %s status = %d, want %d", tt.requestPath, resp.StatusCode, http.StatusNotFound)
+			}
+
+			if body := readServerResponseBody(t, resp); strings.Contains(body, tt.wantLeakText) {
+				t.Fatalf("GET %s body = %q, do not want leaked target content", tt.requestPath, body)
+			}
+		})
+	}
+}
+
 func TestServerNestedMissingPathUsesSiteRootForFallbackLinks(t *testing.T) {
 	t.Parallel()
 
@@ -724,6 +804,102 @@ func TestServerInjectsLiveReloadScriptIntoHTMLResponsesOnly(t *testing.T) {
 	}
 }
 
+func TestServerWatchModeKeepsInjectedHTMLHeadAndGetHeadersAligned(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "alpha/index.html", "<html><body>alpha page</body></html>")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	srv.EnableLiveReload()
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	getResp, err := ts.Client().Get(ts.URL + "/alpha/")
+	if err != nil {
+		t.Fatalf("GET /alpha/ error = %v", err)
+	}
+	defer closeServerResponseBody(t, getResp)
+
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /alpha/ status = %d, want %d", getResp.StatusCode, http.StatusOK)
+	}
+	getBody := readServerResponseBody(t, getResp)
+	if !strings.Contains(getBody, "alpha page") {
+		t.Fatalf("GET /alpha/ body = %q, want original page content", getBody)
+	}
+	if !strings.Contains(getBody, "data-obsite-livereload") {
+		t.Fatalf("GET /alpha/ body = %q, want live reload injection", getBody)
+	}
+	if got := getResp.Header.Get("Accept-Ranges"); got != "" {
+		t.Fatalf("GET /alpha/ Accept-Ranges = %q, want empty after injection", got)
+	}
+	if got := getResp.Header.Get("Content-Range"); got != "" {
+		t.Fatalf("GET /alpha/ Content-Range = %q, want empty after injection", got)
+	}
+
+	headReq, err := http.NewRequest(http.MethodHead, ts.URL+"/alpha/", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(HEAD /alpha/) error = %v", err)
+	}
+	headResp, err := ts.Client().Do(headReq)
+	if err != nil {
+		t.Fatalf("HEAD /alpha/ error = %v", err)
+	}
+	defer closeServerResponseBody(t, headResp)
+
+	assertServerHeadMatchesInjectedGet(t, getResp, getBody, headResp)
+}
+
+func TestServerWatchModeKeepsCustom404HeadAndGetHeadersAligned(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "404.html", "<html><body>custom missing page</body></html>")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	srv.EnableLiveReload()
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	getResp, err := ts.Client().Get(ts.URL + "/missing/path")
+	if err != nil {
+		t.Fatalf("GET /missing/path error = %v", err)
+	}
+	defer closeServerResponseBody(t, getResp)
+
+	if getResp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET /missing/path status = %d, want %d", getResp.StatusCode, http.StatusNotFound)
+	}
+	getBody := readServerResponseBody(t, getResp)
+	if !strings.Contains(getBody, "custom missing page") {
+		t.Fatalf("GET /missing/path body = %q, want custom 404 content", getBody)
+	}
+	if !strings.Contains(getBody, "data-obsite-livereload") {
+		t.Fatalf("GET /missing/path body = %q, want live reload injection", getBody)
+	}
+
+	headReq, err := http.NewRequest(http.MethodHead, ts.URL+"/missing/path", nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(HEAD /missing/path) error = %v", err)
+	}
+	headResp, err := ts.Client().Do(headReq)
+	if err != nil {
+		t.Fatalf("HEAD /missing/path error = %v", err)
+	}
+	defer closeServerResponseBody(t, headResp)
+
+	assertServerHeadMatchesInjectedGet(t, getResp, getBody, headResp)
+}
+
 func TestServerInjectsLiveReloadScriptWhenPageMentionsMarkerText(t *testing.T) {
 	t.Parallel()
 
@@ -981,4 +1157,30 @@ func resolveServerPreviewHref(t *testing.T, requestPath string, baseHref string,
 	}
 
 	return baseURL.ResolveReference(parsedHref).EscapedPath()
+}
+
+func assertServerHeadMatchesInjectedGet(t *testing.T, getResp *http.Response, getBody string, headResp *http.Response) {
+	t.Helper()
+
+	if getResp == nil {
+		t.Fatal("getResp = nil, want GET response")
+	}
+	if headResp == nil {
+		t.Fatal("headResp = nil, want HEAD response")
+	}
+	if headResp.StatusCode != getResp.StatusCode {
+		t.Fatalf("HEAD status = %d, want GET status %d", headResp.StatusCode, getResp.StatusCode)
+	}
+	if got := getResp.Header.Get("Content-Length"); got != fmt.Sprint(len(getBody)) {
+		t.Fatalf("GET Content-Length = %q, want %q", got, fmt.Sprint(len(getBody)))
+	}
+	if body := readServerResponseBody(t, headResp); body != "" {
+		t.Fatalf("HEAD body = %q, want empty body", body)
+	}
+
+	for _, headerName := range []string{"Content-Type", "Content-Length", "Accept-Ranges", "Content-Range"} {
+		if got, want := headResp.Header.Get(headerName), getResp.Header.Get(headerName); got != want {
+			t.Fatalf("HEAD %s = %q, want GET %s %q", headerName, got, headerName, want)
+		}
+	}
 }

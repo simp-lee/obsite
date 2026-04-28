@@ -239,8 +239,14 @@ func (r *wikilinkHTMLRenderer) renderEmbed(
 		return gast.WalkSkipChildren, nil
 	}
 
-	if assetPath := r.resolveImageAssetPath(target); assetPath != "" {
-		r.renderImageEmbed(w, source, node, assetPath)
+	assetLookup := r.lookupImageAssetPath(target)
+	if assetLookup.Path != "" {
+		r.renderImageEmbed(w, source, node, assetLookup.Path)
+		return gast.WalkSkipChildren, nil
+	}
+	if len(assetLookup.Ambiguous) > 0 {
+		r.recordAmbiguousAsset(ref, rawTarget, assetLookup.Ambiguous)
+		r.renderEmbedFallbackText(w, ref, rawTarget)
 		return gast.WalkSkipChildren, nil
 	}
 
@@ -409,8 +415,16 @@ func (r *wikilinkHTMLRenderer) resolveImageAssetPath(target string) string {
 	return resolveImageAssetPath(r.currentNote, r.index, target)
 }
 
+func (r *wikilinkHTMLRenderer) lookupImageAssetPath(target string) model.PathLookupResult {
+	return lookupImageAssetPath(r.currentNote, r.index, target)
+}
+
 func resolveImageAssetPath(note *model.Note, idx *model.VaultIndex, target string) string {
-	return resourcepath.ResolveIndexedAssetPath(note, idx, target)
+	return lookupImageAssetPath(note, idx, target).Path
+}
+
+func lookupImageAssetPath(note *model.Note, idx *model.VaultIndex, target string) model.PathLookupResult {
+	return resourcepath.LookupIndexedImageEmbedAssetPath(note, idx, target)
 }
 
 func (r *wikilinkHTMLRenderer) isVisited(note *model.Note, fragmentID string) bool {
@@ -436,6 +450,14 @@ func (r *wikilinkHTMLRenderer) recordUnresolvedAsset(ref *model.EmbedRef, rawTar
 	}
 
 	r.diag.Warningf(diag.KindUnresolvedAsset, r.location(ref), "image embed %q could not be resolved to a vault asset; rendering as plain text", rawTarget)
+}
+
+func (r *wikilinkHTMLRenderer) recordAmbiguousAsset(ref *model.EmbedRef, rawTarget string, candidates []string) {
+	if r == nil || r.diag == nil || len(candidates) == 0 {
+		return
+	}
+
+	r.diag.Warningf(diag.KindUnresolvedAsset, r.location(ref), "image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
 }
 
 func (r *wikilinkHTMLRenderer) recordUnpublished(ref *model.EmbedRef, rawTarget string, note *model.Note) {

@@ -1,0 +1,7 @@
+{{define "content-note"}}
+<article data-theme-note="alpha-note">
+  <p data-theme-note-copy="alpha-note-copy">alpha note shell</p>
+  <a data-theme-asset="alpha-asset" href="{{pageAssetURL .SiteRootRel "assets/theme/nested/alpha/theme-marker.txt"}}">alpha asset</a>
+  <div data-note-body>{{.Content}}</div>
+</article>
+{{end}}

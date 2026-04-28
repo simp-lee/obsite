@@ -90,6 +90,16 @@ func TestStrip(t *testing.T) {
 			input: "alpha %%hidden\nstill hidden%% omega\nbeta\n",
 			want:  "alpha \n omega\nbeta\n",
 		},
+		{
+			name:  "inline code literal percent pairs stay visible",
+			input: "before `%%literal%%` after %%gone%%\n",
+			want:  "before `%%literal%%` after \n",
+		},
+		{
+			name:  "inline raw html literal percent pairs stay visible",
+			input: "before <span>%%literal%%</span> after %%gone%%\n",
+			want:  "before <span>%%literal%%</span> after \n",
+		},
 	}
 
 	for _, tt := range tests {

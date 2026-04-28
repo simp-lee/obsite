@@ -1,0 +1,53 @@
+{{define "content-tag"}}
+<section class="page-shell tag-page">
+  <header class="page-header">
+    <p class="page-eyebrow">Tag archive</p>
+    <h1 class="page-title">#{{if .TagName}}{{.TagName}}{{else}}untagged{{end}}</h1>
+    <p class="page-deck">Browse the notes collected under this topic on this page{{if .ChildTags}}, with {{len .ChildTags}} nested tags to explore next{{end}}.</p>
+  </header>
+
+  {{if .ChildTags}}
+  <section class="support-panel" aria-labelledby="child-tags-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Branches</p>
+      <h2 id="child-tags-heading">Child tags</h2>
+    </div>
+    <div class="tag-row">
+      {{range .ChildTags}}
+      <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+      {{end}}
+    </div>
+  </section>
+  {{end}}
+
+  <section class="support-panel" aria-labelledby="tag-notes-heading">
+    <div class="panel-heading">
+      <p class="page-eyebrow">Filed here</p>
+      <h2 id="tag-notes-heading">Notes</h2>
+    </div>
+    {{if .TagNotes}}
+    <ol class="note-list">
+      {{range .TagNotes}}
+      <li class="note-card">
+        <div class="note-card-main">
+          <h3><a href="{{.URL}}">{{.Title}}</a></h3>
+          {{if not .Date.IsZero}}<time datetime="{{.Date.Format "2006-01-02T15:04:05Z07:00"}}">{{.Date.Format "02 Jan 2006"}}</time>{{end}}
+        </div>
+        {{if .Tags}}
+        <div class="tag-row">
+          {{range .Tags}}
+          <a class="tag-pill" href="{{.URL}}">#{{.Name}}</a>
+          {{end}}
+        </div>
+        {{end}}
+      </li>
+      {{end}}
+    </ol>
+    {{else}}
+    <p class="empty-state">No published notes currently use this tag.</p>
+    {{end}}
+  </section>
+
+  {{template "pagination-nav" .}}
+</section>
+{{end}}

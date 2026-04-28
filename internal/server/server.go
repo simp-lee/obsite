@@ -28,11 +28,12 @@ var liveReloadScript = []byte(`<script data-obsite-livereload>(function(){if(!wi
 
 // Server serves a generated Obsite output directory over HTTP.
 type Server struct {
-	outputPath   string
-	port         int
-	fileServer   http.Handler
-	notFoundPath string
-	liveReload   *liveReloadHub
+	outputPath     string
+	realOutputPath string
+	port           int
+	fileServer     http.Handler
+	notFoundPath   string
+	liveReload     *liveReloadHub
 }
 
 type liveReloadHub struct {
@@ -52,20 +53,25 @@ func New(outputPath string, port int) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	realOutputPath, err := filepath.EvalSymlinks(normalizedOutputPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve output path symlinks %q: %w", normalizedOutputPath, err)
+	}
 	normalizedPort := normalizePort(port)
 	if err := validatePort(normalizedPort); err != nil {
 		return nil, err
 	}
 
 	server := &Server{
-		outputPath: normalizedOutputPath,
-		port:       normalizedPort,
-		fileServer: http.FileServer(http.Dir(normalizedOutputPath)),
+		outputPath:     normalizedOutputPath,
+		realOutputPath: realOutputPath,
+		port:           normalizedPort,
+		fileServer:     http.FileServer(http.Dir(normalizedOutputPath)),
 	}
 
 	notFoundPath := filepath.Join(normalizedOutputPath, "404.html")
-	if info, err := os.Stat(notFoundPath); err == nil && !info.IsDir() {
-		server.notFoundPath = notFoundPath
+	if resolvedNotFoundPath, info, err := server.resolveExistingOutputPath(notFoundPath); err == nil && !info.IsDir() {
+		server.notFoundPath = resolvedNotFoundPath
 	}
 
 	return server, nil
@@ -151,17 +157,13 @@ func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath
 	if cleanPath == "/" {
 		resolvedPath = s.outputPath
 	}
-	if !pathWithinRoot(s.outputPath, resolvedPath) {
-		return "", ""
-	}
-
-	info, err := os.Stat(resolvedPath)
+	realPath, info, err := s.resolveExistingOutputPath(resolvedPath)
 	if err != nil {
 		return "", ""
 	}
 
 	if info.IsDir() {
-		if !hasIndexFile(resolvedPath) {
+		if !hasIndexFile(realPath) {
 			return "", ""
 		}
 
@@ -241,7 +243,10 @@ func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, servePath s
 }
 
 func shouldBufferInjectedResponse(r *http.Request, servePath string) bool {
-	if r == nil || r.Method != http.MethodGet || requestHasRange(r) {
+	if r == nil || requestHasRange(r) {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		return false
 	}
 
@@ -261,7 +266,12 @@ func isHTMLCandidatePath(servePath string) bool {
 
 func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, serve func(http.ResponseWriter, *http.Request)) {
 	recorder := newBufferedResponseWriter()
-	serve(recorder, r)
+	serveRequest := r
+	if r != nil && r.Method == http.MethodHead {
+		serveRequest = r.Clone(r.Context())
+		serveRequest.Method = http.MethodGet
+	}
+	serve(recorder, serveRequest)
 
 	statusCode := recorder.statusCode
 	if statusCode == 0 {
@@ -283,6 +293,30 @@ func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, s
 	}
 
 	_, _ = w.Write(body)
+}
+
+func (s *Server) resolveExistingOutputPath(candidate string) (string, os.FileInfo, error) {
+	if s == nil || strings.TrimSpace(candidate) == "" {
+		return "", nil, os.ErrNotExist
+	}
+	if !pathWithinRoot(s.outputPath, candidate) {
+		return "", nil, os.ErrPermission
+	}
+
+	info, err := os.Stat(candidate)
+	if err != nil {
+		return "", nil, err
+	}
+
+	resolvedPath, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", nil, err
+	}
+	if !pathWithinRoot(s.realOutputPath, resolvedPath) {
+		return "", nil, os.ErrPermission
+	}
+
+	return resolvedPath, info, nil
 }
 
 func requestHasRange(r *http.Request) bool {

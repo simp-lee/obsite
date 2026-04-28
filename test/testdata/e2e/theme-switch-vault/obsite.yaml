@@ -1,0 +1,23 @@
+baseURL: https://example.com/blog/
+title: Theme Switch Garden
+description: Minimal fixture for theme switch integration coverage.
+language: en
+search:
+  enabled: true
+  pagefindPath: tools/pagefind_extended
+  pagefindVersion: 1.5.2
+popover:
+  enabled: true
+timeline:
+  enabled: true
+  asHomepage: false
+  path: timeline
+themes:
+  alpha:
+    root: themes/alpha
+  beta:
+    root: themes/beta
+  no-style:
+    root: themes/no-style
+  incomplete:
+    root: themes/incomplete

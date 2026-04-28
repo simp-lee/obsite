@@ -15,6 +15,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	var vaultPath string
 	var outputPath string
 	var configPath string
+	var theme string
 	var force bool
 
 	cmd := &cobra.Command{
@@ -40,7 +41,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 				return err
 			}
 
-			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
+			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath, Theme: theme})
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -57,6 +58,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault")
 	flags.StringVar(&outputPath, "output", "", "Path to write the generated site")
 	flags.StringVar(&configPath, "config", "", "Path to obsite.yaml (defaults to <vault>/obsite.yaml)")
+	flags.StringVar(&theme, "theme", "", "Named theme to select for this build")
 	flags.BoolVar(&force, "force", false, "Ignore the incremental cache and rebuild all note pages")
 	_ = cmd.MarkFlagRequired("vault")
 	_ = cmd.MarkFlagRequired("output")

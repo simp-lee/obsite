@@ -137,10 +137,12 @@ func fileStem(relPath string) string {
 func normalize(input string) string {
 	var builder strings.Builder
 	lastHyphen := false
+	canAppendMark := false
 
 	for _, r := range canonicalize(input) {
 		switch {
 		case isASCIIControl(r):
+			canAppendMark = false
 			continue
 		case unicode.IsSpace(r) || r == '_' || r == '-':
 			if lastHyphen {
@@ -148,10 +150,19 @@ func normalize(input string) string {
 			}
 			builder.WriteRune('-')
 			lastHyphen = true
+			canAppendMark = false
 		case unicode.IsLetter(r) || unicode.IsDigit(r):
 			builder.WriteRune(r)
 			lastHyphen = false
+			canAppendMark = true
+		case unicode.IsMark(r):
+			if !canAppendMark {
+				continue
+			}
+			builder.WriteRune(r)
+			lastHyphen = false
 		default:
+			canAppendMark = false
 			continue
 		}
 	}

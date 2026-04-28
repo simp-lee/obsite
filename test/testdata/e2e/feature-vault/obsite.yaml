@@ -23,4 +23,7 @@ timeline:
   enabled: true
   asHomepage: true
   path: notes
-templateDir: templates
+themes:
+  feature:
+    root: templates
+defaultTheme: feature

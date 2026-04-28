@@ -5,15 +5,14 @@ import (
 	"html/template"
 	"os"
 	"path/filepath"
-	"reflect"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -124,12 +123,22 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				Content:     template.HTML("<p>Rendered note body.</p>"),
 				HasMath:     true,
 				HasMermaid:  true,
+				OG: model.OpenGraph{
+					Title:       "Plain Note",
+					Description: "A note without asset URLs.",
+					Type:        "article",
+				},
+				TwitterCard: "summary",
 			},
 			want: []string{
 				"<link rel=\"stylesheet\" href=\"../style.css\">",
+				"<meta name=\"twitter:card\" content=\"summary\">",
+				"<meta name=\"twitter:title\" content=\"Plain Note\">",
+				"<meta name=\"twitter:description\" content=\"A note without asset URLs.\">",
 				"<div class=\"entry-content\" data-page-content>",
 			},
 			wantAbsent: []string{
+				"<meta name=\"twitter:image\"",
 				"cdn.jsdelivr.net",
 				"renderMathInElement",
 				"window.mermaid",
@@ -337,14 +346,15 @@ func TestDefaultTemplatesUseModuleSafeMermaidLoader(t *testing.T) {
 	t.Parallel()
 
 	tmpl := parseDefaultTemplateSet(t)
-	loadedSite, err := config.LoadForBuild("", config.Overrides{
-		Title:   "Field Notes",
-		BaseURL: "https://example.com/",
-	})
-	if err != nil {
-		t.Fatalf("config.LoadForBuild() error = %v", err)
+	site := model.SiteConfig{
+		Title:              "Field Notes",
+		BaseURL:            "https://example.com/",
+		Language:           "en",
+		KaTeXCSSURL:        "assets/obsite-runtime/katex.min.css",
+		KaTeXJSURL:         "assets/obsite-runtime/katex.min.js",
+		KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js",
+		MermaidJSURL:       "assets/obsite-runtime/mermaid.esm.min.mjs",
 	}
-	site := loadedSite.Config
 	if !strings.HasSuffix(site.MermaidJSURL, "mermaid.esm.min.mjs") {
 		t.Fatalf("default MermaidJSURL = %q, want ESM .mjs asset contract", site.MermaidJSURL)
 	}
@@ -374,17 +384,17 @@ func TestDefaultTemplatesUseModuleSafeMermaidLoader(t *testing.T) {
 	assertNotContains(t, got, "<script defer src=\""+site.MermaidJSURL+"\"></script>")
 }
 
-func TestTemplateDirOverridesMatchingTemplatesAndFallsBackToDefaults(t *testing.T) {
+func TestThemeRootLoadsCompleteTemplateSet(t *testing.T) {
 	t.Parallel()
 
-	templateDir := t.TempDir()
-	override := `{{define "content-note"}}<section data-custom-note>{{.Title}}</section>{{end}}`
-	if err := os.WriteFile(filepath.Join(templateDir, "note.html"), []byte(override), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(note.html) error = %v", err)
-	}
+	themeRoot := t.TempDir()
+	writeCompleteThemeRoot(t, themeRoot, map[string]string{
+		"note.html": `{{define "content-note"}}<section data-custom-note>{{.Title}}</section>{{end}}`,
+	})
 
 	site := testSiteConfig()
-	site.TemplateDir = templateDir
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = themeRoot
 
 	note, err := RenderNote(NotePageInput{
 		Site: site,
@@ -399,7 +409,6 @@ func TestTemplateDirOverridesMatchingTemplatesAndFallsBackToDefaults(t *testing.
 		t.Fatalf("RenderNote() error = %v", err)
 	}
 	assertContains(t, string(note.HTML), "<section data-custom-note>Guide</section>")
-	assertContains(t, string(note.HTML), "<link rel=\"stylesheet\" href=\"../style.css\">")
 
 	index, err := RenderIndex(IndexPageInput{
 		Site: site,
@@ -415,64 +424,324 @@ func TestTemplateDirOverridesMatchingTemplatesAndFallsBackToDefaults(t *testing.
 	assertContains(t, string(index.HTML), "<a href=\"guide/\">Guide</a>")
 }
 
-func TestTemplateDirCachesParsedTemplateSetByNormalizedDir(t *testing.T) {
+func TestThemeRootLoadsNestedPartialTemplatesAndReloadsThemWithinSameProcess(t *testing.T) {
 	t.Parallel()
 
-	templateDir := t.TempDir()
+	themeRoot := t.TempDir()
 	t.Cleanup(func() {
-		clearTemplateSetCacheEntriesForDir(t, templateDir)
+		clearTemplateSetCacheEntriesForThemeRoot(t, themeRoot)
 	})
 
-	overridePath := filepath.Join(templateDir, "base.html")
-	override := `{{define "base"}}<!doctype html><html><body data-cache-base="true">{{template "content" .}}</body></html>{{end}}`
-	if err := os.WriteFile(overridePath, []byte(override), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html) error = %v", err)
+	partialPath := filepath.Join(themeRoot, "partials", "badge.html")
+	writeCompleteThemeRoot(t, themeRoot, map[string]string{
+		"note.html":           `{{define "content-note"}}<article>{{template "theme-badge" .}}</article>{{end}}`,
+		"partials/badge.html": `{{define "theme-badge"}}<span data-theme-badge="v1">{{.Title}}</span>{{end}}`,
+	})
+
+	state, err := scanThemeTemplateState(themeIdentity{activeThemeName: "feature", themeRoot: themeRoot})
+	if err != nil {
+		t.Fatalf("scanThemeTemplateState() error = %v", err)
+	}
+	if len(state.files) != len(RequiredHTMLTemplateNames)+1 {
+		t.Fatalf("len(state.files) = %d, want %d", len(state.files), len(RequiredHTMLTemplateNames)+1)
+	}
+
+	snapshot, err := scanThemeTemplateSnapshotFromState(state)
+	if err != nil {
+		t.Fatalf("scanThemeTemplateSnapshotFromState() error = %v", err)
+	}
+	if len(snapshot.files) != len(RequiredHTMLTemplateNames)+1 {
+		t.Fatalf("len(snapshot.files) = %d, want %d", len(snapshot.files), len(RequiredHTMLTemplateNames)+1)
+	}
+	partialFile := findThemeTemplateFile(t, snapshot.files, "badge.html")
+	if !strings.Contains(partialFile.contents, `data-theme-badge="v1"`) {
+		t.Fatalf("partial snapshot contents = %q, want v1 partial contents", partialFile.contents)
 	}
 
 	site := testSiteConfig()
-	site.TemplateDir = filepath.Join(templateDir, ".")
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = filepath.Join(themeRoot, ".")
+
+	noteHTML := renderThemeRootNoteHTML(t, site)
+	assertContains(t, noteHTML, `<span data-theme-badge="v1">Guide</span>`)
+
+	if err := os.WriteFile(partialPath, []byte(`{{define "theme-badge"}}<span data-theme-badge="v2-updated">{{.Title}}</span>{{end}}`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", partialPath, err)
+	}
+
+	noteHTML = renderThemeRootNoteHTML(t, site)
+	assertContains(t, noteHTML, `<span data-theme-badge="v2-updated">Guide</span>`)
+	assertNotContains(t, noteHTML, `data-theme-badge="v1"`)
+}
+
+func TestRequiredHTMLTemplateNamesExcludeEmbeddedOnlyHTMLPartials(t *testing.T) {
+	want := []string{"base.html", "note.html", "index.html", "tag.html", "folder.html", "timeline.html", "404.html"}
+	if !equalTemplateNameSlices(RequiredHTMLTemplateNames, want) {
+		t.Fatalf("RequiredHTMLTemplateNames = %#v, want %#v", RequiredHTMLTemplateNames, want)
+	}
+
+	if containsTemplateName(RequiredHTMLTemplateNames, "partials/helper.html") {
+		t.Fatalf("RequiredHTMLTemplateNames unexpectedly contains embedded-only helper: %#v", RequiredHTMLTemplateNames)
+	}
+	if !containsTemplateName(embeddedHTMLTemplateNames, "base.html") {
+		t.Fatalf("embeddedHTMLTemplateNames = %#v, want base.html in the embedded HTML inventory", embeddedHTMLTemplateNames)
+	}
+}
+
+func TestThemeRootRejectsSymlinkedOptionalHTMLFiles(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	t.Cleanup(func() {
+		clearTemplateSetCacheEntriesForThemeRoot(t, themeRoot)
+	})
+
+	writeCompleteThemeRoot(t, themeRoot, map[string]string{
+		"note.html":           `{{define "content-note"}}<article>{{template "theme-badge" .}}</article>{{end}}`,
+		"partials/badge.html": `{{define "theme-badge"}}<span data-theme-badge="regular">{{.Title}}</span>{{end}}`,
+	})
+
+	overridePath := filepath.Join(t.TempDir(), "badge-override.html")
+	if err := os.WriteFile(overridePath, []byte(`{{define "theme-badge"}}<span data-theme-badge="symlink">{{.Title}}</span>{{end}}`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", overridePath, err)
+	}
+
+	linkPath := filepath.Join(themeRoot, "partials", "zz-badge.html")
+	if err := os.MkdirAll(filepath.Dir(linkPath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(linkPath), err)
+	}
+	if err := os.Symlink(overridePath, linkPath); err != nil {
+		t.Skipf("os.Symlink(%q, %q) unsupported: %v", overridePath, linkPath, err)
+	}
+
+	_, err := scanThemeTemplateState(themeIdentity{activeThemeName: "feature", themeRoot: themeRoot})
+	if err == nil {
+		t.Fatal("scanThemeTemplateState() error = nil, want symlinked optional HTML template failure")
+	}
+	for _, want := range []string{"zz-badge.html", "regular non-symlink file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("scanThemeTemplateState() error = %q, want substring %q", err.Error(), want)
+		}
+	}
+
+	site := testSiteConfig()
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = themeRoot
+
+	_, err = RenderNote(NotePageInput{
+		Site: site,
+		Note: &model.Note{
+			RelPath:     "notes/guide.md",
+			Slug:        "guide",
+			HTMLContent: "<p>Rendered note body.</p>",
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err == nil {
+		t.Fatal("RenderNote() error = nil, want symlinked optional HTML template failure")
+	}
+	for _, want := range []string{"load templates", "zz-badge.html", "regular non-symlink file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("RenderNote() error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestThemeRootRejectsSymlinkedRequiredTemplate(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	t.Cleanup(func() {
+		clearTemplateSetCacheEntriesForThemeRoot(t, themeRoot)
+	})
+
+	writeCompleteThemeRoot(t, themeRoot, nil)
+
+	targetPath := filepath.Join(t.TempDir(), "tag.html")
+	if err := os.WriteFile(targetPath, []byte(`{{define "content-tag"}}tag{{end}}`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
+	}
+	linkPath := filepath.Join(themeRoot, "tag.html")
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v", linkPath, err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
+	}
+
+	site := testSiteConfig()
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = themeRoot
+
+	_, err := RenderNote(NotePageInput{
+		Site: site,
+		Note: &model.Note{
+			RelPath:     "notes/guide.md",
+			Slug:        "guide",
+			HTMLContent: "<p>Rendered note body.</p>",
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err == nil {
+		t.Fatal("RenderNote() error = nil, want symlinked required template failure")
+	}
+	for _, want := range []string{"load templates", "tag.html", "regular non-symlink file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("RenderNote() error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestEmitStyleCSSRejectsSymlinkedThemeStyle(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	writeCompleteThemeRoot(t, themeRoot, nil)
+
+	targetPath := filepath.Join(t.TempDir(), "style.css")
+	if err := os.WriteFile(targetPath, []byte("body { color: tomato; }\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
+	}
+	linkPath := filepath.Join(themeRoot, "style.css")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
+	}
+
+	wrote, err := EmitStyleCSS(t.TempDir(), model.SiteConfig{ActiveThemeName: "feature", ThemeRoot: themeRoot})
+	if err == nil {
+		t.Fatal("EmitStyleCSS() error = nil, want symlinked theme style failure")
+	}
+	if wrote {
+		t.Fatal("EmitStyleCSS() wrote = true, want false when theme style.css is a symlink")
+	}
+	for _, want := range []string{"emit style.css", "style.css", "regular non-symlink file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("EmitStyleCSS() error = %q, want substring %q", err.Error(), want)
+		}
+	}
+}
+
+func TestThemeRootRequiresCompleteTemplateSet(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	override := `{{define "content-note"}}<section data-custom-note>{{.Title}}</section>{{end}}`
+	if err := os.WriteFile(filepath.Join(themeRoot, "note.html"), []byte(override), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(note.html) error = %v", err)
+	}
+
+	site := testSiteConfig()
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = themeRoot
+
+	_, err := RenderNote(NotePageInput{
+		Site: site,
+		Note: &model.Note{
+			RelPath:     "notes/guide.md",
+			Slug:        "guide",
+			HTMLContent: "<p>Rendered note body.</p>",
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err == nil {
+		t.Fatal("RenderNote() error = nil, want missing required theme templates")
+	}
+	if !strings.Contains(err.Error(), "missing required theme templates") {
+		t.Fatalf("RenderNote() error = %v, want missing required theme templates", err)
+	}
+}
+
+func TestThemeRootCachesParsedTemplateSetByNormalizedIdentity(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	t.Cleanup(func() {
+		clearTemplateSetCacheEntriesForThemeRoot(t, themeRoot)
+	})
+
+	writeCompleteThemeRoot(t, themeRoot, map[string]string{
+		"base.html": themeBaseWithBodyAttribute(t, `data-cache-base="true"`),
+	})
+
+	site := testSiteConfig()
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = filepath.Join(themeRoot, ".")
 
 	first, err := loadTemplateSet(site)
 	if err != nil {
 		t.Fatalf("loadTemplateSet() error = %v", err)
 	}
 
-	site.TemplateDir = templateDir
+	site.ThemeRoot = themeRoot
 	second, err := loadTemplateSet(site)
 	if err != nil {
 		t.Fatalf("loadTemplateSet() error = %v", err)
 	}
 	if first != second {
-		t.Fatal("loadTemplateSet() returned different template set instances for the same normalized directory and unchanged overrides")
+		t.Fatal("loadTemplateSet() returned different template set instances for the same theme identity and unchanged files")
 	}
 
-	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
-		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) = %d, want %d", templateDir, got, 1)
+	if got := countTemplateSetCacheEntriesForThemeIdentity(t, "feature", themeRoot); got != 1 {
+		t.Fatalf("countTemplateSetCacheEntriesForThemeIdentity(%q, %q) = %d, want %d", "feature", themeRoot, got, 1)
 	}
 }
 
-func TestTemplateDirReusesCachedOverrideSnapshotUntilFilesChange(t *testing.T) {
+func TestThemeRootDoesNotReuseTemplateSetAcrossThemeNames(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	t.Cleanup(func() {
+		clearTemplateSetCacheEntriesForThemeRoot(t, themeRoot)
+	})
+
+	writeCompleteThemeRoot(t, themeRoot, map[string]string{
+		"base.html": `{{define "base"}}<!doctype html><html><body data-theme-name-cache="true">{{template "content" .}}</body></html>{{end}}`,
+	})
+
+	alpha := testSiteConfig()
+	alpha.ActiveThemeName = "alpha"
+	alpha.ThemeRoot = themeRoot
+	beta := alpha
+	beta.ActiveThemeName = "beta"
+
+	first, err := loadTemplateSet(alpha)
+	if err != nil {
+		t.Fatalf("loadTemplateSet(alpha) error = %v", err)
+	}
+	second, err := loadTemplateSet(beta)
+	if err != nil {
+		t.Fatalf("loadTemplateSet(beta) error = %v", err)
+	}
+	if first == second {
+		t.Fatal("loadTemplateSet() reused a cached template set across distinct theme names")
+	}
+	if got := countTemplateSetCacheEntriesForThemeRoot(t, themeRoot); got != 2 {
+		t.Fatalf("countTemplateSetCacheEntriesForThemeRoot(%q) = %d, want %d", themeRoot, got, 2)
+	}
+}
+
+func TestThemeRootReusesCachedSnapshotUntilFilesChange(t *testing.T) {
 	templateDir := t.TempDir()
 	t.Cleanup(func() {
-		clearTemplateSetCacheEntriesForDir(t, templateDir)
+		clearTemplateSetCacheEntriesForThemeRoot(t, templateDir)
 	})
 
 	overridePath := filepath.Join(templateDir, "base.html")
-	baseV1 := `{{define "base"}}<!doctype html><html><body data-snapshot-cache="v1">{{template "content" .}}</body></html>{{end}}`
-	if err := os.WriteFile(overridePath, []byte(baseV1), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
-	}
+	baseV1 := themeBaseWithBodyAttribute(t, `data-snapshot-cache="v1"`)
+	writeCompleteThemeRoot(t, templateDir, map[string]string{"base.html": baseV1})
 
-	readCount := trackTemplateOverrideFileReadsForDir(t, templateDir)
+	wantReadsPerSnapshot := len(RequiredHTMLTemplateNames)
+	readCount := trackThemeTemplateFileReadsForRoot(t, templateDir)
 	site := testSiteConfig()
-	site.TemplateDir = filepath.Join(templateDir, ".")
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = filepath.Join(templateDir, ".")
 
 	first, err := loadTemplateSet(site)
 	if err != nil {
 		t.Fatalf("loadTemplateSet() error = %v", err)
 	}
-	if got := readCount(); got != 1 {
-		t.Fatalf("template override reads after first load = %d, want %d", got, 1)
+	if got := readCount(); got != wantReadsPerSnapshot {
+		t.Fatalf("theme template reads after first load = %d, want %d", got, wantReadsPerSnapshot)
 	}
 
 	second, err := loadTemplateSet(site)
@@ -480,10 +749,10 @@ func TestTemplateDirReusesCachedOverrideSnapshotUntilFilesChange(t *testing.T) {
 		t.Fatalf("loadTemplateSet() second error = %v", err)
 	}
 	if first != second {
-		t.Fatal("loadTemplateSet() returned different template set instances for unchanged override snapshot")
+		t.Fatal("loadTemplateSet() returned different template set instances for unchanged theme snapshot")
 	}
-	if got := readCount(); got != 2 {
-		t.Fatalf("template override reads after unchanged reload = %d, want %d", got, 2)
+	if got := readCount(); got != wantReadsPerSnapshot {
+		t.Fatalf("theme template reads after unchanged reload = %d, want %d", got, wantReadsPerSnapshot)
 	}
 
 	baseV2 := baseV1 + "\n"
@@ -496,158 +765,125 @@ func TestTemplateDirReusesCachedOverrideSnapshotUntilFilesChange(t *testing.T) {
 		t.Fatalf("loadTemplateSet() third error = %v", err)
 	}
 	if third == second {
-		t.Fatal("loadTemplateSet() returned cached template set after override file changed")
+		t.Fatal("loadTemplateSet() returned cached template set after a theme template changed")
 	}
-	if got := readCount(); got != 3 {
-		t.Fatalf("template override reads after changed reload = %d, want %d", got, 3)
+	if got := readCount(); got != wantReadsPerSnapshot*2 {
+		t.Fatalf("theme template reads after changed reload = %d, want %d", got, wantReadsPerSnapshot*2)
 	}
 }
 
-func TestCachedTemplateOverrideSnapshotReloadsWhenContentsChangeUnderSameState(t *testing.T) {
+func TestCachedThemeSnapshotReusesCachedSnapshotWhenStateMatches(t *testing.T) {
 	templateDir := t.TempDir()
-	overridePath := filepath.Join(templateDir, "base.html")
-	baseV1 := `{{define "base"}}<!doctype html><html><body data-same-state="v1">{{template "content" .}}</body></html>{{end}}`
-	if err := os.WriteFile(overridePath, []byte(baseV1), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
-	}
+	baseV1 := themeBaseWithBodyAttribute(t, `data-same-state="v1"`)
+	writeCompleteThemeRoot(t, templateDir, map[string]string{"base.html": baseV1})
 
-	state, err := scanTemplateOverrideState(templateDir)
+	state, err := scanThemeTemplateState(themeIdentity{activeThemeName: "feature", themeRoot: templateDir})
 	if err != nil {
-		t.Fatalf("scanTemplateOverrideState(%q) error = %v", templateDir, err)
+		t.Fatalf("scanThemeTemplateState(%q) error = %v", templateDir, err)
 	}
 
-	var cached cachedTemplateOverrideSnapshot
+	var cached cachedThemeTemplateSnapshot
 	first, err := cached.load(state)
 	if err != nil {
 		t.Fatalf("cached.load(state) first error = %v", err)
 	}
-	if len(first.files) != 1 {
-		t.Fatalf("len(first.files) = %d, want %d", len(first.files), 1)
+	if len(first.files) != len(RequiredHTMLTemplateNames) {
+		t.Fatalf("len(first.files) = %d, want %d", len(first.files), len(RequiredHTMLTemplateNames))
 	}
-	if !strings.Contains(first.files[0].contents, `data-same-state="v1"`) {
-		t.Fatalf("first snapshot contents = %q, want v1 template contents", first.files[0].contents)
-	}
-
-	baseV2 := strings.Replace(baseV1, "v1", "v2", 1)
-	if len(baseV2) != len(baseV1) {
-		t.Fatalf("len(baseV2) = %d, want same length as len(baseV1) = %d", len(baseV2), len(baseV1))
-	}
-	if err := os.WriteFile(overridePath, []byte(baseV2), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
+	baseFile := findThemeTemplateFile(t, first.files, "base.html")
+	if !strings.Contains(baseFile.contents, `data-same-state="v1"`) {
+		t.Fatalf("base snapshot contents = %q, want v1 template contents", baseFile.contents)
 	}
 
 	second, err := cached.load(state)
 	if err != nil {
 		t.Fatalf("cached.load(state) second error = %v", err)
 	}
-	if second.signature == first.signature {
-		t.Fatalf("second.signature = %q, want a new signature after same-state content edit", second.signature)
+	if second.signature != first.signature {
+		t.Fatalf("second.signature = %q, want cached signature %q when file state is unchanged", second.signature, first.signature)
 	}
-	if len(second.files) != 1 {
-		t.Fatalf("len(second.files) = %d, want %d", len(second.files), 1)
+	if len(second.files) != len(RequiredHTMLTemplateNames) {
+		t.Fatalf("len(second.files) = %d, want %d", len(second.files), len(RequiredHTMLTemplateNames))
 	}
-	if !strings.Contains(second.files[0].contents, `data-same-state="v2"`) {
-		t.Fatalf("second snapshot contents = %q, want v2 template contents", second.files[0].contents)
-	}
-	if strings.Contains(second.files[0].contents, `data-same-state="v1"`) {
-		t.Fatalf("second snapshot contents = %q, want stale v1 contents to be replaced", second.files[0].contents)
+	baseFile = findThemeTemplateFile(t, second.files, "base.html")
+	if !strings.Contains(baseFile.contents, `data-same-state="v1"`) {
+		t.Fatalf("base snapshot contents = %q, want cached v1 template contents", baseFile.contents)
 	}
 }
 
-func TestTemplateDirReloadsTemplatesWhenOverridesChangeWithinSameProcess(t *testing.T) {
+func TestThemeRootReloadsTemplatesWhenThemeFilesChangeWithinSameProcess(t *testing.T) {
 	t.Parallel()
 
 	templateDir := t.TempDir()
 	t.Cleanup(func() {
-		clearTemplateSetCacheEntriesForDir(t, templateDir)
+		clearTemplateSetCacheEntriesForThemeRoot(t, templateDir)
 	})
 
 	basePath := filepath.Join(templateDir, "base.html")
-	baseV1 := `{{define "base"}}<!doctype html><html><body data-live-base="v1">{{template "content" .}}</body></html>{{end}}`
-	if err := os.WriteFile(basePath, []byte(baseV1), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
-	}
+	baseV1 := themeBaseWithBodyAttribute(t, `data-live-base="v1"`)
+	writeCompleteThemeRoot(t, templateDir, map[string]string{"base.html": baseV1})
 
 	site := testSiteConfig()
-	site.TemplateDir = filepath.Join(templateDir, ".")
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = filepath.Join(templateDir, ".")
 
-	noteHTML := renderTemplateDirNoteHTML(t, site)
+	noteHTML := renderThemeRootNoteHTML(t, site)
 	assertContains(t, noteHTML, `data-live-base="v1"`)
 
-	baseV2 := `{{define "base"}}<!doctype html><html><body data-live-base="v2">{{template "content" .}}</body></html>{{end}}`
+	baseV2 := themeBaseWithBodyAttribute(t, `data-live-base="v2"`)
 	if err := os.WriteFile(basePath, []byte(baseV2), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
 	}
 
-	notFoundHTML := renderTemplateDir404HTML(t, site)
+	notFoundHTML := renderThemeRoot404HTML(t, site)
 	assertContains(t, notFoundHTML, `data-live-base="v2"`)
 	assertNotContains(t, notFoundHTML, `data-live-base="v1"`)
-
-	if err := os.Remove(basePath); err != nil {
-		t.Fatalf("os.Remove(base.html) error = %v", err)
-	}
-
-	indexHTML := renderTemplateDirIndexHTML(t, site)
-	assertNotContains(t, indexHTML, `data-live-base=`)
-	assertContains(t, indexHTML, `<h2 id="recent-notes-heading">Recent notes</h2>`)
 
 	notFoundOverride := `{{define "content-404"}}<section data-live-404>{{.Title}}</section>{{end}}`
 	if err := os.WriteFile(filepath.Join(templateDir, "404.html"), []byte(notFoundOverride), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(404.html) error = %v", err)
 	}
 
-	notFoundHTML = renderTemplateDir404HTML(t, site)
+	notFoundHTML = renderThemeRoot404HTML(t, site)
 	assertContains(t, notFoundHTML, `<section data-live-404>Not found</section>`)
 
-	timelineHTML := renderTemplateDirTimelineHTML(t, site)
+	timelineHTML := renderThemeRootTimelineHTML(t, site)
 	assertContains(t, timelineHTML, `<h2 id="timeline-notes-heading">Recent notes</h2>`)
 	assertNotContains(t, timelineHTML, `data-live-404`)
 }
 
-func TestTemplateDirRepeatedEditsDoNotGrowCacheCardinality(t *testing.T) {
+func TestThemeRootRepeatedEditsDoNotGrowCacheCardinality(t *testing.T) {
 	t.Parallel()
 
 	templateDir := t.TempDir()
 	t.Cleanup(func() {
-		clearTemplateSetCacheEntriesForDir(t, templateDir)
+		clearTemplateSetCacheEntriesForThemeRoot(t, templateDir)
 	})
 
 	site := testSiteConfig()
-	site.TemplateDir = filepath.Join(templateDir, ".")
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = filepath.Join(templateDir, ".")
 
 	basePath := filepath.Join(templateDir, "base.html")
-	baseV1 := `{{define "base"}}<!doctype html><html><body data-cache-cardinality="v1">{{template "content" .}}</body></html>{{end}}`
-	if err := os.WriteFile(basePath, []byte(baseV1), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html v1) error = %v", err)
-	}
+	baseV1 := themeBaseWithBodyAttribute(t, `data-cache-cardinality="v1"`)
+	writeCompleteThemeRoot(t, templateDir, map[string]string{"base.html": baseV1})
 
-	noteHTML := renderTemplateDirNoteHTML(t, site)
+	noteHTML := renderThemeRootNoteHTML(t, site)
 	assertContains(t, noteHTML, `data-cache-cardinality="v1"`)
-	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
-		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) after initial load = %d, want %d", templateDir, got, 1)
+	if got := countTemplateSetCacheEntriesForThemeIdentity(t, "feature", templateDir); got != 1 {
+		t.Fatalf("countTemplateSetCacheEntriesForThemeIdentity(%q, %q) after initial load = %d, want %d", "feature", templateDir, got, 1)
 	}
 
-	baseV2 := `{{define "base"}}<!doctype html><html><body data-cache-cardinality="v2">{{template "content" .}}</body></html>{{end}}`
+	baseV2 := themeBaseWithBodyAttribute(t, `data-cache-cardinality="v2"`)
 	if err := os.WriteFile(basePath, []byte(baseV2), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
 	}
 
-	notFoundHTML := renderTemplateDir404HTML(t, site)
+	notFoundHTML := renderThemeRoot404HTML(t, site)
 	assertContains(t, notFoundHTML, `data-cache-cardinality="v2"`)
 	assertNotContains(t, notFoundHTML, `data-cache-cardinality="v1"`)
-	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
-		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) after base update = %d, want %d", templateDir, got, 1)
-	}
-
-	if err := os.Remove(basePath); err != nil {
-		t.Fatalf("os.Remove(base.html) error = %v", err)
-	}
-
-	indexHTML := renderTemplateDirIndexHTML(t, site)
-	assertContains(t, indexHTML, `<h2 id="recent-notes-heading">Recent notes</h2>`)
-	assertNotContains(t, indexHTML, `data-cache-cardinality=`)
-	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
-		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) after base removal = %d, want %d", templateDir, got, 1)
+	if got := countTemplateSetCacheEntriesForThemeIdentity(t, "feature", templateDir); got != 1 {
+		t.Fatalf("countTemplateSetCacheEntriesForThemeIdentity(%q, %q) after base update = %d, want %d", "feature", templateDir, got, 1)
 	}
 
 	notFoundOverride := `{{define "content-404"}}<section data-cache-cardinality-404>{{.Title}}</section>{{end}}`
@@ -655,28 +891,27 @@ func TestTemplateDirRepeatedEditsDoNotGrowCacheCardinality(t *testing.T) {
 		t.Fatalf("os.WriteFile(404.html) error = %v", err)
 	}
 
-	notFoundHTML = renderTemplateDir404HTML(t, site)
+	notFoundHTML = renderThemeRoot404HTML(t, site)
 	assertContains(t, notFoundHTML, `<section data-cache-cardinality-404>Not found</section>`)
-	if got := countTemplateSetCacheEntriesForDir(t, templateDir); got != 1 {
-		t.Fatalf("countTemplateSetCacheEntriesForDir(%q) after 404 addition = %d, want %d", templateDir, got, 1)
+	if got := countTemplateSetCacheEntriesForThemeIdentity(t, "feature", templateDir); got != 1 {
+		t.Fatalf("countTemplateSetCacheEntriesForThemeIdentity(%q, %q) after 404 addition = %d, want %d", "feature", templateDir, got, 1)
 	}
 }
 
-func TestTemplateDirOverridesBaseAndTagTemplatesAndFallsBackToDefaults(t *testing.T) {
+func TestThemeRootLoadsOverriddenBaseAndTagTemplatesFromCompleteTheme(t *testing.T) {
 	t.Parallel()
 
 	templateDir := t.TempDir()
-	baseOverride := `{{define "base"}}<!doctype html><html><head><title>{{.Title}}</title></head><body data-custom-base="true">{{template "content" .}}</body></html>{{end}}`
+	baseOverride := themeBaseWithBodyAttribute(t, `data-custom-base="true"`)
 	tagOverride := `{{define "content-tag"}}<section data-custom-tag>#{{.TagName}}</section>{{end}}`
-	if err := os.WriteFile(filepath.Join(templateDir, "base.html"), []byte(baseOverride), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(base.html) error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(templateDir, "tag.html"), []byte(tagOverride), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(tag.html) error = %v", err)
-	}
+	writeCompleteThemeRoot(t, templateDir, map[string]string{
+		"base.html": baseOverride,
+		"tag.html":  tagOverride,
+	})
 
 	site := testSiteConfig()
-	site.TemplateDir = templateDir
+	site.ActiveThemeName = "feature"
+	site.ThemeRoot = templateDir
 
 	tagPage, err := RenderTagPage(TagPageInput{
 		Site: site,
@@ -725,7 +960,7 @@ func TestTemplateDirOverridesBaseAndTagTemplatesAndFallsBackToDefaults(t *testin
 	assertContains(t, string(index.HTML), `<h2 id="recent-notes-heading">Recent notes</h2>`)
 }
 
-func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhere(t *testing.T) {
+func TestThemeRootLoadsAllowedPageTemplatesIndividuallyFromCompleteTheme(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -742,9 +977,9 @@ func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhe
 			name:               "index template override",
 			overrideFile:       "index.html",
 			overrideContents:   `{{define "content-index"}}<section data-custom-index>{{.Title}}</section>{{end}}`,
-			renderTarget:       renderTemplateDirIndexHTML,
+			renderTarget:       renderThemeRootIndexHTML,
 			wantTarget:         `<section data-custom-index>Field Notes</section>`,
-			renderFallback:     renderTemplateDir404HTML,
+			renderFallback:     renderThemeRoot404HTML,
 			wantFallback:       `Return to the homepage`,
 			wantFallbackAbsent: `data-custom-index`,
 		},
@@ -752,9 +987,9 @@ func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhe
 			name:               "404 template override",
 			overrideFile:       "404.html",
 			overrideContents:   `{{define "content-404"}}<section data-custom-404>{{.Title}}</section>{{end}}`,
-			renderTarget:       renderTemplateDir404HTML,
+			renderTarget:       renderThemeRoot404HTML,
 			wantTarget:         `<section data-custom-404>Not found</section>`,
-			renderFallback:     renderTemplateDirIndexHTML,
+			renderFallback:     renderThemeRootIndexHTML,
 			wantFallback:       `<h2 id="recent-notes-heading">Recent notes</h2>`,
 			wantFallbackAbsent: `data-custom-404`,
 		},
@@ -762,9 +997,9 @@ func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhe
 			name:               "folder template override",
 			overrideFile:       "folder.html",
 			overrideContents:   `{{define "content-folder"}}<section data-custom-folder>{{.FolderPath}}</section>{{end}}`,
-			renderTarget:       renderTemplateDirFolderHTML,
+			renderTarget:       renderThemeRootFolderHTML,
 			wantTarget:         `<section data-custom-folder>journal</section>`,
-			renderFallback:     renderTemplateDirTimelineHTML,
+			renderFallback:     renderThemeRootTimelineHTML,
 			wantFallback:       `<h2 id="timeline-notes-heading">Recent notes</h2>`,
 			wantFallbackAbsent: `data-custom-folder`,
 		},
@@ -772,9 +1007,9 @@ func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhe
 			name:               "timeline template override",
 			overrideFile:       "timeline.html",
 			overrideContents:   `{{define "content-timeline"}}<section data-custom-timeline>{{.Title}}</section>{{end}}`,
-			renderTarget:       renderTemplateDirTimelineHTML,
+			renderTarget:       renderThemeRootTimelineHTML,
 			wantTarget:         `<section data-custom-timeline>Recent notes</section>`,
-			renderFallback:     renderTemplateDirFolderHTML,
+			renderFallback:     renderThemeRootFolderHTML,
 			wantFallback:       `<h2 id="folder-notes-heading">Notes</h2>`,
 			wantFallbackAbsent: `data-custom-timeline`,
 		},
@@ -787,15 +1022,14 @@ func TestTemplateDirOverridesAllowedPageTemplatesIndividuallyAndFallsBackElsewhe
 
 			templateDir := t.TempDir()
 			t.Cleanup(func() {
-				clearTemplateSetCacheEntriesForDir(t, templateDir)
+				clearTemplateSetCacheEntriesForThemeRoot(t, templateDir)
 			})
 
-			if err := os.WriteFile(filepath.Join(templateDir, tt.overrideFile), []byte(tt.overrideContents), 0o644); err != nil {
-				t.Fatalf("os.WriteFile(%s) error = %v", tt.overrideFile, err)
-			}
+			writeCompleteThemeRoot(t, templateDir, map[string]string{tt.overrideFile: tt.overrideContents})
 
 			site := testSiteConfig()
-			site.TemplateDir = filepath.Join(templateDir, ".")
+			site.ActiveThemeName = "feature"
+			site.ThemeRoot = filepath.Join(templateDir, ".")
 
 			targetHTML := tt.renderTarget(t, site)
 			assertContains(t, targetHTML, tt.wantTarget)
@@ -1281,7 +1515,67 @@ func repoRoot(t *testing.T) string {
 	return filepath.Clean(filepath.Join(filepath.Dir(filename), "..", ".."))
 }
 
-func renderTemplateDirNoteHTML(t *testing.T, site model.SiteConfig) string {
+func themeBaseWithBodyAttribute(t *testing.T, bodyAttribute string) string {
+	t.Helper()
+
+	base, err := readEmbeddedAsset("base.html")
+	if err != nil {
+		t.Fatalf("readEmbeddedAsset(base.html) error = %v", err)
+	}
+	bodyAttribute = strings.TrimSpace(bodyAttribute)
+	if bodyAttribute == "" {
+		return string(base)
+	}
+
+	marker := `<body class="kind-{{.Kind}}">`
+	replacement := `<body class="kind-{{.Kind}}" ` + bodyAttribute + `>`
+	updated := strings.Replace(string(base), marker, replacement, 1)
+	if updated == string(base) {
+		t.Fatal("themeBaseWithBodyAttribute() did not find body marker in embedded base template")
+	}
+
+	return updated
+}
+
+func writeCompleteThemeRoot(t *testing.T, themeRoot string, overrides map[string]string) {
+	t.Helper()
+
+	files := make(map[string]string, len(RequiredHTMLTemplateNames)+len(overrides))
+	for _, name := range RequiredHTMLTemplateNames {
+		data, err := readEmbeddedAsset(name)
+		if err != nil {
+			t.Fatalf("readEmbeddedAsset(%q) error = %v", name, err)
+		}
+		files[name] = string(data)
+	}
+	for path, contents := range overrides {
+		files[path] = contents
+	}
+
+	writeThemeRootFiles(t, themeRoot, files)
+}
+
+func writeThemeRootFiles(t *testing.T, themeRoot string, files map[string]string) {
+	t.Helper()
+
+	paths := make([]string, 0, len(files))
+	for path := range files {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	for _, relPath := range paths {
+		absPath := filepath.Join(themeRoot, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(absPath), err)
+		}
+		if err := os.WriteFile(absPath, []byte(files[relPath]), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", relPath, err)
+		}
+	}
+}
+
+func renderThemeRootNoteHTML(t *testing.T, site model.SiteConfig) string {
 	t.Helper()
 
 	note, err := RenderNote(NotePageInput{
@@ -1300,7 +1594,7 @@ func renderTemplateDirNoteHTML(t *testing.T, site model.SiteConfig) string {
 	return string(note.HTML)
 }
 
-func renderTemplateDirIndexHTML(t *testing.T, site model.SiteConfig) string {
+func renderThemeRootIndexHTML(t *testing.T, site model.SiteConfig) string {
 	t.Helper()
 
 	page, err := RenderIndex(IndexPageInput{
@@ -1317,7 +1611,7 @@ func renderTemplateDirIndexHTML(t *testing.T, site model.SiteConfig) string {
 	return string(page.HTML)
 }
 
-func renderTemplateDir404HTML(t *testing.T, site model.SiteConfig) string {
+func renderThemeRoot404HTML(t *testing.T, site model.SiteConfig) string {
 	t.Helper()
 
 	page, err := Render404(NotFoundPageInput{
@@ -1334,7 +1628,7 @@ func renderTemplateDir404HTML(t *testing.T, site model.SiteConfig) string {
 	return string(page.HTML)
 }
 
-func renderTemplateDirFolderHTML(t *testing.T, site model.SiteConfig) string {
+func renderThemeRootFolderHTML(t *testing.T, site model.SiteConfig) string {
 	t.Helper()
 
 	page, err := RenderFolderPage(FolderPageInput{
@@ -1352,7 +1646,7 @@ func renderTemplateDirFolderHTML(t *testing.T, site model.SiteConfig) string {
 	return string(page.HTML)
 }
 
-func renderTemplateDirTimelineHTML(t *testing.T, site model.SiteConfig) string {
+func renderThemeRootTimelineHTML(t *testing.T, site model.SiteConfig) string {
 	t.Helper()
 
 	page, err := RenderTimelinePage(TimelinePageInput{
@@ -1370,17 +1664,17 @@ func renderTemplateDirTimelineHTML(t *testing.T, site model.SiteConfig) string {
 	return string(page.HTML)
 }
 
-func countTemplateSetCacheEntriesForDir(t *testing.T, templateDir string) int {
+func countTemplateSetCacheEntriesForThemeRoot(t *testing.T, themeRoot string) int {
 	t.Helper()
 
-	normalizedDir, err := normalizeTemplateDir(templateDir)
+	normalizedRoot, err := normalizeThemeRoot(themeRoot)
 	if err != nil {
-		t.Fatalf("normalizeTemplateDir(%q) error = %v", templateDir, err)
+		t.Fatalf("normalizeThemeRoot(%q) error = %v", themeRoot, err)
 	}
 
 	count := 0
 	templateSetCache.Range(func(key, _ any) bool {
-		if templateSetCacheKeyMatchesDir(key, normalizedDir) {
+		if templateSetCacheKeyMatchesThemeRoot(key, normalizedRoot) {
 			count++
 		}
 		return true
@@ -1389,17 +1683,36 @@ func countTemplateSetCacheEntriesForDir(t *testing.T, templateDir string) int {
 	return count
 }
 
-func clearTemplateSetCacheEntriesForDir(t *testing.T, templateDir string) {
+func countTemplateSetCacheEntriesForThemeIdentity(t *testing.T, themeName string, themeRoot string) int {
 	t.Helper()
 
-	normalizedDir, err := normalizeTemplateDir(templateDir)
+	normalizedRoot, err := normalizeThemeRoot(themeRoot)
 	if err != nil {
-		t.Fatalf("normalizeTemplateDir(%q) error = %v", templateDir, err)
+		t.Fatalf("normalizeThemeRoot(%q) error = %v", themeRoot, err)
+	}
+
+	count := 0
+	templateSetCache.Range(func(key, _ any) bool {
+		if templateSetCacheKeyMatchesThemeIdentity(key, themeName, normalizedRoot) {
+			count++
+		}
+		return true
+	})
+
+	return count
+}
+
+func clearTemplateSetCacheEntriesForThemeRoot(t *testing.T, themeRoot string) {
+	t.Helper()
+
+	normalizedRoot, err := normalizeThemeRoot(themeRoot)
+	if err != nil {
+		t.Fatalf("normalizeThemeRoot(%q) error = %v", themeRoot, err)
 	}
 
 	keys := make([]any, 0, 2)
 	templateSetCache.Range(func(key, _ any) bool {
-		if templateSetCacheKeyMatchesDir(key, normalizedDir) {
+		if templateSetCacheKeyMatchesThemeRoot(key, normalizedRoot) {
 			keys = append(keys, key)
 		}
 		return true
@@ -1407,33 +1720,38 @@ func clearTemplateSetCacheEntriesForDir(t *testing.T, templateDir string) {
 	for _, key := range keys {
 		templateSetCache.Delete(key)
 	}
-	templateOverrideSnapshotCache.Delete(normalizedDir)
+	themeTemplateSnapshotCache.Range(func(key, _ any) bool {
+		if identity, ok := key.(themeIdentity); ok && identity.themeRoot == normalizedRoot {
+			themeTemplateSnapshotCache.Delete(key)
+		}
+		return true
+	})
 }
 
-func trackTemplateOverrideFileReadsForDir(t *testing.T, templateDir string) func() int {
+func trackThemeTemplateFileReadsForRoot(t *testing.T, themeRoot string) func() int {
 	t.Helper()
 
-	normalizedDir, err := normalizeTemplateDir(templateDir)
+	normalizedRoot, err := normalizeThemeRoot(themeRoot)
 	if err != nil {
-		t.Fatalf("normalizeTemplateDir(%q) error = %v", templateDir, err)
+		t.Fatalf("normalizeThemeRoot(%q) error = %v", themeRoot, err)
 	}
 
 	var reads atomic.Int64
-	templateOverrideFileReader.mu.Lock()
-	previous := templateOverrideFileReader.read
-	templateOverrideFileReader.read = func(filePath string) ([]byte, error) {
+	themeTemplateFileReader.mu.Lock()
+	previous := themeTemplateFileReader.read
+	themeTemplateFileReader.read = func(filePath string) ([]byte, error) {
 		data, err := previous(filePath)
-		if strings.HasPrefix(filePath, normalizedDir+string(filepath.Separator)) {
+		if strings.HasPrefix(filePath, normalizedRoot+string(filepath.Separator)) {
 			reads.Add(1)
 		}
 		return data, err
 	}
-	templateOverrideFileReader.mu.Unlock()
+	themeTemplateFileReader.mu.Unlock()
 
 	t.Cleanup(func() {
-		templateOverrideFileReader.mu.Lock()
-		templateOverrideFileReader.read = previous
-		templateOverrideFileReader.mu.Unlock()
+		themeTemplateFileReader.mu.Lock()
+		themeTemplateFileReader.read = previous
+		themeTemplateFileReader.mu.Unlock()
 	})
 
 	return func() int {
@@ -1441,17 +1759,47 @@ func trackTemplateOverrideFileReadsForDir(t *testing.T, templateDir string) func
 	}
 }
 
-func templateSetCacheKeyMatchesDir(key any, templateDir string) bool {
-	switch typed := key.(type) {
-	case string:
-		return typed == templateDir
+func templateSetCacheKeyMatchesThemeRoot(key any, themeRoot string) bool {
+	typed, ok := key.(templateSetCacheKey)
+	return ok && typed.themeRoot == themeRoot
+}
+
+func templateSetCacheKeyMatchesThemeIdentity(key any, themeName string, themeRoot string) bool {
+	typed, ok := key.(templateSetCacheKey)
+	return ok && typed.activeThemeName == themeName && typed.themeRoot == themeRoot
+}
+
+func findThemeTemplateFile(t *testing.T, files []themeTemplateFile, name string) themeTemplateFile {
+	t.Helper()
+
+	for _, file := range files {
+		if filepath.Base(file.path) == name {
+			return file
+		}
+	}
+	t.Fatalf("theme template snapshot missing %q", name)
+	return themeTemplateFile{}
+}
+
+func containsTemplateName(names []string, want string) bool {
+	for _, name := range names {
+		if name == want {
+			return true
+		}
 	}
 
-	value := reflect.ValueOf(key)
-	if value.Kind() != reflect.Struct {
+	return false
+}
+
+func equalTemplateNameSlices(left []string, right []string) bool {
+	if len(left) != len(right) {
 		return false
 	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
 
-	field := value.FieldByName("templateDir")
-	return field.IsValid() && field.Kind() == reflect.String && field.String() == templateDir
+	return true
 }

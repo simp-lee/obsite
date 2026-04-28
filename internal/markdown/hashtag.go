@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/model"
-	internalslug "github.com/simp-lee/obsite/internal/slug"
 	gmhashtag "go.abhg.dev/goldmark/hashtag"
 )
 
@@ -47,38 +46,7 @@ func (r renderHashtagResolver) ResolveHashtag(node *gmhashtag.Node) ([]byte, err
 }
 
 func normalizeRenderedHashtag(value string) string {
-	trimmed := strings.TrimSpace(strings.TrimPrefix(value, "#"))
-	if trimmed == "" {
-		return ""
-	}
-
-	rawSegments := strings.Split(trimmed, "/")
-	segments := make([]string, 0, len(rawSegments))
-	for _, segment := range rawSegments {
-		normalized, ok := normalizeRenderedHashtagSegment(segment)
-		if !ok {
-			return ""
-		}
-		segments = append(segments, normalized)
-	}
-	if len(segments) == 0 {
-		return ""
-	}
-
-	return strings.Join(segments, "/")
-}
-
-func normalizeRenderedHashtagSegment(segment string) (string, bool) {
-	segment = strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(segment)), " "))
-	if segment == "" {
-		return "", false
-	}
-
-	normalized, err := internalslug.Generate(&segment, "")
-	if err != nil {
-		return "", false
-	}
-	return normalized, true
+	return model.NormalizeTagName(value)
 }
 
 func relativeDirectoryURLToNoteOutput(note *model.Note, siteRelPath string) string {

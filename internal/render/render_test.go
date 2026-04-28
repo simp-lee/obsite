@@ -461,6 +461,112 @@ func TestRenderNoteBuildsNestedTOCFromHeadings(t *testing.T) {
 	}
 }
 
+func TestRenderNoteBuildsTOCFromRenderedEmbeddedHeadings(t *testing.T) {
+	t.Parallel()
+
+	got, err := RenderNote(NotePageInput{
+		Site: testSiteConfig(),
+		Note: &model.Note{
+			RelPath: "notes/guide.md",
+			Slug:    "guide",
+			HTMLContent: `<h2 id="overview">Overview</h2>
+<p>Intro.</p>
+<h2 id="embed-1-embedded-title">Embedded Title</h2>
+<p>Embedded note body.</p>
+<h3 id="embed-1-embedded-section">Embedded Section</h3>
+<h3 id="embed-2-section-title">Section Title</h3>
+<h2 id="appendix">Appendix</h2>`,
+			Headings: []model.Heading{
+				{Level: 2, Text: "Overview", ID: "overview"},
+				{Level: 2, Text: "Appendix", ID: "appendix"},
+			},
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderNote() error = %v", err)
+	}
+
+	if len(got.Page.TOC) != 3 {
+		t.Fatalf("len(RenderNote().Page.TOC) = %d, want %d", len(got.Page.TOC), 3)
+	}
+	if got.Page.TOC[0].ID != "overview" {
+		t.Fatalf("RenderNote().Page.TOC[0] = %#v, want overview root entry", got.Page.TOC[0])
+	}
+	if got.Page.TOC[1].ID != "embed-1-embedded-title" || got.Page.TOC[1].Text != "Embedded Title" {
+		t.Fatalf("RenderNote().Page.TOC[1] = %#v, want note-embed heading root entry", got.Page.TOC[1])
+	}
+	if len(got.Page.TOC[1].Children) != 2 {
+		t.Fatalf("len(RenderNote().Page.TOC[1].Children) = %d, want %d", len(got.Page.TOC[1].Children), 2)
+	}
+	if got.Page.TOC[1].Children[0].ID != "embed-1-embedded-section" || got.Page.TOC[1].Children[0].Text != "Embedded Section" {
+		t.Fatalf("RenderNote().Page.TOC[1].Children[0] = %#v, want note-embed child heading", got.Page.TOC[1].Children[0])
+	}
+	if got.Page.TOC[1].Children[1].ID != "embed-2-section-title" || got.Page.TOC[1].Children[1].Text != "Section Title" {
+		t.Fatalf("RenderNote().Page.TOC[1].Children[1] = %#v, want heading-embed child heading", got.Page.TOC[1].Children[1])
+	}
+	if got.Page.TOC[2].ID != "appendix" || got.Page.TOC[2].Text != "Appendix" {
+		t.Fatalf("RenderNote().Page.TOC[2] = %#v, want appendix root entry", got.Page.TOC[2])
+	}
+	for _, want := range []string{`href="#embed-1-embedded-title"`, `href="#embed-1-embedded-section"`, `href="#embed-2-section-title"`} {
+		if !bytes.Contains(got.HTML, []byte(want)) {
+			t.Fatalf("RenderNote() HTML missing embedded ToC link %q\n%s", want, got.HTML)
+		}
+	}
+}
+
+func TestRenderNoteTOCSkipsHeadingsInsideClosedDetails(t *testing.T) {
+	t.Parallel()
+
+	got, err := RenderNote(NotePageInput{
+		Site: testSiteConfig(),
+		Note: &model.Note{
+			RelPath: "notes/guide.md",
+			Slug:    "guide",
+			HTMLContent: `<h2 id="overview">Overview</h2>
+<details>
+<summary>Closed Summary</summary>
+<h3 id="hidden-heading">Hidden Heading</h3>
+</details>
+<details class="callout callout-note">
+<summary class="callout-title">Callout Summary</summary>
+<h3 id="hidden-callout-heading">Hidden Callout Heading</h3>
+</details>
+<h2 id="appendix">Appendix</h2>`,
+			Headings: []model.Heading{
+				{Level: 2, Text: "Overview", ID: "overview"},
+				{Level: 2, Text: "Appendix", ID: "appendix"},
+			},
+			Frontmatter: model.Frontmatter{Title: "Guide"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("RenderNote() error = %v", err)
+	}
+
+	if len(got.Page.TOC) != 2 {
+		t.Fatalf("len(RenderNote().Page.TOC) = %d, want %d", len(got.Page.TOC), 2)
+	}
+	gotIDs := []string{got.Page.TOC[0].ID, got.Page.TOC[1].ID}
+	wantIDs := []string{"overview", "appendix"}
+	if !equalStringSlices(gotIDs, wantIDs) {
+		t.Fatalf("RenderNote().Page.TOC ids = %#v, want %#v", gotIDs, wantIDs)
+	}
+	for _, hiddenID := range []string{"hidden-heading", "hidden-callout-heading"} {
+		if tocContainsID(got.Page.TOC, hiddenID) {
+			t.Fatalf("RenderNote().Page.TOC unexpectedly contains hidden heading %q: %#v", hiddenID, got.Page.TOC)
+		}
+		if bytes.Contains(got.HTML, []byte(`href="#`+hiddenID+`"`)) {
+			t.Fatalf("RenderNote() HTML unexpectedly links hidden heading %q\n%s", hiddenID, got.HTML)
+		}
+	}
+	for _, visibleID := range wantIDs {
+		if !bytes.Contains(got.HTML, []byte(`href="#`+visibleID+`"`)) {
+			t.Fatalf("RenderNote() HTML missing visible ToC link %q\n%s", visibleID, got.HTML)
+		}
+	}
+}
+
 func TestRenderNoteTOCNavDoesNotCollideWithHeadingIDNamedTOCHeading(t *testing.T) {
 	t.Parallel()
 
@@ -781,6 +887,9 @@ func TestRenderNoteDegradesIncompleteArticleJSONLD(t *testing.T) {
 	if got.Page.Canonical != "https://example.com/blog/sparse/" {
 		t.Fatalf("RenderNote().Page.Canonical = %q, want %q", got.Page.Canonical, "https://example.com/blog/sparse/")
 	}
+	if got.Page.Description != "Sparse" {
+		t.Fatalf("RenderNote().Page.Description = %q, want %q", got.Page.Description, "Sparse")
+	}
 	if got.Page.JSONLD == "" {
 		t.Fatal("RenderNote().Page.JSONLD = empty, want preserved partial JSON-LD")
 	}
@@ -799,6 +908,12 @@ func TestRenderNoteDegradesIncompleteArticleJSONLD(t *testing.T) {
 	if !bytes.Contains([]byte(got.Diagnostics[0].Message), []byte("article JSON-LD omitted")) {
 		t.Fatalf("RenderNote().Diagnostics[0].Message = %q, want structured-data warning message", got.Diagnostics[0].Message)
 	}
+	if !bytes.Contains([]byte(got.Diagnostics[0].Message), []byte("datePublished")) {
+		t.Fatalf("RenderNote().Diagnostics[0].Message = %q, want missing datePublished only", got.Diagnostics[0].Message)
+	}
+	if bytes.Contains([]byte(got.Diagnostics[0].Message), []byte("description")) {
+		t.Fatalf("RenderNote().Diagnostics[0].Message = %q, want description fallback to prevent missing-description warning", got.Diagnostics[0].Message)
+	}
 	if !bytes.Contains([]byte(got.Page.JSONLD), []byte(`"@type":"BreadcrumbList"`)) {
 		t.Fatalf("RenderNote().Page.JSONLD = %s, want breadcrumb fallback", got.Page.JSONLD)
 	}
@@ -807,6 +922,9 @@ func TestRenderNoteDegradesIncompleteArticleJSONLD(t *testing.T) {
 	}
 	if !bytes.Contains(got.HTML, []byte("<h1 class=\"page-title\">Sparse</h1>")) {
 		t.Fatalf("RenderNote() HTML missing note title after SEO degradation\n%s", got.HTML)
+	}
+	if !bytes.Contains(got.HTML, []byte(`<meta name="description" content="Sparse">`)) {
+		t.Fatalf("RenderNote() HTML missing deterministic description fallback\n%s", got.HTML)
 	}
 }
 
@@ -1091,6 +1209,29 @@ func TestRenderTagPageComputesOutputPathAndDefaultsBreadcrumbs(t *testing.T) {
 	if bytes.Contains(got.HTML, []byte("<a href=\"../../\">Tags</a>")) {
 		t.Fatalf("RenderTagPage() HTML unexpectedly links to an ungenerated tags landing page\n%s", got.HTML)
 	}
+}
+
+func tocContainsID(entries []model.TOCEntry, want string) bool {
+	for _, entry := range entries {
+		if entry.ID == want || tocContainsID(entry.Children, want) {
+			return true
+		}
+	}
+
+	return false
+}
+
+func equalStringSlices(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+
+	return true
 }
 
 func TestRenderFolderPageComputesOutputPathAndDefaultsBreadcrumbs(t *testing.T) {
@@ -1561,8 +1702,12 @@ func TestEmitStyleCSSWritesEmbeddedStylesheet(t *testing.T) {
 	t.Parallel()
 
 	outputDir := t.TempDir()
-	if err := EmitStyleCSS(outputDir, model.SiteConfig{}); err != nil {
+	wrote, err := EmitStyleCSS(outputDir, model.SiteConfig{})
+	if err != nil {
 		t.Fatalf("EmitStyleCSS() error = %v", err)
+	}
+	if !wrote {
+		t.Fatal("EmitStyleCSS() wrote = false, want true for embedded stylesheet")
 	}
 
 	got, err := os.ReadFile(filepath.Join(outputDir, "style.css"))
@@ -1582,18 +1727,22 @@ func TestEmitStyleCSSWritesEmbeddedStylesheet(t *testing.T) {
 	}
 }
 
-func TestEmitStyleCSSUsesTemplateDirOverride(t *testing.T) {
+func TestEmitStyleCSSUsesThemeRootStyleWhenPresent(t *testing.T) {
 	t.Parallel()
 
-	templateDir := t.TempDir()
+	themeRoot := t.TempDir()
 	want := []byte("body{font-size:1rem}")
-	if err := os.WriteFile(filepath.Join(templateDir, "style.css"), want, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(themeRoot, "style.css"), want, 0o644); err != nil {
 		t.Fatalf("os.WriteFile(style.css) error = %v", err)
 	}
 
 	outputDir := t.TempDir()
-	if err := EmitStyleCSS(outputDir, model.SiteConfig{TemplateDir: templateDir}); err != nil {
+	wrote, err := EmitStyleCSS(outputDir, model.SiteConfig{ActiveThemeName: "feature", ThemeRoot: themeRoot})
+	if err != nil {
 		t.Fatalf("EmitStyleCSS() error = %v", err)
+	}
+	if !wrote {
+		t.Fatal("EmitStyleCSS() wrote = false, want true when theme root provides style.css")
 	}
 
 	got, err := os.ReadFile(filepath.Join(outputDir, "style.css"))
@@ -1602,6 +1751,118 @@ func TestEmitStyleCSSUsesTemplateDirOverride(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("EmitStyleCSS() wrote %q, want %q", got, want)
+	}
+}
+
+func TestEmitStyleCSSSkipsWhenThemeRootHasNoStyleCSS(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	wrote, err := EmitStyleCSS(outputDir, model.SiteConfig{ActiveThemeName: "feature", ThemeRoot: t.TempDir()})
+	if err != nil {
+		t.Fatalf("EmitStyleCSS() error = %v", err)
+	}
+	if wrote {
+		t.Fatal("EmitStyleCSS() wrote = true, want false when theme root has no style.css")
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "style.css")); !os.IsNotExist(err) {
+		t.Fatalf("os.Stat(style.css) error = %v, want not exists", err)
+	}
+}
+
+func TestListThemeStaticAssetsReturnsStableInventoryAndEmitCopiesFiles(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	writeThemeRootFiles(t, themeRoot, map[string]string{
+		"note.html":             `{{define "content-note"}}{{.Title}}{{end}}`,
+		"style.css":             `body{color:red}`,
+		"assets/logo.svg":       `<svg></svg>`,
+		"nested/theme.css":      `.theme{display:block}`,
+		"partials/card.html":    `<div>card</div>`,
+		"partials/CARD.HTML":    `<div>card uppercase</div>`,
+		"scripts/helpers.js":    `console.log("theme")`,
+		"templates/README.Html": `<p>theme docs</p>`,
+	})
+
+	assets, err := ListThemeStaticAssets(themeRoot)
+	if err != nil {
+		t.Fatalf("ListThemeStaticAssets() error = %v", err)
+	}
+	if len(assets) != 3 {
+		t.Fatalf("len(ListThemeStaticAssets()) = %d, want %d", len(assets), 3)
+	}
+
+	wantRelPaths := []string{"assets/logo.svg", "nested/theme.css", "scripts/helpers.js"}
+	wantOutputPaths := []string{
+		"assets/theme/assets/logo.svg",
+		"assets/theme/nested/theme.css",
+		"assets/theme/scripts/helpers.js",
+	}
+	for index, asset := range assets {
+		if asset.ThemeRelativePath != wantRelPaths[index] {
+			t.Fatalf("assets[%d].ThemeRelativePath = %q, want %q", index, asset.ThemeRelativePath, wantRelPaths[index])
+		}
+		if asset.OutputPath != wantOutputPaths[index] {
+			t.Fatalf("assets[%d].OutputPath = %q, want %q", index, asset.OutputPath, wantOutputPaths[index])
+		}
+		if strings.EqualFold(filepath.Ext(asset.ThemeRelativePath), ".html") {
+			t.Fatalf("assets[%d].ThemeRelativePath = %q, want HTML files filtered out", index, asset.ThemeRelativePath)
+		}
+	}
+
+	outputDir := t.TempDir()
+	if err := EmitThemeStaticAssets(outputDir, assets); err != nil {
+		t.Fatalf("EmitThemeStaticAssets() error = %v", err)
+	}
+
+	for index, asset := range assets {
+		got, err := os.ReadFile(filepath.Join(outputDir, filepath.FromSlash(asset.OutputPath)))
+		if err != nil {
+			t.Fatalf("os.ReadFile(%q) error = %v", asset.OutputPath, err)
+		}
+		if strings.TrimSpace(string(got)) == "" {
+			t.Fatalf("EmitThemeStaticAssets() wrote empty file for %q", asset.OutputPath)
+		}
+		if !strings.Contains(string(got), strings.TrimSpace([]string{"<svg></svg>", `.theme{display:block}`, `console.log("theme")`}[index])) {
+			t.Fatalf("EmitThemeStaticAssets() wrote unexpected content for %q", asset.OutputPath)
+		}
+	}
+
+	for _, relPath := range []string{"partials/card.html", "partials/CARD.HTML", "templates/README.Html"} {
+		assetPath := filepath.Join(outputDir, "assets", "theme", filepath.FromSlash(relPath))
+		if _, err := os.Stat(assetPath); !os.IsNotExist(err) {
+			t.Fatalf("os.Stat(%q) error = %v, want not exists", filepath.ToSlash(assetPath), err)
+		}
+	}
+}
+
+func TestListThemeStaticAssetsRejectsSymlinkedThemeAssets(t *testing.T) {
+	t.Parallel()
+
+	themeRoot := t.TempDir()
+	writeThemeRootFiles(t, themeRoot, map[string]string{
+		"note.html":       `{{define "content-note"}}{{.Title}}{{end}}`,
+		"images/logo.svg": `<svg></svg>`,
+	})
+
+	targetPath := filepath.Join(t.TempDir(), "logo-link.svg")
+	if err := os.WriteFile(targetPath, []byte(`<svg id="symlink"></svg>`), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
+	}
+	linkPath := filepath.Join(themeRoot, "images", "logo-link.svg")
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
+	}
+
+	_, err := ListThemeStaticAssets(themeRoot)
+	if err == nil {
+		t.Fatal("ListThemeStaticAssets() error = nil, want symlinked theme static asset failure")
+	}
+	for _, want := range []string{"logo-link.svg", "regular non-symlink file"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("ListThemeStaticAssets() error = %q, want substring %q", err.Error(), want)
+		}
 	}
 }
 

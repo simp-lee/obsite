@@ -69,11 +69,22 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		"enabled: true",
 		"timeline:",
 		"path: notes",
-		"templateDir:",
-		"customCSS:",
+		"# themes optionally declares named build-time themes. themes.<name>.root is resolved relative to this obsite.yaml file unless absolute.",
+		"# themes:",
+		"#   feature:",
+		"#     root: themes/feature",
+		"# defaultTheme selects one of the configured theme names when --theme is omitted.",
+		"# defaultTheme: feature",
+		"# Obsite only auto-detects a global override stylesheet at <vault>/custom.css, loaded after the generated site stylesheet.",
+		"# Each selected theme root must provide every required HTML template.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated config missing %q\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"templateDir:", "customCSS:", "assets/theme/", "pageAssetURL"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("generated config unexpectedly contains legacy field %q\n%s", forbidden, content)
 		}
 	}
 

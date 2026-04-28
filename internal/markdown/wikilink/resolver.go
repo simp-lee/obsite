@@ -5,9 +5,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"unicode"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/markdown/headingid"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/simp-lee/obsite/internal/slug"
@@ -324,7 +324,48 @@ func exactPathMatch(target string, notes map[string]*model.Note) *model.Note {
 			return note
 		}
 	}
-	return nil
+
+	canonicalCandidates := canonicalCandidatePaths(target)
+	if len(canonicalCandidates) == 0 {
+		return nil
+	}
+
+	var matched *model.Note
+	for _, note := range notes {
+		if note == nil {
+			continue
+		}
+		if _, ok := canonicalCandidates[model.CanonicalResourceLookupPath(note.RelPath)]; !ok {
+			continue
+		}
+		if matched != nil && matched.RelPath != note.RelPath {
+			return nil
+		}
+		matched = note
+	}
+
+	return matched
+}
+
+func canonicalCandidatePaths(target string) map[string]struct{} {
+	paths := candidatePaths(target)
+	if len(paths) == 0 {
+		return nil
+	}
+
+	canonical := make(map[string]struct{}, len(paths))
+	for _, candidate := range paths {
+		key := model.CanonicalResourceLookupPath(candidate)
+		if key == "" {
+			continue
+		}
+		canonical[key] = struct{}{}
+	}
+	if len(canonical) == 0 {
+		return nil
+	}
+
+	return canonical
 }
 
 func candidatePaths(target string) []string {
@@ -510,20 +551,21 @@ func resolveFragmentID(note *model.Note, fragment string) (string, bool) {
 		return "", false
 	}
 
+	canonicalFragment := headingid.CanonicalText(fragment)
 	normalizedID := normalizeHeadingID(fragment)
 
 	for _, heading := range note.Headings {
-		if strings.EqualFold(strings.TrimSpace(heading.ID), fragment) {
+		if headingid.CanonicalText(strings.TrimSpace(heading.ID)) == canonicalFragment {
 			return heading.ID, true
 		}
 	}
 	for _, heading := range note.Headings {
-		if strings.EqualFold(normalizeHeadingWhitespace(heading.Text), fragment) {
+		if headingid.CanonicalText(heading.Text) == canonicalFragment {
 			return heading.ID, true
 		}
 	}
 	for _, heading := range note.Headings {
-		if strings.EqualFold(strings.TrimSpace(heading.ID), normalizedID) {
+		if normalizeHeadingID(strings.TrimSpace(heading.ID)) == normalizedID {
 			return heading.ID, true
 		}
 	}
@@ -532,48 +574,11 @@ func resolveFragmentID(note *model.Note, fragment string) (string, bool) {
 }
 
 func normalizeHeadingID(value string) string {
-	value = normalizeHeadingWhitespace(value)
-	if value == "" {
-		return "heading"
-	}
-
-	var builder strings.Builder
-	lastHyphen := false
-
-	for _, r := range strings.ToLower(value) {
-		switch {
-		case isASCIIControl(r):
-			continue
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			builder.WriteRune(r)
-			lastHyphen = false
-		case unicode.IsSpace(r) || unicode.IsPunct(r) || unicode.IsSymbol(r) || r == '_' || r == '-':
-			if lastHyphen || builder.Len() == 0 {
-				continue
-			}
-			builder.WriteByte('-')
-			lastHyphen = true
-		}
-	}
-
-	normalized := strings.Trim(builder.String(), "-")
-	if normalized == "" {
-		return "heading"
-	}
-
-	return normalized
+	return headingid.Normalize(value)
 }
 
 func normalizeHeadingWhitespace(value string) string {
-	fields := strings.Fields(value)
-	if len(fields) == 0 {
-		return ""
-	}
-	return strings.Join(fields, " ")
-}
-
-func isASCIIControl(r rune) bool {
-	return (r >= 0 && r < 0x20) || r == 0x7f
+	return headingid.NormalizeWhitespace(value)
 }
 
 func composeRawTarget(target string, fragment string) string {
@@ -615,8 +620,14 @@ func lookupCanvasResource(idx *model.VaultIndex, current *model.Note, target str
 
 	normalized := strings.TrimSpace(strings.ReplaceAll(target, `\`, "/"))
 	normalized = strings.TrimPrefix(normalized, "/")
-	if normalized == "" || strings.Contains(normalized, "/") {
+	if normalized == "" {
 		return model.PathLookupResult{}
+	}
+	if strings.Contains(normalized, "/") {
+		if strings.HasPrefix(normalized, "./") || strings.HasPrefix(normalized, "../") {
+			return model.PathLookupResult{}
+		}
+		return idx.LookupResourcePath(normalized)
 	}
 
 	return idx.LookupResourceBaseName(normalized)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -110,7 +111,7 @@ func TestBuildCommandUsesDefaultVaultConfigPathAndCallsBuild(t *testing.T) {
 	if gotOutputPath != outputPath {
 		t.Fatalf("build outputPath = %q, want %q", gotOutputPath, outputPath)
 	}
-	if gotInput != expectedInput {
+	if !reflect.DeepEqual(gotInput, expectedInput) {
 		t.Fatalf("build input = %#v, want %#v", gotInput, expectedInput)
 	}
 	if gotOptions.DiagnosticsWriter == nil {
@@ -140,7 +141,7 @@ func TestBuildCommandAllowsConfigOverride(t *testing.T) {
 		if options.Force {
 			t.Fatalf("build options = %#v, want non-force config override build", options)
 		}
-		if input != expectedInput {
+		if !reflect.DeepEqual(input, expectedInput) {
 			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		return &internalbuild.BuildResult{}, nil
@@ -160,6 +161,43 @@ func TestBuildCommandAllowsConfigOverride(t *testing.T) {
 	}
 	if gotOverrides.VaultPath != vaultPath {
 		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
+	}
+}
+
+func TestBuildCommandPassesThemeOverride(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	var gotOverrides internalconfig.Overrides
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		gotOverrides = overrides
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden Notes", BaseURL: "https://example.com/"}}, nil
+	}
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		return &internalbuild.BuildResult{}, nil
+	}
+
+	_, _, err := executeForTest(t, deps, []string{
+		"build",
+		"--vault", vaultPath,
+		"--output", outputPath,
+		"--theme", "serif",
+	})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if gotOverrides.VaultPath != vaultPath {
+		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
+	}
+	if gotOverrides.Theme != "serif" {
+		t.Fatalf("loadConfig overrides.Theme = %q, want %q", gotOverrides.Theme, "serif")
 	}
 }
 

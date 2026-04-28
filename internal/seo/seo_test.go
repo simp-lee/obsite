@@ -300,6 +300,45 @@ func TestBuildJSONLDFallsBackToNoteLastModifiedWhenDateMissing(t *testing.T) {
 	assertBreadcrumbItem(t, items[2], 3, "Guide", "https://example.com/blog/notes/guide/")
 }
 
+func TestBuildJSONLDUsesDeterministicDescriptionFallbackForMinimalNotes(t *testing.T) {
+	t.Parallel()
+
+	publishedAt := time.Date(2026, 4, 6, 10, 30, 0, 0, time.UTC)
+	page := model.PageData{
+		Kind: model.PageNote,
+		Site: model.SiteConfig{
+			BaseURL: "https://example.com/blog/",
+			Author:  "Alice Example",
+		},
+		Slug: "notes/sparse",
+	}
+	note := &model.Note{
+		RelPath: "notes/sparse.md",
+		Frontmatter: model.Frontmatter{
+			Title: "Sparse",
+			Date:  publishedAt,
+		},
+	}
+
+	jsonld, err := buildJSONLDForTest(page, note)
+	if err != nil {
+		t.Fatalf("BuildJSONLD() error = %v", err)
+	}
+
+	payload := decodeJSONLD(t, jsonld)
+	if len(payload) != 1 {
+		t.Fatalf("len(BuildJSONLD()) = %d, want %d", len(payload), 1)
+	}
+
+	article := findStructuredData(t, payload, "Article")
+	if got := article["description"]; got != "Sparse" {
+		t.Fatalf("article.description = %#v, want %q", got, "Sparse")
+	}
+	if got := article["url"]; got != "https://example.com/blog/notes/sparse/" {
+		t.Fatalf("article.url = %#v, want %q", got, "https://example.com/blog/notes/sparse/")
+	}
+}
+
 func TestBuildJSONLDReturnsBreadcrumbListWhenAuthorMissing(t *testing.T) {
 	t.Parallel()
 

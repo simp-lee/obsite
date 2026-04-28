@@ -1,3 +1,14 @@
+{{define "toc-list"}}
+<ol class="toc-list">
+  {{range .}}
+  <li>
+    <a href="#{{.ID}}">{{.Text}}</a>
+    {{with .Children}}{{template "toc-list" .}}{{end}}
+  </li>
+  {{end}}
+</ol>
+{{end}}
+
 {{define "content-note"}}
 <article class="page-shell article-page" data-e2e-custom-note="{{if .TitleID}}{{.TitleID}}{{else}}untitled-note{{end}}">
   <header class="page-header">

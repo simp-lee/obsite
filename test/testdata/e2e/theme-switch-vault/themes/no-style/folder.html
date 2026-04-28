@@ -1,0 +1,6 @@
+{{define "content-folder"}}
+<section data-theme-page="folder">
+  <h1>{{if .FolderPath}}{{.FolderPath}}{{else}}folder{{end}}</h1>
+  {{range .FolderChildren}}<a href="{{.URL}}">{{.Title}}</a>{{end}}
+</section>
+{{end}}

@@ -12,9 +12,12 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	xhtml "golang.org/x/net/html"
@@ -51,22 +54,18 @@ type BuildResult struct {
 }
 
 // SiteInput is the build-owned contract for site generation.
-//
-// It keeps loader-derived build policy inside the build boundary instead of
-// leaking config-layer provenance through model.SiteConfig or Options.
 type SiteInput struct {
-	Config                model.SiteConfig
-	allowMissingCustomCSS bool
+	Config model.SiteConfig
 }
 
 type buildOptions struct {
-	concurrency           int
-	diagnosticsWriter     io.Writer
-	force                 bool
-	allowMissingCustomCSS bool
-	minifier              *minify.M
-	pagefindLookPath      func(string) (string, error)
-	pagefindCommand       func(string, ...string) ([]byte, error)
+	concurrency       int
+	diagnosticsWriter io.Writer
+	force             bool
+	minifier          *minify.M
+	pagefindLookPath  func(string) (string, error)
+	pagefindCommand   func(string, ...string) ([]byte, error)
+	testNotePageHook  func(render.NotePageInput)
 }
 
 type renderedNote struct {
@@ -123,10 +122,49 @@ type stagedOutputPublisher struct {
 }
 
 var (
-	stagedOutputRename    = os.Rename
-	stagedOutputRemoveAll = os.RemoveAll
-	stagedOutputStat      = os.Stat
+	stagedOutputRename     = os.Rename
+	stagedOutputRemoveAll  = os.RemoveAll
+	stagedOutputStat       = os.Stat
+	buildRenderHookBarrier sync.RWMutex
+	buildRenderHookOwnerID atomic.Uint64
 )
+
+func lockBuildRenderHookIsolation() {
+	buildRenderHookBarrier.Lock()
+	buildRenderHookOwnerID.Store(currentGoroutineID())
+}
+
+func unlockBuildRenderHookIsolation() {
+	buildRenderHookOwnerID.Store(0)
+	buildRenderHookBarrier.Unlock()
+}
+
+func lockBuildExecutionForRenderHooks() func() {
+	if ownerID := buildRenderHookOwnerID.Load(); ownerID != 0 && ownerID == currentGoroutineID() {
+		return func() {}
+	}
+
+	buildRenderHookBarrier.RLock()
+	return func() {
+		buildRenderHookBarrier.RUnlock()
+	}
+}
+
+func currentGoroutineID() uint64 {
+	var stack [64]byte
+	n := runtime.Stack(stack[:], false)
+	fields := bytes.Fields(stack[:n])
+	if len(fields) < 2 {
+		return 0
+	}
+
+	id, err := strconv.ParseUint(string(fields[1]), 10, 64)
+	if err != nil {
+		return 0
+	}
+
+	return id
+}
 
 const (
 	managedOutputMarkerFilename = ".obsite-output"
@@ -239,30 +277,28 @@ func (e diagnosticBuildError) Error() string {
 	return fmt.Sprintf("build failed with %d diagnostic error(s)", e.count)
 }
 
-// LoadSiteInput loads build input using config-layer normalization while
-// preserving build-only policy such as auto-detected custom.css optionality.
+// LoadSiteInput loads build input using config-layer normalization.
 func LoadSiteInput(path string, overrides internalconfig.Overrides) (SiteInput, error) {
 	loaded, err := internalconfig.LoadForBuild(path, overrides)
 	if err != nil {
 		return SiteInput{}, err
 	}
 
-	return SiteInput{
-		Config:                loaded.Config,
-		allowMissingCustomCSS: loaded.AllowMissingCustomCSS,
-	}, nil
+	return SiteInput{Config: loaded.Config}, nil
 }
 
 // BuildWithOptions runs the full Obsite site-generation pipeline from a build.SiteInput contract.
 func BuildWithOptions(input SiteInput, vaultPath string, outputPath string, options Options) (*BuildResult, error) {
 	return buildWithOptions(input.Config, vaultPath, outputPath, buildOptions{
-		force:                 options.Force,
-		diagnosticsWriter:     options.DiagnosticsWriter,
-		allowMissingCustomCSS: input.allowMissingCustomCSS,
+		force:             options.Force,
+		diagnosticsWriter: options.DiagnosticsWriter,
 	})
 }
 
 func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string, options buildOptions) (result *BuildResult, err error) {
+	releaseRenderHookBuildLock := lockBuildExecutionForRenderHooks()
+	defer releaseRenderHookBuildLock()
+
 	options = normalizeBuildOptions(options)
 	result = &BuildResult{}
 	diagnostics := diag.NewCollector()
@@ -290,11 +326,15 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("validate config: %w", err)
 	}
 	cfg = normalizedCfg
-	cfg.CustomCSS, err = resolveCustomCSSSource(cfg.CustomCSS, options.allowMissingCustomCSS)
+	cfg.CustomCSS, err = resolveCustomCSSSource(cfg.CustomCSS)
 	if err != nil {
 		return result, fmt.Errorf("resolve custom CSS: %w", err)
 	}
-	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS)
+	themeAssets, err := render.ListThemeStaticAssets(cfg.ThemeRoot)
+	if err != nil {
+		return result, fmt.Errorf("list theme static assets: %w", err)
+	}
+	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, themeAssets)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
 	if err != nil {
@@ -327,7 +367,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		buildABISignature = abiSourceErr.fallbackSignature
 		warnBuildABISourceSignatureFailure(diagnostics, abiSourceErr)
 	}
-	templateSignature, err := buildTemplateSignature(cfg.TemplateDir)
+	templateSignature, err := buildTemplateSignature(cfg.ActiveThemeName, cfg.ThemeRoot, themeAssets)
 	if err != nil {
 		return result, err
 	}
@@ -380,7 +420,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	noteDerivedSignatures := buildNoteDerivedSignatures(idx)
 	hashSnapshot := diffNoteHashes(previousManifest, noteHashes)
 
-	assetCollector, err := internalasset.NewCollectorWithResourceFiles(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths, scanResult.ResourceFiles)
+	assetCollector, err := internalasset.NewCollectorWithResourceFiles(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths, nil)
 	if err != nil {
 		return result, fmt.Errorf("create asset collector: %w", err)
 	}
@@ -438,7 +478,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	result.Graph = link.BuildGraph(idx, resolvedOutLinks)
 	backlinkSignatures := buildBacklinkDerivedSignatures(idx, result.Graph)
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyBacklinks, backlinkSignatures)
-	relatedArticlesByPath, relatedSignatures, err := buildRelatedArticlesByPath(cfg, idx, result.Graph, summaryByPath)
+	relatedArticlesByPath, relatedSignatures, err := buildRelatedArticlesByPath(cfg, idx, result.Graph, summaryByPath, renderedByPath)
 	if err != nil {
 		return result, fmt.Errorf("build related articles: %w", err)
 	}
@@ -463,7 +503,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages := make([]model.PageData, 0, len(noteStatesByPath)+len(idx.Tags)+len(folderPages)+2)
 		pageSignatures := make(map[string]string)
 
-		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, sidebarTree, searchReady, notePageDirty, noteStatesByPath, relatedArticlesByPath)
+		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, sidebarTree, searchReady, notePageDirty, noteStatesByPath, relatedArticlesByPath, options.testNotePageHook)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -525,11 +565,17 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("write popover payloads: %w", err)
 	}
 
-	if err := render.EmitStyleCSS(stagingOutputPath, cfg); err != nil {
+	wroteStyleCSS, err := render.EmitStyleCSS(stagingOutputPath, cfg)
+	if err != nil {
 		return result, fmt.Errorf("emit style.css: %w", err)
 	}
-	if err := minifyCSSFile(filepath.Join(stagingOutputPath, "style.css"), options.minifier); err != nil {
-		return result, err
+	if wroteStyleCSS {
+		if err := minifyCSSFile(filepath.Join(stagingOutputPath, "style.css"), options.minifier); err != nil {
+			return result, err
+		}
+	}
+	if err := render.EmitThemeStaticAssets(stagingOutputPath, themeAssets); err != nil {
+		return result, fmt.Errorf("emit theme static assets: %w", err)
 	}
 	if err := render.EmitRuntimeAssets(stagingOutputPath); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
@@ -573,12 +619,12 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			return result, fmt.Errorf("compute search index signature: %w", err)
 		}
 
-		reusedSearchIndex, err := tryReuseSearchIndex(previousManifest, previousOutputPath, stagingOutputPath, searchIndexSignature, fullDirty)
+		reusedSearchIndex, err := tryReuseSearchIndex(previousManifest, previousOutputPath, stagingOutputPath, searchIndexSignature, cfg.ActiveThemeName, fullDirty)
 		if err != nil {
 			return result, fmt.Errorf("reuse search index bundle: %w", err)
 		}
 		if !reusedSearchIndex {
-			if err := runPagefindIndex(stagingOutputPath, cfg.Search, options); err != nil {
+			if err := runPagefindIndex(stagingOutputPath, cfg.Search, cfg.ActiveThemeName, options); err != nil {
 				return result, fmt.Errorf("build search index: %w", err)
 			}
 		}
@@ -616,7 +662,7 @@ func normalizeBuildOptions(options buildOptions) buildOptions {
 	return options
 }
 
-func runPagefindIndex(outputPath string, searchCfg model.SearchConfig, options buildOptions) error {
+func runPagefindIndex(outputPath string, searchCfg model.SearchConfig, activeThemeName string, options buildOptions) error {
 	binaryPath, err := options.pagefindLookPath(searchCfg.PagefindPath)
 	if err != nil {
 		return fmt.Errorf(
@@ -641,14 +687,14 @@ func runPagefindIndex(outputPath string, searchCfg model.SearchConfig, options b
 	if err != nil {
 		return fmt.Errorf("pagefind indexing failed for %q: %w%s", binaryPath, err, formatCommandOutputDetails(output))
 	}
-	if err := validatePagefindOutput(outputPath); err != nil {
+	if err := finalizePagefindOutput(outputPath, activeThemeName); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func tryReuseSearchIndex(previous *CacheManifest, previousOutputPath string, outputPath string, currentSignature string, fullDirty bool) (bool, error) {
+func tryReuseSearchIndex(previous *CacheManifest, previousOutputPath string, outputPath string, currentSignature string, activeThemeName string, fullDirty bool) (bool, error) {
 	if fullDirty || previous == nil {
 		return false, nil
 	}
@@ -666,7 +712,7 @@ func tryReuseSearchIndex(previous *CacheManifest, previousOutputPath string, out
 	if !copied {
 		return false, nil
 	}
-	if err := validatePagefindOutput(outputPath); err != nil {
+	if err := finalizePagefindOutput(outputPath, activeThemeName); err != nil {
 		_ = os.RemoveAll(filepath.Join(outputPath, pagefindOutputSubdir))
 		return false, nil
 	}
@@ -800,6 +846,107 @@ func validatePagefindOutput(outputPath string) error {
 	}
 
 	return nil
+}
+
+var pagefindEntryTopLevelKeyOrder = []string{"version", "theme", "languages", "include_characters"}
+
+func finalizePagefindOutput(outputPath string, activeThemeName string) error {
+	if err := rewritePagefindEntryTheme(outputPath, activeThemeName); err != nil {
+		return err
+	}
+
+	return validatePagefindOutput(outputPath)
+}
+
+func rewritePagefindEntryTheme(outputPath string, activeThemeName string) error {
+	entryRelPath := filepath.Join(pagefindOutputSubdir, "pagefind-entry.json")
+	manifestPath := filepath.ToSlash(entryRelPath)
+	absolutePath := filepath.Join(outputPath, entryRelPath)
+
+	data, err := os.ReadFile(absolutePath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("pagefind indexing did not produce %q", manifestPath)
+		}
+		return fmt.Errorf("read generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+
+	fields := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("parse generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+
+	trimmedTheme := strings.TrimSpace(activeThemeName)
+	if trimmedTheme == "" {
+		delete(fields, "theme")
+	} else {
+		themeValue, err := json.Marshal(trimmedTheme)
+		if err != nil {
+			return fmt.Errorf("marshal generated Pagefind manifest %q theme marker: %w", manifestPath, err)
+		}
+		fields["theme"] = themeValue
+	}
+
+	rewritten, err := marshalOrderedRawJSONObject(fields, pagefindEntryTopLevelKeyOrder)
+	if err != nil {
+		return fmt.Errorf("marshal generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+	if bytes.Equal(data, rewritten) {
+		return nil
+	}
+
+	if err := os.WriteFile(absolutePath, rewritten, 0o644); err != nil {
+		return fmt.Errorf("write generated Pagefind manifest %q: %w", manifestPath, err)
+	}
+
+	return nil
+}
+
+func marshalOrderedRawJSONObject(fields map[string]json.RawMessage, preferredOrder []string) ([]byte, error) {
+	orderedKeys := make([]string, 0, len(fields))
+	seen := make(map[string]struct{}, len(fields))
+	for _, key := range preferredOrder {
+		if _, ok := fields[key]; !ok {
+			continue
+		}
+		orderedKeys = append(orderedKeys, key)
+		seen[key] = struct{}{}
+	}
+
+	extraKeys := make([]string, 0, len(fields)-len(orderedKeys))
+	for key := range fields {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		extraKeys = append(extraKeys, key)
+	}
+	sort.Strings(extraKeys)
+	orderedKeys = append(orderedKeys, extraKeys...)
+
+	var buf bytes.Buffer
+	buf.WriteByte('{')
+	for index, key := range orderedKeys {
+		if index > 0 {
+			buf.WriteByte(',')
+		}
+
+		encodedKey, err := json.Marshal(key)
+		if err != nil {
+			return nil, err
+		}
+		buf.Write(encodedKey)
+		buf.WriteByte(':')
+
+		value := bytes.TrimSpace(fields[key])
+		if len(value) == 0 {
+			buf.WriteString("null")
+			continue
+		}
+		buf.Write(value)
+	}
+	buf.WriteByte('}')
+
+	return buf.Bytes(), nil
 }
 
 func readPagefindEntryManifest(outputPath string, relPath string) (pagefindEntryManifest, error) {
@@ -953,20 +1100,29 @@ func NormalizeVaultPath(vaultPath string) (string, error) {
 }
 
 func validateManagedOutputPath(vaultPath string, outputPath string) error {
-	relPath, err := filepath.Rel(vaultPath, outputPath)
+	resolvedOutputPath, err := resolveValidatedManagedOutputPath(vaultPath, outputPath)
+	if err != nil {
+		return err
+	}
+
+	relPath, err := filepath.Rel(vaultPath, resolvedOutputPath)
 	if err != nil {
 		return fmt.Errorf("compare output path %q against vault %q: %w", outputPath, vaultPath, err)
 	}
 	if relPath == "." {
 		return fmt.Errorf("output path %q must not equal the vault root %q", outputPath, vaultPath)
 	}
-	if pathContainsPath(outputPath, vaultPath) {
+	if pathContainsPath(resolvedOutputPath, vaultPath) {
 		return fmt.Errorf("output path %q must not contain the vault %q", outputPath, vaultPath)
 	}
 	return nil
 }
 
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
+	if _, err := resolveValidatedManagedOutputPath(vaultPath, outputPath); err != nil {
+		return nil, err
+	}
+
 	state, err := validateManagedOutputDir(outputPath)
 	if err != nil {
 		return nil, err
@@ -1021,6 +1177,54 @@ func validateManagedOutputDir(outputPath string) (managedOutputDirState, error) 
 		}
 	}
 	return state, nil
+}
+
+func resolveValidatedManagedOutputPath(vaultPath string, outputPath string) (string, error) {
+	resolvedOutputPath, hasSymlinkAncestor, err := resolveManagedOutputPathAncestors(outputPath)
+	if err != nil {
+		return "", err
+	}
+	if hasSymlinkAncestor && pathContainsPath(vaultPath, resolvedOutputPath) {
+		return "", fmt.Errorf("output path %q resolves through a symbolic link ancestor into the vault %q", outputPath, vaultPath)
+	}
+	return resolvedOutputPath, nil
+}
+
+func resolveManagedOutputPathAncestors(outputPath string) (string, bool, error) {
+	resolvedParentPath, hasSymlinkAncestor, err := resolvePathThroughExistingAncestors(filepath.Dir(outputPath))
+	if err != nil {
+		return "", false, fmt.Errorf("resolve output path %q: %w", outputPath, err)
+	}
+	return filepath.Join(resolvedParentPath, filepath.Base(outputPath)), hasSymlinkAncestor, nil
+}
+
+func resolvePathThroughExistingAncestors(path string) (string, bool, error) {
+	currentPath := filepath.Clean(path)
+	var pendingComponents []string
+
+	for {
+		if _, err := os.Lstat(currentPath); err == nil {
+			resolvedPath, err := filepath.EvalSymlinks(currentPath)
+			if err != nil {
+				return "", false, fmt.Errorf("resolve path %q: %w", currentPath, err)
+			}
+
+			hasSymlinkAncestor := filepath.Clean(resolvedPath) != currentPath
+			for index := len(pendingComponents) - 1; index >= 0; index-- {
+				resolvedPath = filepath.Join(resolvedPath, pendingComponents[index])
+			}
+			return resolvedPath, hasSymlinkAncestor, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("stat path %q: %w", currentPath, err)
+		}
+
+		parentPath := filepath.Dir(currentPath)
+		if parentPath == currentPath {
+			return "", false, fmt.Errorf("resolve path %q: reached missing filesystem root", path)
+		}
+		pendingComponents = append(pendingComponents, filepath.Base(currentPath))
+		currentPath = parentPath
+	}
 }
 
 func writeManagedOutputMarker(outputPath string) error {
@@ -1148,12 +1352,15 @@ func (publisher *stagedOutputPublisher) rollback() error {
 }
 
 func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
-	info, err := os.Stat(outputPath)
+	info, err := os.Lstat(outputPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return managedOutputDirState{}, nil
 		}
 		return managedOutputDirState{}, fmt.Errorf("stat output path %q: %w", outputPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return managedOutputDirState{}, fmt.Errorf("output path %q must not be a symbolic link", outputPath)
 	}
 
 	state := managedOutputDirState{exists: true, isDir: info.IsDir()}
@@ -1534,6 +1741,7 @@ func writeNotePages(
 	notePageDirty map[string]struct{},
 	noteStates map[string]*noteBuildState,
 	relatedArticlesByPath map[string][]model.RelatedArticle,
+	notePageHook func(render.NotePageInput),
 ) ([]model.PageData, error) {
 	paths := sortedRenderedPaths(renderedByPath)
 	pages := make([]model.PageData, 0, len(paths))
@@ -1566,7 +1774,7 @@ func writeNotePages(
 			}
 		}
 
-		page, err := renderNotePage(render.NotePageInput{
+		renderInput := render.NotePageInput{
 			Site:            cfg,
 			Note:            renderedNote.rendered,
 			Tags:            buildTagLinks(notePageRelPath(renderedNote.rendered), idx, renderedNote.rendered.Tags),
@@ -1574,7 +1782,11 @@ func writeNotePages(
 			RelatedArticles: cloneRelatedArticles(relatedArticlesByPath[renderedNote.source.RelPath]),
 			SidebarTree:     sidebarTreeForPage(cfg, sidebarTree, renderedNote.rendered.Slug),
 			HasSearch:       searchReady,
-		})
+		}
+		if notePageHook != nil {
+			notePageHook(renderInput)
+		}
+		page, err := renderNotePage(renderInput)
 		if state != nil {
 			state.pageDiagnostics = cloneDiagnostics(page.Diagnostics)
 		}
@@ -2497,16 +2709,35 @@ func minifyCSSFile(filePath string, minifier *minify.M) error {
 	return nil
 }
 
-func buildReservedAssetOutputPaths(customCSSPath string) []string {
-	reserved := render.RuntimeAssetOutputPaths()
-	if strings.TrimSpace(customCSSPath) == "" {
-		return reserved
+func buildReservedAssetOutputPaths(customCSSPath string, themeAssets []render.ThemeStaticAsset) []string {
+	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+len(themeAssets)+1)
+	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+len(themeAssets)+1)
+	appendReserved := func(value string) {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			return
+		}
+		if _, ok := seen[trimmed]; ok {
+			return
+		}
+		seen[trimmed] = struct{}{}
+		reserved = append(reserved, trimmed)
 	}
 
-	return append(reserved, customCSSOutputPath)
+	for _, outputPath := range render.RuntimeAssetOutputPaths() {
+		appendReserved(outputPath)
+	}
+	for _, asset := range themeAssets {
+		appendReserved(asset.OutputPath)
+	}
+	if strings.TrimSpace(customCSSPath) != "" {
+		appendReserved(customCSSOutputPath)
+	}
+
+	return reserved
 }
 
-func resolveCustomCSSSource(customCSSPath string, autoDetected bool) (string, error) {
+func resolveCustomCSSSource(customCSSPath string) (string, error) {
 	trimmedPath := strings.TrimSpace(customCSSPath)
 	if trimmedPath == "" {
 		return "", nil
@@ -2514,9 +2745,6 @@ func resolveCustomCSSSource(customCSSPath string, autoDetected bool) (string, er
 
 	resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(trimmedPath)
 	if err != nil {
-		if autoDetected && errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("custom CSS %q does not exist", trimmedPath)
 		}
@@ -2781,12 +3009,13 @@ func buildBacklinkDerivedSignatures(idx *model.VaultIndex, graph *model.LinkGrap
 	return signatures
 }
 
-func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, graph *model.LinkGraph, summaryByPath map[string]string) (map[string][]model.RelatedArticle, map[string]string, error) {
+func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, graph *model.LinkGraph, summaryByPath map[string]string, renderedByPath map[string]*renderedNote) (map[string][]model.RelatedArticle, map[string]string, error) {
 	if !cfg.Related.Enabled || cfg.Related.Count <= 0 || idx == nil {
 		return map[string][]model.RelatedArticle{}, map[string]string{}, nil
 	}
 
-	rankedByPath, err := recommend.Build(idx, graph, cfg.Related.Count)
+	recommendationIndex := buildRelatedRecommendationIndex(idx, renderedByPath)
+	rankedByPath, err := recommend.Build(recommendationIndex, graph, cfg.Related.Count)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -2817,6 +3046,52 @@ func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, gra
 	}
 
 	return articlesByPath, signatures, nil
+}
+
+func buildRelatedRecommendationIndex(idx *model.VaultIndex, renderedByPath map[string]*renderedNote) *model.VaultIndex {
+	if idx == nil || len(renderedByPath) == 0 {
+		return idx
+	}
+
+	clonedIndex := *idx
+	clonedIndex.Notes = make(map[string]*model.Note, len(idx.Notes))
+	for relPath, note := range idx.Notes {
+		cloned := cloneNote(note)
+		if renderedText := renderedVisibleText(renderedByPath[relPath]); renderedText != "" && cloned != nil {
+			cloned.RawContent = []byte(strings.TrimSpace(string(cloned.RawContent) + "\n\n" + renderedText))
+		}
+		clonedIndex.Notes[relPath] = cloned
+	}
+
+	return &clonedIndex
+}
+
+func renderedVisibleText(rendered *renderedNote) string {
+	if rendered == nil || rendered.rendered == nil || len(rendered.rendered.HTMLContent) == 0 {
+		return ""
+	}
+
+	root, err := xhtml.Parse(strings.NewReader(rendered.rendered.HTMLContent))
+	if err != nil {
+		return strings.Join(strings.Fields(string(rendered.rendered.HTMLContent)), " ")
+	}
+
+	var fields []string
+	var walk func(*xhtml.Node)
+	walk = func(node *xhtml.Node) {
+		if node == nil {
+			return
+		}
+		if node.Type == xhtml.TextNode {
+			fields = append(fields, strings.Fields(node.Data)...)
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			walk(child)
+		}
+	}
+	walk(root)
+
+	return strings.Join(fields, " ")
 }
 
 func mergeDerivedSignatures(current map[string]map[string]string, states map[string]*noteBuildState, key string, values map[string]string) {

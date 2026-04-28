@@ -4,14 +4,17 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/render"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,33 +44,37 @@ type Overrides struct {
 	Language       string
 	DefaultImg     string
 	DefaultPublish *bool
+	Theme          string
 	VaultPath      string
 }
 
-// LoadedSiteConfig carries the normalized site config plus build-only policy
-// that should not leak into the shared model.SiteConfig contract.
+// LoadedSiteConfig carries the normalized site config after config-file and
+// load-path defaults have been resolved.
 type LoadedSiteConfig struct {
-	Config                model.SiteConfig
-	AllowMissingCustomCSS bool
+	Config model.SiteConfig
 }
 
 type fileConfig struct {
-	Title          string               `yaml:"title"`
-	BaseURL        string               `yaml:"baseURL"`
-	Author         string               `yaml:"author"`
-	Description    string               `yaml:"description"`
-	Language       string               `yaml:"language"`
-	DefaultImg     string               `yaml:"defaultImg"`
-	DefaultPublish *bool                `yaml:"defaultPublish"`
-	TemplateDir    string               `yaml:"templateDir"`
-	CustomCSS      string               `yaml:"customCSS"`
-	Search         searchFileConfig     `yaml:"search"`
-	Pagination     paginationFileConfig `yaml:"pagination"`
-	Sidebar        enabledFileConfig    `yaml:"sidebar"`
-	Popover        enabledFileConfig    `yaml:"popover"`
-	Related        relatedFileConfig    `yaml:"related"`
-	RSS            enabledFileConfig    `yaml:"rss"`
-	Timeline       timelineFileConfig   `yaml:"timeline"`
+	Title          string                     `yaml:"title"`
+	BaseURL        string                     `yaml:"baseURL"`
+	Author         string                     `yaml:"author"`
+	Description    string                     `yaml:"description"`
+	Language       string                     `yaml:"language"`
+	DefaultImg     string                     `yaml:"defaultImg"`
+	DefaultPublish *bool                      `yaml:"defaultPublish"`
+	Themes         map[string]fileThemeConfig `yaml:"themes"`
+	DefaultTheme   string                     `yaml:"defaultTheme"`
+	Search         searchFileConfig           `yaml:"search"`
+	Pagination     paginationFileConfig       `yaml:"pagination"`
+	Sidebar        enabledFileConfig          `yaml:"sidebar"`
+	Popover        enabledFileConfig          `yaml:"popover"`
+	Related        relatedFileConfig          `yaml:"related"`
+	RSS            enabledFileConfig          `yaml:"rss"`
+	Timeline       timelineFileConfig         `yaml:"timeline"`
+}
+
+type fileThemeConfig struct {
+	Root string `yaml:"root"`
 }
 
 type enabledFileConfig struct {
@@ -135,7 +142,7 @@ func LoadForBuild(path string, overrides Overrides) (LoadedSiteConfig, error) {
 		return LoadedSiteConfig{}, fmt.Errorf("validate config %q: %w", path, err)
 	}
 
-	loaded, err := applyLoadPathDefaults(normalized, paths)
+	loaded, err := applyLoadPathDefaults(normalized, paths, overrides.Theme)
 	if err != nil {
 		if path == "" {
 			return LoadedSiteConfig{}, fmt.Errorf("resolve config paths: %w", err)
@@ -266,16 +273,35 @@ func resolveLoadPaths(configPath string, overrides Overrides) loadPaths {
 	paths := loadPaths{}
 
 	if trimmedConfigPath := strings.TrimSpace(configPath); trimmedConfigPath != "" {
-		paths.configDir = filepath.Clean(filepath.Dir(trimmedConfigPath))
+		paths.configDir = normalizeAbsolutePath(filepath.Dir(trimmedConfigPath))
 	}
 	if trimmedVaultPath := strings.TrimSpace(overrides.VaultPath); trimmedVaultPath != "" {
-		paths.vaultRoot = filepath.Clean(trimmedVaultPath)
+		paths.vaultRoot = normalizeAbsolutePath(trimmedVaultPath)
 	}
 
 	return paths
 }
 
+func normalizeAbsolutePath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	cleaned := filepath.Clean(trimmed)
+	absPath, err := filepath.Abs(cleaned)
+	if err != nil {
+		return cleaned
+	}
+
+	return filepath.Clean(absPath)
+}
+
 func parseFileConfig(data []byte) (fileConfig, error) {
+	if err := prevalidateFileConfigYAML(data); err != nil {
+		return fileConfig{}, err
+	}
+
 	var cfg fileConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -292,6 +318,15 @@ func validateParsedFileConfig(parsed fileConfig) error {
 	}
 	if parsed.Related.Count != nil && *parsed.Related.Count <= 0 {
 		return fmt.Errorf("related.count must be greater than 0")
+	}
+	for name, theme := range parsed.Themes {
+		trimmedName := strings.TrimSpace(name)
+		if trimmedName == "" {
+			return fmt.Errorf("themes contains an empty theme name")
+		}
+		if strings.TrimSpace(theme.Root) == "" {
+			return fmt.Errorf("themes.%s.root must not be empty", trimmedName)
+		}
 	}
 
 	return nil
@@ -320,11 +355,14 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 		cfg.DefaultPublish = *parsed.DefaultPublish
 		cfg.DefaultPublishSet = true
 	}
-	if value := strings.TrimSpace(parsed.TemplateDir); value != "" {
-		cfg.TemplateDir = value
+	if len(parsed.Themes) > 0 {
+		cfg.Themes = make(map[string]model.ThemeConfig, len(parsed.Themes))
+		for name, theme := range parsed.Themes {
+			cfg.Themes[strings.TrimSpace(name)] = model.ThemeConfig{Root: strings.TrimSpace(theme.Root)}
+		}
 	}
-	if value := strings.TrimSpace(parsed.CustomCSS); value != "" {
-		cfg.CustomCSS = value
+	if value := strings.TrimSpace(parsed.DefaultTheme); value != "" {
+		cfg.DefaultTheme = value
 	}
 	if parsed.Search.Enabled != nil {
 		cfg.Search.Enabled = *parsed.Search.Enabled
@@ -413,7 +451,27 @@ func validate(cfg *model.SiteConfig) error {
 		cfg.Language = defaultLanguage
 	}
 	cfg.DefaultImg = strings.TrimSpace(cfg.DefaultImg)
-	cfg.TemplateDir = strings.TrimSpace(cfg.TemplateDir)
+	if len(cfg.Themes) > 0 {
+		normalizedThemes := make(map[string]model.ThemeConfig, len(cfg.Themes))
+		for name, theme := range cfg.Themes {
+			trimmedName := strings.TrimSpace(name)
+			if trimmedName == "" {
+				return fmt.Errorf("themes contains an empty theme name")
+			}
+			if _, exists := normalizedThemes[trimmedName]; exists {
+				return fmt.Errorf("themes contains duplicate theme name %q", trimmedName)
+			}
+			trimmedRoot := strings.TrimSpace(theme.Root)
+			if trimmedRoot == "" {
+				return fmt.Errorf("themes.%s.root must not be empty", trimmedName)
+			}
+			normalizedThemes[trimmedName] = model.ThemeConfig{Root: trimmedRoot}
+		}
+		cfg.Themes = normalizedThemes
+	}
+	cfg.DefaultTheme = strings.TrimSpace(cfg.DefaultTheme)
+	cfg.ActiveThemeName = strings.TrimSpace(cfg.ActiveThemeName)
+	cfg.ThemeRoot = strings.TrimSpace(cfg.ThemeRoot)
 	cfg.CustomCSS = strings.TrimSpace(cfg.CustomCSS)
 	cfg.Search.PagefindPath = strings.TrimSpace(cfg.Search.PagefindPath)
 	cfg.Search.PagefindVersion = strings.TrimSpace(cfg.Search.PagefindVersion)
@@ -433,26 +491,47 @@ func validate(cfg *model.SiteConfig) error {
 	return nil
 }
 
-func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths) (LoadedSiteConfig, error) {
+func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths, selectedTheme string) (LoadedSiteConfig, error) {
 	baseDir := paths.configDir
 	if baseDir == "" {
 		baseDir = paths.vaultRoot
 	}
 
-	cfg.TemplateDir = resolveConfiguredPath(cfg.TemplateDir, baseDir)
-	cfg.CustomCSS = resolveConfiguredPath(cfg.CustomCSS, baseDir)
-	cfg.Search.PagefindPath = resolvePagefindPath(cfg.Search.PagefindPath, baseDir)
-	if cfg.CustomCSS != "" {
-		return LoadedSiteConfig{Config: cfg}, nil
+	if len(cfg.Themes) > 0 {
+		resolvedThemes := make(map[string]model.ThemeConfig, len(cfg.Themes))
+		for name, theme := range cfg.Themes {
+			resolvedThemes[name] = model.ThemeConfig{Root: resolveConfiguredPath(theme.Root, paths.configDir)}
+		}
+		cfg.Themes = resolvedThemes
 	}
+	cfg.Search.PagefindPath = resolvePagefindPath(cfg.Search.PagefindPath, baseDir)
 
-	detectedCSS, err := detectCustomCSS(paths.configDir, paths.vaultRoot)
+	detectedCSS, err := detectCustomCSS(paths.vaultRoot)
 	if err != nil {
 		return LoadedSiteConfig{}, err
 	}
 	cfg.CustomCSS = detectedCSS
 
-	return LoadedSiteConfig{Config: cfg, AllowMissingCustomCSS: detectedCSS != ""}, nil
+	activeThemeName, err := resolveSelectedThemeName(cfg, selectedTheme)
+	if err != nil {
+		return LoadedSiteConfig{}, err
+	}
+	cfg.ActiveThemeName = activeThemeName
+	if err := validateConfiguredThemeRoots(cfg.Themes, activeThemeName); err != nil {
+		return LoadedSiteConfig{}, err
+	}
+	if activeThemeName == "" {
+		cfg.ThemeRoot = ""
+		return LoadedSiteConfig{Config: cfg}, nil
+	}
+
+	selectedThemeConfig := cfg.Themes[activeThemeName]
+	cfg.ThemeRoot = strings.TrimSpace(selectedThemeConfig.Root)
+	if err := validateSelectedThemeRoot(activeThemeName, cfg.ThemeRoot); err != nil {
+		return LoadedSiteConfig{}, err
+	}
+
+	return LoadedSiteConfig{Config: cfg}, nil
 }
 
 func resolveConfiguredPath(raw string, baseDir string) string {
@@ -460,11 +539,12 @@ func resolveConfiguredPath(raw string, baseDir string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if filepath.IsAbs(trimmed) || strings.TrimSpace(baseDir) == "" {
-		return filepath.Clean(trimmed)
+	candidate := trimmed
+	if !filepath.IsAbs(trimmed) && strings.TrimSpace(baseDir) != "" {
+		candidate = filepath.Join(baseDir, trimmed)
 	}
 
-	return filepath.Clean(filepath.Join(baseDir, trimmed))
+	return normalizeAbsolutePath(candidate)
 }
 
 func resolvePagefindPath(raw string, baseDir string) string {
@@ -517,6 +597,289 @@ func detectCustomCSS(roots ...string) (string, error) {
 	}
 
 	return "", nil
+}
+
+func resolveSelectedThemeName(cfg model.SiteConfig, selectedTheme string) (string, error) {
+	overrideTheme := strings.TrimSpace(selectedTheme)
+	if overrideTheme != "" {
+		if _, ok := cfg.Themes[overrideTheme]; !ok {
+			return "", fmt.Errorf("theme %q was not found in themes", overrideTheme)
+		}
+
+		return overrideTheme, nil
+	}
+
+	if cfg.DefaultTheme != "" {
+		if _, ok := cfg.Themes[cfg.DefaultTheme]; !ok {
+			return "", fmt.Errorf("defaultTheme %q was not found in themes", cfg.DefaultTheme)
+		}
+
+		return cfg.DefaultTheme, nil
+	}
+
+	return "", nil
+}
+
+func validateConfiguredThemeRoots(themes map[string]model.ThemeConfig, selectedThemeName string) error {
+	if len(themes) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(themes))
+	for name := range themes {
+		if name == selectedThemeName {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if err := validateConfiguredThemeRoot(name, themes[name].Root); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func validateConfiguredThemeRoot(themeName string, themeRoot string) error {
+	trimmedRoot := normalizeAbsolutePath(themeRoot)
+	if trimmedRoot == "" {
+		return fmt.Errorf("theme %q root must not be empty", themeName)
+	}
+
+	info, err := os.Stat(trimmedRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("theme %q root %q does not exist", themeName, trimmedRoot)
+		}
+
+		return fmt.Errorf("stat theme %q root %q: %w", themeName, trimmedRoot, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("theme %q root %q is not a directory", themeName, trimmedRoot)
+	}
+
+	return nil
+}
+
+func validateSelectedThemeRoot(themeName string, themeRoot string) error {
+	resolvedRoot, err := inspectSelectedThemeRoot(themeName, themeRoot)
+	if err != nil {
+		return err
+	}
+
+	missingTemplates, err := missingRequiredThemeTemplates(themeName, resolvedRoot)
+	if err != nil {
+		return err
+	}
+	if len(missingTemplates) > 0 {
+		return fmt.Errorf(
+			"selected theme %q root %q is missing required HTML templates: %s",
+			themeName,
+			resolvedRoot,
+			strings.Join(missingTemplates, ", "),
+		)
+	}
+	if err := validateOptionalThemeStyleFile(themeName, resolvedRoot); err != nil {
+		return err
+	}
+	if err := validateAdditionalThemeOwnedFiles(themeName, resolvedRoot); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func inspectSelectedThemeRoot(themeName string, themeRoot string) (string, error) {
+	trimmedRoot := normalizeAbsolutePath(themeRoot)
+	if trimmedRoot == "" {
+		return "", fmt.Errorf("selected theme %q root must not be empty", themeName)
+	}
+
+	info, err := os.Lstat(trimmedRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("selected theme %q root %q does not exist", themeName, trimmedRoot)
+		}
+
+		return "", fmt.Errorf("stat selected theme %q root %q: %w", themeName, trimmedRoot, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("selected theme %q root %q must not be a symlink", themeName, trimmedRoot)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("selected theme %q root %q is not a directory", themeName, trimmedRoot)
+	}
+
+	return trimmedRoot, nil
+}
+
+func missingRequiredThemeTemplates(themeName string, themeRoot string) ([]string, error) {
+	missing := make([]string, 0, len(render.RequiredHTMLTemplateNames))
+	for _, name := range render.RequiredHTMLTemplateNames {
+		filePath := filepath.Join(themeRoot, filepath.FromSlash(name))
+		_, _, err := internalfsutil.InspectRegularNonSymlinkFile(filePath)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				missing = append(missing, name)
+				continue
+			}
+			if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+				return nil, fmt.Errorf(
+					"selected theme %q root %q contains invalid required HTML template %q: must be a regular non-symlink file",
+					themeName,
+					themeRoot,
+					name,
+				)
+			}
+
+			return nil, fmt.Errorf("stat theme template %q: %w", filePath, err)
+		}
+	}
+
+	return missing, nil
+}
+
+func validateOptionalThemeStyleFile(themeName string, themeRoot string) error {
+	stylePath := filepath.Join(themeRoot, "style.css")
+	_, _, err := internalfsutil.InspectRegularNonSymlinkFile(stylePath)
+	if err == nil || errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+		return fmt.Errorf(
+			"selected theme %q root %q contains invalid theme stylesheet %q: must be a regular non-symlink file",
+			themeName,
+			themeRoot,
+			"style.css",
+		)
+	}
+
+	return fmt.Errorf("stat theme stylesheet %q: %w", stylePath, err)
+}
+
+func validateAdditionalThemeOwnedFiles(themeName string, themeRoot string) error {
+	validatedNames := make(map[string]struct{}, len(render.RequiredHTMLTemplateNames)+1)
+	for _, name := range render.RequiredHTMLTemplateNames {
+		validatedNames[name] = struct{}{}
+	}
+	validatedNames["style.css"] = struct{}{}
+
+	return filepath.WalkDir(themeRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk selected theme %q root %q: %w", themeName, themeRoot, walkErr)
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(themeRoot, currentPath)
+		if err != nil {
+			return fmt.Errorf("relative theme-owned path %q: %w", currentPath, err)
+		}
+		relPath = filepath.ToSlash(relPath)
+		if _, ok := validatedNames[relPath]; ok {
+			return nil
+		}
+		if entry.Type().IsRegular() {
+			return nil
+		}
+
+		if strings.EqualFold(path.Ext(relPath), ".html") {
+			return fmt.Errorf(
+				"selected theme %q root %q contains invalid optional HTML template %q: must be a regular non-symlink file",
+				themeName,
+				themeRoot,
+				relPath,
+			)
+		}
+
+		return fmt.Errorf(
+			"selected theme %q root %q contains invalid theme static asset %q: must be a regular non-symlink file",
+			themeName,
+			themeRoot,
+			relPath,
+		)
+	})
+}
+
+func requiredThemeTemplateNames() []string {
+	return append([]string(nil), render.RequiredHTMLTemplateNames...)
+}
+
+func prevalidateFileConfigYAML(data []byte) error {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return err
+	}
+	if len(document.Content) == 0 {
+		return nil
+	}
+
+	root := document.Content[0]
+	if root.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		keyNode := root.Content[index]
+		valueNode := root.Content[index+1]
+		switch strings.TrimSpace(keyNode.Value) {
+		case "templateDir":
+			return fmt.Errorf("templateDir is no longer supported; use themes.<name>.root with defaultTheme or --theme")
+		case "customCSS":
+			return fmt.Errorf("customCSS is no longer supported; use a theme style.css or vault-root custom.css")
+		case "themes":
+			if err := prevalidateThemesNode(valueNode); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}
+
+func prevalidateThemesNode(node *yaml.Node) error {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(node.Content)/2)
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		keyNode := node.Content[index]
+		valueNode := node.Content[index+1]
+		themeName := strings.TrimSpace(keyNode.Value)
+		if themeName == "" {
+			return fmt.Errorf("themes contains an empty theme name")
+		}
+		if _, exists := seen[themeName]; exists {
+			return fmt.Errorf("themes contains duplicate theme name %q", themeName)
+		}
+		seen[themeName] = struct{}{}
+
+		rootNode, ok := mappingValueByKey(valueNode, "root")
+		if ok && rootNode.Kind == yaml.ScalarNode && strings.TrimSpace(rootNode.Value) == "" {
+			return fmt.Errorf("themes.%s.root must not be empty", themeName)
+		}
+	}
+
+	return nil
+}
+
+func mappingValueByKey(node *yaml.Node, key string) (*yaml.Node, bool) {
+	if node == nil || node.Kind != yaml.MappingNode {
+		return nil, false
+	}
+
+	for index := 0; index+1 < len(node.Content); index += 2 {
+		if strings.TrimSpace(node.Content[index].Value) == key {
+			return node.Content[index+1], true
+		}
+	}
+
+	return nil, false
 }
 
 func normalizeTimelinePath(raw string) (string, error) {

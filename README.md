@@ -16,7 +16,8 @@ Obsite is a static site generator that turns an [Obsidian](https://obsidian.md/)
 - **KaTeX & Mermaid** — client-side math and diagram rendering
 - **Syntax highlighting** — Chroma-based code highlighting
 - **HTML & CSS minification** — smaller output files
-- **Custom templates & CSS** — override embedded templates and styles
+- **Named build-time themes** — select a configured theme with `--theme` or `defaultTheme`
+- **Global custom.css override** — optional vault-root stylesheet loaded after the active theme
 
 ## Installation
 
@@ -38,8 +39,14 @@ obsite init --vault ~/my-vault
 # 3. Build the site
 obsite build --vault ~/my-vault --output ~/my-site
 
+# Optional: select a configured theme for this build
+obsite build --vault ~/my-vault --output ~/my-site --theme feature
+
 # 4. Preview locally
 obsite serve --output ~/my-site
+
+# Optional: rebuild and preview a configured theme while watching the vault
+obsite serve --output ~/my-site --watch --vault ~/my-vault --theme feature
 ```
 
 Open <http://localhost:8080> to view the site.
@@ -61,7 +68,7 @@ obsite init --vault <PATH>
 Build a static site from an Obsidian vault.
 
 ```bash
-obsite build --vault <PATH> --output <PATH> [--config <PATH>] [--force]
+obsite build --vault <PATH> --output <PATH> [--config <PATH>] [--theme <NAME>] [--force]
 ```
 
 | Flag | Description |
@@ -69,6 +76,7 @@ obsite build --vault <PATH> --output <PATH> [--config <PATH>] [--force]
 | `--vault` | Path to the Obsidian vault (required) |
 | `--output` | Path to write the generated site (required) |
 | `--config` | Path to `obsite.yaml` (defaults to `<vault>/obsite.yaml`) |
+| `--theme` | Theme name declared under `themes`; overrides `defaultTheme` for this build |
 | `--force` | Ignore incremental cache and rebuild all pages |
 
 ### `obsite serve`
@@ -77,7 +85,7 @@ Serve the generated site for local preview.
 
 ```bash
 obsite serve --output <PATH> [--port <NUM>]
-obsite serve --output <PATH> --watch --vault <PATH> [--config <PATH>] [--port <NUM>]
+obsite serve --output <PATH> --watch --vault <PATH> [--config <PATH>] [--theme <NAME>] [--port <NUM>]
 ```
 
 | Flag | Description |
@@ -85,8 +93,11 @@ obsite serve --output <PATH> --watch --vault <PATH> [--config <PATH>] [--port <N
 | `--output` | Path to the generated site (required) |
 | `--vault` | Path to the vault (required when `--watch` is used) |
 | `--config` | Path to `obsite.yaml` (defaults to `<vault>/obsite.yaml` when `--watch` is used) |
+| `--theme` | Theme name declared under `themes`; only valid together with `--watch` |
 | `--port` | Port number (default: `8080`) |
 | `--watch` | Rebuild on file changes and live-reload browsers |
+
+Static preview mode serves the already-generated output directory and rejects `--theme`. Use `--watch` when you need the server to rebuild with a specific configured theme.
 
 ### `obsite completion`
 
@@ -100,7 +111,7 @@ obsite completion <bash|zsh|fish|powershell>
 
 All settings live in `obsite.yaml`, typically placed at the vault root. Run `obsite init` to generate a commented template.
 
-Only `baseURL` and `title` are required. Filesystem paths such as `search.pagefindPath`, `templateDir`, and `customCSS` are resolved relative to `obsite.yaml` unless they are absolute paths. When `customCSS` is omitted, Obsite auto-detects `custom.css` in the config directory first, then the vault root.
+Only `baseURL` and `title` are required. Filesystem paths such as `search.pagefindPath` and `themes.<name>.root` are resolved relative to `obsite.yaml` unless they are absolute paths. There are no `templateDir` or `customCSS` config keys: theme selection lives under `themes` and `defaultTheme`, and Obsite only auto-detects `custom.css` from the vault root.
 
 ```yaml
 # Required
@@ -149,10 +160,18 @@ timeline:
   asHomepage: false       # Replace the default homepage
   path: notes             # Output path for the timeline
 
-# Template and style overrides
-templateDir:              # Directory with custom templates, relative to obsite.yaml
-customCSS:                # CSS file relative to obsite.yaml; empty = auto-detect custom.css
+# Named build-time themes
+themes:
+  feature:
+    root: themes/feature  # Relative to obsite.yaml unless absolute
+defaultTheme: feature     # Optional fallback when --theme is omitted
 ```
+
+Place an optional global override stylesheet at `<vault>/custom.css` to load it after the generated site stylesheet. That vault-root file is the only auto-detected `custom.css` location.
+
+External theme roots are complete build-time themes. Each selected theme root must provide every required HTML template. Any HTML file under the theme root is treated as template input, not as a published static asset; theme-owned static assets are limited to non-HTML regular files. Use `themes`, `defaultTheme`, or `--theme` to select the active theme for a build.
+
+If a theme supports search, keep the Pagefind UI nodes in `base.html` marked with `data-obsite-search-ui`. The build pipeline relies on that marker contract for the search stylesheet and container when `search.enabled: true`.
 
 ## Note Frontmatter
 
@@ -220,7 +239,7 @@ Obsite processes a vault through these phases:
 5. **Link Graph & Related** — Build backlinks graph, compute BM25-based recommendations
 6. **Render (Pass 2)** — Apply templates with HTML minification, write popover payloads
 7. **Assets** — Emit CSS and runtime assets, copy vault resources with hash-based deduplication
-8. **SEO** — Generate `robots.txt`, `sitemap.xml`, `rss.xml`, JSON-LD
+8. **SEO** — Generate `robots.txt`, `sitemap.xml`, `index.xml`, JSON-LD
 9. **Search** — Run Pagefind indexing (when enabled)
 
 Incremental builds skip unchanged pages using content-hash caching. Use `--force` to bypass the cache.

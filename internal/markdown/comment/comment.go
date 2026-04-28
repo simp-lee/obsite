@@ -1,5 +1,7 @@
 package comment
 
+import "strings"
+
 // Strip removes Obsidian %% ... %% comments before Markdown parsing.
 //
 // The implementation keeps a small line-based state machine instead of trying
@@ -211,6 +213,18 @@ func stripCommentLine(line []byte, inComment bool) strippedLine {
 			continue
 		}
 
+		if end, ok := inlineCodeLiteralEnd(line, i); ok {
+			stripped, prefixRawEnds = appendRawLiteral(stripped, prefixRawEnds, line[i:end], i)
+			i = end
+			continue
+		}
+
+		if end, ok := inlineHTMLLiteralEnd(line, i); ok {
+			stripped, prefixRawEnds = appendRawLiteral(stripped, prefixRawEnds, line[i:end], i)
+			i = end
+			continue
+		}
+
 		if i+1 < len(line) && line[i] == '%' && line[i+1] == '%' {
 			inComment = true
 			i += 2
@@ -227,6 +241,185 @@ func stripCommentLine(line []byte, inComment bool) strippedLine {
 		prefixRawEnds: prefixRawEnds,
 		endsInComment: inComment,
 		rawLen:        len(line),
+	}
+}
+
+func appendRawLiteral(dst []byte, prefixRawEnds []int, raw []byte, rawStart int) ([]byte, []int) {
+	for index, ch := range raw {
+		dst = append(dst, ch)
+		prefixRawEnds = append(prefixRawEnds, rawStart+index+1)
+	}
+	return dst, prefixRawEnds
+}
+
+func inlineCodeLiteralEnd(line []byte, start int) (int, bool) {
+	if start >= len(line) || line[start] != '`' {
+		return 0, false
+	}
+
+	delimLen := 0
+	for start+delimLen < len(line) && line[start+delimLen] == '`' {
+		delimLen++
+	}
+
+	for index := start + delimLen; index < len(line); index++ {
+		if line[index] != '`' {
+			continue
+		}
+
+		count := 0
+		for index+count < len(line) && line[index+count] == '`' {
+			count++
+		}
+		if count == delimLen {
+			return index + count, true
+		}
+
+		index += count - 1
+	}
+
+	return 0, false
+}
+
+type htmlTagKind uint8
+
+const (
+	htmlTagOpen htmlTagKind = iota
+	htmlTagClose
+	htmlTagOther
+)
+
+type htmlTagToken struct {
+	name        string
+	end         int
+	kind        htmlTagKind
+	selfClosing bool
+}
+
+func inlineHTMLLiteralEnd(line []byte, start int) (int, bool) {
+	token, ok := parseHTMLTagToken(line, start)
+	if !ok {
+		return 0, false
+	}
+	if token.selfClosing || token.kind != htmlTagOpen {
+		return token.end, true
+	}
+
+	depth := 1
+	for index := token.end; index < len(line); index++ {
+		if line[index] != '<' {
+			continue
+		}
+
+		next, ok := parseHTMLTagToken(line, index)
+		if !ok {
+			continue
+		}
+		if next.kind == htmlTagOpen && !next.selfClosing && next.name == token.name {
+			depth++
+		}
+		if next.kind == htmlTagClose && next.name == token.name {
+			depth--
+			if depth == 0 {
+				return next.end, true
+			}
+		}
+
+		index = next.end - 1
+	}
+
+	return 0, false
+}
+
+func parseHTMLTagToken(line []byte, start int) (htmlTagToken, bool) {
+	if start < 0 || start >= len(line) || line[start] != '<' {
+		return htmlTagToken{}, false
+	}
+
+	if start+3 < len(line) && line[start+1] == '!' && line[start+2] == '-' && line[start+3] == '-' {
+		for index := start + 4; index+2 < len(line); index++ {
+			if line[index] == '-' && line[index+1] == '-' && line[index+2] == '>' {
+				return htmlTagToken{end: index + 3, kind: htmlTagOther}, true
+			}
+		}
+		return htmlTagToken{}, false
+	}
+
+	index := start + 1
+	kind := htmlTagOpen
+	if index < len(line) && line[index] == '/' {
+		kind = htmlTagClose
+		index++
+	} else if index < len(line) && (line[index] == '!' || line[index] == '?') {
+		for ; index < len(line); index++ {
+			switch line[index] {
+			case '\r', '\n':
+				return htmlTagToken{}, false
+			case '>':
+				return htmlTagToken{end: index + 1, kind: htmlTagOther}, true
+			}
+		}
+		return htmlTagToken{}, false
+	}
+
+	if index >= len(line) || !isHTMLTagNameStart(line[index]) {
+		return htmlTagToken{}, false
+	}
+
+	nameStart := index
+	index++
+	for index < len(line) && isHTMLTagNameChar(line[index]) {
+		index++
+	}
+	name := strings.ToLower(string(line[nameStart:index]))
+
+	lastNonSpace := byte(0)
+	for index < len(line) {
+		switch line[index] {
+		case '"', '\'':
+			quote := line[index]
+			index++
+			for index < len(line) && line[index] != quote {
+				index++
+			}
+			if index >= len(line) {
+				return htmlTagToken{}, false
+			}
+			index++
+		case '\r', '\n':
+			return htmlTagToken{}, false
+		case '>':
+			return htmlTagToken{
+				name:        name,
+				end:         index + 1,
+				kind:        kind,
+				selfClosing: kind == htmlTagOpen && (lastNonSpace == '/' || isVoidHTMLTag(name)),
+			}, true
+		default:
+			if line[index] != ' ' && line[index] != '\t' {
+				lastNonSpace = line[index]
+			}
+			index++
+		}
+	}
+
+	return htmlTagToken{}, false
+}
+
+func isHTMLTagNameStart(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z')
+}
+
+func isHTMLTagNameChar(ch byte) bool {
+	return isHTMLTagNameStart(ch) || (ch >= '0' && ch <= '9') || ch == '-' || ch == ':' || ch == '_'
+}
+
+func isVoidHTMLTag(name string) bool {
+	switch name {
+	case "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr":
+		return true
+	default:
+		return false
 	}
 }
 

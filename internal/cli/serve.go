@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 const defaultWatchDebounce = 350 * time.Millisecond
@@ -31,6 +33,20 @@ const (
 type serveWatchInput struct {
 	path string
 	kind serveWatchInputKind
+}
+
+type serveWatchThemeState struct {
+	extraWatchInputs []serveWatchInput
+	themeRoots       []string
+}
+
+type serveWatchFileConfig struct {
+	Themes       map[string]serveWatchFileThemeConfig `yaml:"themes"`
+	DefaultTheme string                               `yaml:"defaultTheme"`
+}
+
+type serveWatchFileThemeConfig struct {
+	Root string `yaml:"root"`
 }
 
 type fileWatcher interface {
@@ -52,6 +68,8 @@ type serveWatchLoop struct {
 	configPath              string
 	extraWatchInputs        []serveWatchInput
 	currentExtraWatchInputs func() []serveWatchInput
+	themeRoots              []string
+	currentThemeRoots       func() []string
 	debounce                time.Duration
 	rebuild                 func() error
 	notifyReload            func()
@@ -60,12 +78,14 @@ type serveWatchLoop struct {
 	vaultWatchDirs          map[string]struct{}
 	configWatchDirs         map[string]struct{}
 	extraWatchDirs          map[string]struct{}
+	staleThemeRoots         []string
 }
 
 func newServeCommand(deps commandDependencies) *cobra.Command {
 	var outputPath string
 	var vaultPath string
 	var configPath string
+	var theme string
 	var port int
 	var watch bool
 
@@ -78,9 +98,13 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			trimmedTheme := strings.TrimSpace(theme)
 
 			if watch {
-				return runServeWatchMode(cmd, deps, trimmedOutputPath, vaultPath, configPath, port)
+				return runServeWatchMode(cmd, deps, trimmedOutputPath, vaultPath, configPath, trimmedTheme, port)
+			}
+			if trimmedTheme != "" {
+				return fmt.Errorf("--theme can only be used together with --watch")
 			}
 
 			srv, err := deps.newPreviewServer(trimmedOutputPath, port)
@@ -100,6 +124,7 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 	flags.StringVar(&outputPath, "output", "", "Path to the generated site output")
 	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault (required when --watch is enabled)")
 	flags.StringVar(&configPath, "config", "", "Path to obsite.yaml (defaults to <vault>/obsite.yaml when --watch is enabled)")
+	flags.StringVar(&theme, "theme", "", "Named theme to select while rebuilding in --watch mode")
 	flags.IntVar(&port, "port", 0, fmt.Sprintf("Port for the local preview server (default %d)", internalserver.DefaultPort))
 	flags.BoolVar(&watch, "watch", false, "Rebuild on vault/config changes and live-reload connected browsers")
 	_ = cmd.MarkFlagRequired("output")
@@ -107,7 +132,7 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 	return cmd
 }
 
-func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath string, vaultPath string, configPath string, port int) error {
+func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath string, vaultPath string, configPath string, theme string, port int) error {
 	trimmedVaultPath := strings.TrimSpace(vaultPath)
 	if trimmedVaultPath == "" {
 		return fmt.Errorf("--vault is required when --watch is enabled")
@@ -129,16 +154,32 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath 
 	}
 
 	var currentExtraWatchInputs []serveWatchInput
+	var currentThemeRoots []string
 
 	build := func() error {
-		input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath})
+		if themeState, err := loadServeWatchThemeState(resolvedConfigPath, normalizedVaultPath, theme); err == nil {
+			currentExtraWatchInputs = themeState.extraWatchInputs
+			currentThemeRoots = themeState.themeRoots
+		}
+
+		input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath, Theme: theme})
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
 		cfg := input.Config
 
-		nextExtraWatchInputs := collectServeWatchInputs(cfg.TemplateDir, cfg.CustomCSS, normalizedVaultPath)
+		nextExtraWatchInputs := collectServeWatchInputs(cfg.ThemeRoot, cfg.CustomCSS, normalizedVaultPath)
+		nextThemeRoots := make([]string, 0, len(cfg.Themes)+1)
+		for _, themeCfg := range cfg.Themes {
+			if trimmedRoot := strings.TrimSpace(themeCfg.Root); trimmedRoot != "" {
+				nextThemeRoots = append(nextThemeRoots, trimmedRoot)
+			}
+		}
+		if trimmedRoot := strings.TrimSpace(cfg.ThemeRoot); trimmedRoot != "" {
+			nextThemeRoots = append(nextThemeRoots, trimmedRoot)
+		}
 		currentExtraWatchInputs = nextExtraWatchInputs
+		currentThemeRoots = normalizeServeWatchPaths(nextThemeRoots)
 
 		if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, outputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 			return fmt.Errorf("build site: %w", err)
@@ -173,6 +214,10 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath 
 		extraWatchInputs: currentExtraWatchInputs,
 		currentExtraWatchInputs: func() []serveWatchInput {
 			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
+		},
+		themeRoots: currentThemeRoots,
+		currentThemeRoots: func() []string {
+			return append([]string(nil), currentThemeRoots...)
 		},
 		debounce: defaultWatchDebounce,
 		rebuild:  build,
@@ -233,6 +278,7 @@ func startServeWatchLoop(ctx context.Context, loop serveWatchLoop) error {
 		loop.debounce = defaultWatchDebounce
 	}
 	loop.extraWatchInputs = normalizeServeWatchInputs(loop.extraWatchInputs)
+	loop.themeRoots = normalizeServeWatchPaths(loop.themeRoots)
 	loop.watchedDirs = make(map[string]struct{})
 	loop.vaultWatchDirs = make(map[string]struct{})
 	loop.configWatchDirs = make(map[string]struct{})
@@ -290,7 +336,11 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			if err := loop.addNewDirectoryWatch(cleanPath); err != nil {
 				loop.reportError(err)
 			}
-			if !loop.shouldTrigger(cleanPath, effectiveOp, wasWatchedDir) {
+			recoveredExplicitInput, err := loop.recoverExplicitInputWatches(cleanPath, effectiveOp)
+			if err != nil {
+				loop.reportError(err)
+			}
+			if !recoveredExplicitInput && !loop.shouldTrigger(cleanPath, effectiveOp, wasWatchedDir) {
 				continue
 			}
 
@@ -305,9 +355,19 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			timerC = timer.C
 		case <-timerC:
 			timerC = nil
+			previousSelectedThemeRoot := loop.selectedThemeRoot()
 			rebuildErr := loop.rebuild()
+			var nextExtraWatchInputs []serveWatchInput
 			if loop.currentExtraWatchInputs != nil {
-				if err := loop.syncExtraWatchInputs(loop.currentExtraWatchInputs()); err != nil {
+				nextExtraWatchInputs = loop.currentExtraWatchInputs()
+			}
+			if loop.currentThemeRoots != nil {
+				nextThemeRoots := normalizeServeWatchPaths(loop.currentThemeRoots())
+				loop.staleThemeRoots = refreshStaleServeWatchThemeRoots(loop.staleThemeRoots, previousSelectedThemeRoot, nextThemeRoots, selectedThemeRootFromInputs(nextExtraWatchInputs))
+				loop.themeRoots = nextThemeRoots
+			}
+			if loop.currentExtraWatchInputs != nil {
+				if err := loop.syncExtraWatchInputs(nextExtraWatchInputs); err != nil {
 					loop.reportError(err)
 				}
 			}
@@ -357,6 +417,9 @@ func (loop *serveWatchLoop) addVaultTree(root string) error {
 		if loop.pathIsOutput(cleanPath) {
 			return filepath.SkipDir
 		}
+		if loop.pathWithinNestedUnselectedThemeRoot(cleanPath) {
+			return filepath.SkipDir
+		}
 		if !loop.shouldWatchVaultDirectory(cleanPath) {
 			if cleanPath == loop.vaultPath {
 				return nil
@@ -369,7 +432,11 @@ func (loop *serveWatchLoop) addVaultTree(root string) error {
 }
 
 func (loop *serveWatchLoop) addConfigParentWatch() error {
-	loop.configWatchDirs = loop.watchDirsForInputs([]serveWatchInput{{path: loop.configPath, kind: serveWatchInputFile}})
+	configWatchDirs, err := loop.watchDirsForInputs([]serveWatchInput{{path: loop.configPath, kind: serveWatchInputFile}})
+	if err != nil {
+		return err
+	}
+	loop.configWatchDirs = configWatchDirs
 	for watchDir := range loop.configWatchDirs {
 		if err := loop.addWatchDir(watchDir); err != nil {
 			return err
@@ -385,7 +452,10 @@ func (loop *serveWatchLoop) addExtraInputWatches() error {
 
 func (loop *serveWatchLoop) syncExtraWatchInputs(inputs []serveWatchInput) error {
 	normalizedInputs := normalizeServeWatchInputs(inputs)
-	nextWatchDirs := loop.watchDirsForInputs(normalizedInputs)
+	nextWatchDirs, err := loop.watchDirsForInputs(normalizedInputs)
+	if err != nil {
+		return err
+	}
 
 	for watchDir := range nextWatchDirs {
 		if _, ok := loop.extraWatchDirs[watchDir]; ok {
@@ -413,20 +483,29 @@ func (loop *serveWatchLoop) syncExtraWatchInputs(inputs []serveWatchInput) error
 	return nil
 }
 
-func (loop *serveWatchLoop) watchDirsForInputs(inputs []serveWatchInput) map[string]struct{} {
+func (loop *serveWatchLoop) watchDirsForInputs(inputs []serveWatchInput) (map[string]struct{}, error) {
 	watchDirs := make(map[string]struct{}, len(inputs))
 	for _, input := range inputs {
 		cleanInput := filepath.Clean(input.path)
 		if loop.pathIsOutput(cleanInput) {
 			continue
 		}
-		if loop.pathWithinVault(cleanInput) && !shouldExplicitlyWatchConfiguredPath(cleanInput, loop.vaultPath) {
+		if input.kind != serveWatchInputDir && loop.pathWithinVault(cleanInput) && !shouldExplicitlyWatchConfiguredPath(cleanInput, loop.vaultPath) {
 			continue
 		}
 
 		targetWatchDir := serveWatchDir(input)
 		if strings.TrimSpace(targetWatchDir) == "" || targetWatchDir == "." {
 			continue
+		}
+		if input.kind == serveWatchInputDir {
+			recursiveWatchDirs, err := loop.recursiveWatchDirs(targetWatchDir)
+			if err != nil {
+				return nil, err
+			}
+			for watchDir := range recursiveWatchDirs {
+				watchDirs[watchDir] = struct{}{}
+			}
 		}
 
 		watchDir := nearestExistingWatchDir(targetWatchDir)
@@ -450,7 +529,7 @@ func (loop *serveWatchLoop) watchDirsForInputs(inputs []serveWatchInput) map[str
 		watchDirs[filepath.Clean(recoveryDir)] = struct{}{}
 	}
 
-	return watchDirs
+	return watchDirs, nil
 }
 
 func (loop *serveWatchLoop) shouldRetainBaseWatchDir(path string) bool {
@@ -463,28 +542,97 @@ func (loop *serveWatchLoop) shouldRetainBaseWatchDir(path string) bool {
 }
 
 func (loop *serveWatchLoop) addNewDirectoryWatch(path string) error {
-	if path == "" || loop.pathIsOutput(path) {
+	cleanPath := filepath.Clean(path)
+	if cleanPath == "" || loop.pathIsOutput(cleanPath) || loop.pathWithinUnselectedThemeRoot(cleanPath) {
 		return nil
 	}
 
-	info, err := os.Stat(path)
+	info, err := os.Stat(cleanPath)
 	if err != nil || !info.IsDir() {
 		return nil
 	}
-	if loop.shouldDirectlyWatchDirectory(path) {
-		return loop.addWatchDir(path)
+	if loop.pathWithinSelectedThemeRoot(cleanPath) {
+		return loop.addRecursiveWatchTree(cleanPath)
 	}
-	if !loop.pathWithinVault(path) || !loop.shouldWatchVaultDirectory(path) {
+	if loop.shouldDirectlyWatchDirectory(cleanPath) {
+		return loop.addWatchDir(cleanPath)
+	}
+	if !loop.pathWithinVault(cleanPath) || !loop.shouldWatchVaultDirectory(cleanPath) {
 		return nil
 	}
 
-	return loop.addVaultTree(path)
+	return loop.addVaultTree(cleanPath)
+}
+
+func (loop *serveWatchLoop) recoverExplicitInputWatches(path string, op fsnotify.Op) (bool, error) {
+	if op&fsnotify.Create == 0 || len(loop.extraWatchInputs) == 0 {
+		return false, nil
+	}
+
+	cleanPath := filepath.Clean(path)
+	info, err := os.Stat(cleanPath)
+	if err != nil || !info.IsDir() {
+		return false, nil
+	}
+
+	needsRescan := false
+	for _, input := range loop.extraWatchInputs {
+		if loop.shouldRescanExplicitInputPath(cleanPath, input) {
+			needsRescan = true
+			break
+		}
+	}
+	if !needsRescan {
+		return false, nil
+	}
+
+	if err := loop.syncExtraWatchInputs(loop.extraWatchInputs); err != nil {
+		return false, err
+	}
+
+	for _, input := range loop.extraWatchInputs {
+		if !loop.shouldRescanExplicitInputPath(cleanPath, input) {
+			continue
+		}
+		if serveWatchInputExists(input) {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+func (loop *serveWatchLoop) shouldRescanExplicitInputPath(path string, input serveWatchInput) bool {
+	targetWatchDir := filepath.Clean(serveWatchDir(input))
+	if strings.TrimSpace(targetWatchDir) == "" || targetWatchDir == "." {
+		return false
+	}
+
+	return pathWithinRoot(filepath.Clean(path), targetWatchDir)
+}
+
+func serveWatchInputExists(input serveWatchInput) bool {
+	cleanPath := filepath.Clean(input.path)
+	if strings.TrimSpace(cleanPath) == "" || cleanPath == "." {
+		return false
+	}
+
+	info, err := os.Stat(cleanPath)
+	if err != nil {
+		return false
+	}
+	if input.kind == serveWatchInputDir {
+		return info.IsDir()
+	}
+
+	return !info.IsDir()
 }
 
 func (loop *serveWatchLoop) shouldDirectlyWatchDirectory(path string) bool {
 	cleanPath := filepath.Clean(path)
 	for _, input := range loop.extraWatchInputs {
-		if filepath.Clean(serveWatchDir(input)) == cleanPath {
+		targetWatchDir := filepath.Clean(serveWatchDir(input))
+		if targetWatchDir == cleanPath || pathWithinRoot(cleanPath, targetWatchDir) {
 			return true
 		}
 	}
@@ -554,6 +702,9 @@ func (loop *serveWatchLoop) shouldTrigger(path string, op fsnotify.Op, wasWatche
 	cleanPath := filepath.Clean(path)
 	if cleanPath == filepath.Clean(loop.configPath) {
 		return true
+	}
+	if loop.pathWithinUnselectedThemeRoot(cleanPath) {
+		return false
 	}
 	if loop.matchesExtraWatchInput(cleanPath, op) {
 		return true
@@ -758,9 +909,41 @@ func normalizeServeWatchInputs(inputs []serveWatchInput) []serveWatchInput {
 	return normalized
 }
 
-func collectServeWatchInputs(templateDir string, customCSSPath string, vaultPath string) []serveWatchInput {
+func normalizeServeWatchPaths(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+
+	normalized := make([]string, 0, len(paths))
+	seen := make(map[string]struct{}, len(paths))
+	for _, rawPath := range paths {
+		trimmedPath := strings.TrimSpace(rawPath)
+		if trimmedPath == "" {
+			continue
+		}
+
+		cleanPath := filepath.Clean(trimmedPath)
+		if _, ok := seen[cleanPath]; ok {
+			continue
+		}
+
+		seen[cleanPath] = struct{}{}
+		normalized = append(normalized, cleanPath)
+	}
+
+	if len(normalized) == 0 {
+		return nil
+	}
+
+	return normalized
+}
+
+func collectServeWatchInputs(themeRoot string, customCSSPath string, vaultPath string) []serveWatchInput {
 	inputs := make([]serveWatchInput, 0, 2)
-	for _, input := range []serveWatchInput{{path: templateDir, kind: serveWatchInputDir}, {path: customCSSPath, kind: serveWatchInputFile}} {
+	if trimmedThemeRoot := strings.TrimSpace(themeRoot); trimmedThemeRoot != "" {
+		inputs = append(inputs, serveWatchInput{path: filepath.Clean(trimmedThemeRoot), kind: serveWatchInputDir})
+	}
+	for _, input := range []serveWatchInput{{path: customCSSPath, kind: serveWatchInputFile}} {
 		trimmedInput := strings.TrimSpace(input.path)
 		if trimmedInput == "" {
 			continue
@@ -775,6 +958,251 @@ func collectServeWatchInputs(templateDir string, customCSSPath string, vaultPath
 	}
 
 	return normalizeServeWatchInputs(inputs)
+}
+
+func loadServeWatchThemeState(configPath string, vaultPath string, selectedTheme string) (serveWatchThemeState, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return serveWatchThemeState{}, err
+	}
+
+	parsed, err := parseServeWatchFileConfig(data)
+	if err != nil {
+		return serveWatchThemeState{}, err
+	}
+
+	configDir := normalizeServeWatchAbsolutePath(filepath.Dir(configPath))
+	resolvedThemes := make(map[string]string, len(parsed.Themes))
+	themeRoots := make([]string, 0, len(parsed.Themes))
+	for name, themeCfg := range parsed.Themes {
+		trimmedName := strings.TrimSpace(name)
+		resolvedRoot := resolveServeWatchConfiguredPath(themeCfg.Root, configDir)
+		if trimmedName == "" || resolvedRoot == "" {
+			continue
+		}
+
+		resolvedThemes[trimmedName] = resolvedRoot
+		themeRoots = append(themeRoots, resolvedRoot)
+	}
+
+	activeTheme := strings.TrimSpace(selectedTheme)
+	if activeTheme == "" {
+		activeTheme = strings.TrimSpace(parsed.DefaultTheme)
+	}
+
+	selectedThemeRoot := ""
+	if activeTheme != "" {
+		selectedThemeRoot = resolvedThemes[activeTheme]
+	}
+
+	return serveWatchThemeState{
+		extraWatchInputs: collectServeWatchInputs(selectedThemeRoot, "", vaultPath),
+		themeRoots:       normalizeServeWatchPaths(themeRoots),
+	}, nil
+}
+
+func parseServeWatchFileConfig(data []byte) (serveWatchFileConfig, error) {
+	if len(bytes.TrimSpace(data)) == 0 {
+		return serveWatchFileConfig{}, nil
+	}
+
+	var cfg serveWatchFileConfig
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return serveWatchFileConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+func resolveServeWatchConfiguredPath(raw string, baseDir string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	candidate := trimmed
+	if !filepath.IsAbs(trimmed) && strings.TrimSpace(baseDir) != "" {
+		candidate = filepath.Join(baseDir, trimmed)
+	}
+
+	return normalizeServeWatchAbsolutePath(candidate)
+}
+
+func normalizeServeWatchAbsolutePath(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+
+	cleanPath := filepath.Clean(trimmed)
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return cleanPath
+	}
+
+	return filepath.Clean(absPath)
+}
+
+func (loop *serveWatchLoop) recursiveWatchDirs(root string) (map[string]struct{}, error) {
+	cleanRoot := filepath.Clean(root)
+	if strings.TrimSpace(cleanRoot) == "" || cleanRoot == "." {
+		return nil, nil
+	}
+
+	info, err := os.Stat(cleanRoot)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("stat watch tree %q: %w", cleanRoot, err)
+	}
+	if !info.IsDir() {
+		return nil, nil
+	}
+
+	watchDirs := make(map[string]struct{})
+	err = filepath.WalkDir(cleanRoot, func(current string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry == nil || !entry.IsDir() {
+			return nil
+		}
+
+		cleanCurrent := filepath.Clean(current)
+		if loop.pathIsOutput(cleanCurrent) {
+			return filepath.SkipDir
+		}
+		if loop.pathWithinNestedUnselectedThemeRoot(cleanCurrent) {
+			return filepath.SkipDir
+		}
+		watchDirs[cleanCurrent] = struct{}{}
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk watch tree %q: %w", cleanRoot, err)
+	}
+
+	return watchDirs, nil
+}
+
+func (loop *serveWatchLoop) addRecursiveWatchTree(root string) error {
+	watchDirs, err := loop.recursiveWatchDirs(root)
+	if err != nil {
+		return err
+	}
+	for watchDir := range watchDirs {
+		if err := loop.addWatchDir(watchDir); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (loop *serveWatchLoop) selectedThemeRoot() string {
+	return selectedThemeRootFromInputs(loop.extraWatchInputs)
+}
+
+func selectedThemeRootFromInputs(inputs []serveWatchInput) string {
+	selectedRoot := ""
+	for _, input := range inputs {
+		if input.kind != serveWatchInputDir {
+			continue
+		}
+
+		cleanPath := filepath.Clean(input.path)
+		if strings.TrimSpace(cleanPath) == "" {
+			continue
+		}
+		if selectedRoot == "" || len(cleanPath) > len(selectedRoot) {
+			selectedRoot = cleanPath
+		}
+	}
+
+	return selectedRoot
+}
+
+func (loop *serveWatchLoop) pathWithinSelectedThemeRoot(path string) bool {
+	selectedRoot := loop.selectedThemeRoot()
+	return selectedRoot != "" && pathWithinRoot(selectedRoot, path)
+}
+
+func (loop *serveWatchLoop) pathWithinNestedUnselectedThemeRoot(path string) bool {
+	cleanPath := filepath.Clean(path)
+	return loop.pathWithinSelectedThemeRoot(cleanPath) && loop.pathWithinUnselectedThemeRoot(cleanPath)
+}
+
+func (loop *serveWatchLoop) pathWithinUnselectedThemeRoot(path string) bool {
+	themeRoots := make([]string, 0, len(loop.themeRoots)+len(loop.staleThemeRoots))
+	themeRoots = append(themeRoots, loop.themeRoots...)
+	themeRoots = append(themeRoots, loop.staleThemeRoots...)
+	matchedRoot := mostSpecificServeWatchRoot(path, themeRoots)
+	if matchedRoot == "" {
+		return false
+	}
+
+	selectedRoot := loop.selectedThemeRoot()
+	return selectedRoot == "" || filepath.Clean(matchedRoot) != filepath.Clean(selectedRoot)
+}
+
+func refreshStaleServeWatchThemeRoots(current []string, previousSelectedRoot string, nextThemeRoots []string, nextSelectedRoot string) []string {
+	candidates := append([]string(nil), current...)
+	if trimmed := strings.TrimSpace(previousSelectedRoot); trimmed != "" {
+		candidates = append(candidates, trimmed)
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+
+	nextThemeRootSet := make(map[string]struct{}, len(nextThemeRoots)+1)
+	for _, root := range nextThemeRoots {
+		if trimmed := strings.TrimSpace(root); trimmed != "" {
+			nextThemeRootSet[filepath.Clean(trimmed)] = struct{}{}
+		}
+	}
+	cleanNextSelected := filepath.Clean(strings.TrimSpace(nextSelectedRoot))
+	seen := make(map[string]struct{}, len(candidates))
+	stale := make([]string, 0, len(candidates))
+	for _, root := range candidates {
+		trimmed := strings.TrimSpace(root)
+		if trimmed == "" {
+			continue
+		}
+		cleanRoot := filepath.Clean(trimmed)
+		if cleanRoot == cleanNextSelected {
+			continue
+		}
+		if _, ok := nextThemeRootSet[cleanRoot]; ok {
+			continue
+		}
+		if _, ok := seen[cleanRoot]; ok {
+			continue
+		}
+		seen[cleanRoot] = struct{}{}
+		stale = append(stale, cleanRoot)
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+
+	return stale
+}
+
+func mostSpecificServeWatchRoot(path string, roots []string) string {
+	cleanPath := filepath.Clean(path)
+	matchedRoot := ""
+	for _, root := range roots {
+		cleanRoot := filepath.Clean(root)
+		if strings.TrimSpace(cleanRoot) == "" || !pathWithinRoot(cleanRoot, cleanPath) {
+			continue
+		}
+		if matchedRoot == "" || len(cleanRoot) > len(matchedRoot) {
+			matchedRoot = cleanRoot
+		}
+	}
+
+	return matchedRoot
 }
 
 func serveWatchDir(input serveWatchInput) string {

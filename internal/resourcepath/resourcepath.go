@@ -32,6 +32,40 @@ func LookupPath(note *model.Note, attachmentFolderPath string, rawTarget string,
 	return ambiguous
 }
 
+// LookupImageEmbedPath applies the shared image-embed lookup rules, including
+// an explicit vault-relative slash-path fallback after note-relative lookup misses.
+func LookupImageEmbedPath(note *model.Note, attachmentFolderPath string, rawTarget string, lookup func(string) model.PathLookupResult) model.PathLookupResult {
+	result := LookupPath(note, attachmentFolderPath, rawTarget, lookup)
+	if result.Path != "" || len(result.Ambiguous) > 0 {
+		return result
+	}
+	if lookup == nil {
+		return result
+	}
+
+	explicitPath := internalasset.VaultRelativePathCandidate(rawTarget)
+	if explicitPath == "" {
+		return result
+	}
+
+	return lookup(explicitPath)
+}
+
+// ResolveIndexedImageEmbedAssetPath applies the indexed vault image-embed asset lookup rules.
+func ResolveIndexedImageEmbedAssetPath(note *model.Note, idx *model.VaultIndex, rawTarget string) string {
+	return LookupIndexedImageEmbedAssetPath(note, idx, rawTarget).Path
+}
+
+// LookupIndexedImageEmbedAssetPath applies the indexed vault image-embed asset
+// lookup rules and can surface canonical ambiguity when fallback is refused.
+func LookupIndexedImageEmbedAssetPath(note *model.Note, idx *model.VaultIndex, rawTarget string) model.PathLookupResult {
+	if idx == nil {
+		return model.PathLookupResult{}
+	}
+
+	return LookupImageEmbedPath(note, idx.AttachmentFolderPath, rawTarget, idx.LookupAssetPath)
+}
+
 // ResolveIndexedAssetPath applies the indexed vault asset lookup rules.
 func ResolveIndexedAssetPath(note *model.Note, idx *model.VaultIndex, rawTarget string) string {
 	return LookupIndexedAssetPath(note, idx, rawTarget).Path

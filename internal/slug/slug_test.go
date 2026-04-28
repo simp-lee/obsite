@@ -69,6 +69,18 @@ func TestGenerate(t *testing.T) {
 			want:            "ǰ-notes",
 		},
 		{
+			name:            "frontmatter slug preserves combining marks required by hindi",
+			frontmatterSlug: stringPtr("हिंदी नोट्स"),
+			relPath:         "notes/ignored.md",
+			want:            "हिंदी-नोट्स",
+		},
+		{
+			name:            "frontmatter slug rejects isolated combining marks",
+			frontmatterSlug: stringPtr("िं"),
+			relPath:         "notes/ignored.md",
+			wantErr:         ErrInvalidFrontmatterSlug,
+		},
+		{
 			name:    "filename fallback normalizes decomposed unicode",
 			relPath: "notes/Cafe\u0301 Notes.md",
 			want:    "café-notes",

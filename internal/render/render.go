@@ -8,11 +8,13 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -23,6 +25,7 @@ import (
 	"golang.org/x/net/html/atom"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/seo"
 	templateassets "github.com/simp-lee/obsite/templates"
@@ -53,7 +56,18 @@ var embeddedTemplateAssetNames = []string{
 	"mermaid.esm.min.mjs",
 }
 
-var defaultTemplateFileNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
+var embeddedHTMLTemplateNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
+
+// RequiredHTMLTemplateNames lists the HTML template files every external theme must provide.
+var RequiredHTMLTemplateNames = []string{
+	"base.html",
+	"note.html",
+	"index.html",
+	"tag.html",
+	"folder.html",
+	"timeline.html",
+	"404.html",
+}
 
 type embeddedOutputAsset struct {
 	name       string
@@ -72,34 +86,40 @@ var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 })
 
 var (
-	templateSetCache              sync.Map
-	templateOverrideSnapshotCache sync.Map
+	templateSetCache           sync.Map
+	themeTemplateSnapshotCache sync.Map
 )
 
-var templateOverrideFileReader = struct {
+var themeTemplateFileReader = struct {
 	mu   sync.RWMutex
 	read func(string) ([]byte, error)
 }{
 	read: os.ReadFile,
 }
 
-type templateSetCacheKey struct {
-	templateDir string
-	signature   string
+type themeIdentity struct {
+	activeThemeName string
+	themeRoot       string
 }
 
-type templateOverrideFile struct {
+type templateSetCacheKey struct {
+	activeThemeName string
+	themeRoot       string
+	signature       string
+}
+
+type themeTemplateFile struct {
 	path     string
 	contents string
 }
 
-type templateOverrideSnapshot struct {
-	templateDir string
-	files       []templateOverrideFile
-	signature   string
+type themeTemplateSnapshot struct {
+	identity  themeIdentity
+	files     []themeTemplateFile
+	signature string
 }
 
-type templateOverrideFileState struct {
+type themeTemplateFileState struct {
 	name            string
 	path            string
 	exists          bool
@@ -108,15 +128,15 @@ type templateOverrideFileState struct {
 	changeToken     string
 }
 
-type templateOverrideState struct {
-	templateDir string
-	files       []templateOverrideFileState
+type themeTemplateState struct {
+	identity themeIdentity
+	files    []themeTemplateFileState
 }
 
-type cachedTemplateOverrideSnapshot struct {
+type cachedThemeTemplateSnapshot struct {
 	mu       sync.Mutex
-	state    templateOverrideState
-	snapshot templateOverrideSnapshot
+	state    themeTemplateState
+	snapshot themeTemplateSnapshot
 	ready    bool
 }
 
@@ -125,7 +145,7 @@ func parseEmbeddedTemplates() (*template.Template, error) {
 		"toJSON":       templateJSON,
 		"pageAssetURL": pageAssetURL,
 		"siteBasePath": siteBasePath,
-	}).ParseFS(templateassets.FS, defaultTemplateFileNames...)
+	}).ParseFS(templateassets.FS, embeddedHTMLTemplateNames...)
 }
 
 // RenderedPage is the rendered HTML plus the PageData used to execute it.
@@ -226,6 +246,12 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 	latinWords, cjkChars := CountWords(content)
 	relPath := cleanURLPath(slug + "/index.html")
 	displayTitle := noteDisplayTitle(input.Note)
+	tocHeadings := tocHeadingsFromHTML(content)
+	omitLeadingTitle := false
+	if len(tocHeadings) == 0 {
+		tocHeadings = append([]model.Heading(nil), input.Note.Headings...)
+		omitLeadingTitle = content != input.Note.HTMLContent
+	}
 	page := model.PageData{
 		Kind:            model.PageNote,
 		Site:            input.Site,
@@ -240,7 +266,7 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 		LastModified:    input.Note.LastModified,
 		ReadingTime:     FormatReadingTime(latinWords, cjkChars),
 		WordCount:       latinWords + cjkChars,
-		TOC:             buildTOC(input.Note.Headings, displayTitle, titleID, content != input.Note.HTMLContent),
+		TOC:             buildTOC(tocHeadings, displayTitle, titleID, omitLeadingTitle),
 		Tags:            cloneTagLinks(input.Tags),
 		Backlinks:       cloneBacklinks(input.Backlinks),
 		RelatedArticles: cloneRelatedArticles(input.RelatedArticles),
@@ -975,24 +1001,121 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 	return renderPage(page, nil)
 }
 
+// ThemeStaticAsset describes one regular file owned by the selected theme root.
+type ThemeStaticAsset struct {
+	SourcePath        string
+	ThemeRelativePath string
+	OutputPath        string
+}
+
 // EmitStyleCSS writes the configured stylesheet into the output root.
-func EmitStyleCSS(outputRoot string, site model.SiteConfig) error {
+// It returns whether style.css was actually written.
+func EmitStyleCSS(outputRoot string, site model.SiteConfig) (bool, error) {
 	if strings.TrimSpace(outputRoot) == "" {
-		return errors.New("emit style.css: output root is required")
+		return false, errors.New("emit style.css: output root is required")
 	}
 
-	data, err := readStyleAsset(site)
+	data, found, err := readStyleAsset(site)
 	if err != nil {
-		return fmt.Errorf("emit style.css: %w", err)
+		return false, fmt.Errorf("emit style.css: %w", err)
+	}
+	if !found {
+		return false, nil
 	}
 	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
-		return fmt.Errorf("emit style.css: mkdir %q: %w", outputRoot, err)
+		return false, fmt.Errorf("emit style.css: mkdir %q: %w", outputRoot, err)
 	}
 	if err := os.WriteFile(filepath.Join(outputRoot, "style.css"), data, 0o644); err != nil {
-		return fmt.Errorf("emit style.css: write style.css: %w", err)
+		return false, fmt.Errorf("emit style.css: write style.css: %w", err)
+	}
+
+	return true, nil
+}
+
+// ListThemeStaticAssets returns the stable inventory of regular, non-HTML files
+// owned by the selected theme root. Theme-owned HTML is always treated as
+// template input and is never emitted as a static asset.
+func ListThemeStaticAssets(themeRoot string) ([]ThemeStaticAsset, error) {
+	normalizedRoot, err := normalizeThemeRoot(themeRoot)
+	if err != nil {
+		return nil, err
+	}
+	if normalizedRoot == "" {
+		return nil, nil
+	}
+
+	assets := make([]ThemeStaticAsset, 0)
+	err = filepath.WalkDir(normalizedRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk theme root %q: %w", normalizedRoot, walkErr)
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+
+		relPath, err := themeOwnedRelativePath(normalizedRoot, currentPath)
+		if err != nil {
+			return fmt.Errorf("relative theme asset path %q: %w", currentPath, err)
+		}
+		if relPath == "style.css" {
+			return nil
+		}
+		if isThemeHTMLTemplatePath(relPath) {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("theme static asset %q must be a regular non-symlink file", currentPath)
+		}
+
+		assets = append(assets, ThemeStaticAsset{
+			SourcePath:        currentPath,
+			ThemeRelativePath: relPath,
+			OutputPath:        path.Join("assets", "theme", relPath),
+		})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return assets, nil
+}
+
+// EmitThemeStaticAssets copies the provided theme-owned files into the output root.
+func EmitThemeStaticAssets(outputRoot string, assets []ThemeStaticAsset) error {
+	if strings.TrimSpace(outputRoot) == "" {
+		return errors.New("emit theme static assets: output root is required")
+	}
+
+	for _, asset := range assets {
+		data, err := os.ReadFile(asset.SourcePath)
+		if err != nil {
+			return fmt.Errorf("emit theme static assets: read %q: %w", asset.SourcePath, err)
+		}
+
+		assetPath := filepath.Join(outputRoot, filepath.FromSlash(asset.OutputPath))
+		if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+			return fmt.Errorf("emit theme static assets: mkdir %q: %w", filepath.Dir(assetPath), err)
+		}
+		if err := os.WriteFile(assetPath, data, 0o644); err != nil {
+			return fmt.Errorf("emit theme static assets: write %q: %w", asset.OutputPath, err)
+		}
 	}
 
 	return nil
+}
+
+func isThemeHTMLTemplatePath(relPath string) bool {
+	return strings.EqualFold(path.Ext(relPath), ".html")
+}
+
+func themeOwnedRelativePath(themeRoot string, currentPath string) (string, error) {
+	relPath, err := filepath.Rel(themeRoot, currentPath)
+	if err != nil {
+		return "", err
+	}
+
+	return filepath.ToSlash(relPath), nil
 }
 
 // EmitRuntimeAssets writes the embedded offline math and Mermaid runtime files into the output root.
@@ -1042,6 +1165,100 @@ func renderPage(page model.PageData, note *model.Note) (RenderedPage, error) {
 	return RenderedPage{Page: page, HTML: html, Diagnostics: pageDiagnostics}, errors.Join(seoErr, renderErr)
 }
 
+func stripRenderedBaseElement(body []byte) []byte {
+	baseStart, baseEnd, ok := renderedBaseElementRange(body)
+	if !ok {
+		return body
+	}
+
+	stripped := make([]byte, 0, len(body)-(baseEnd-baseStart))
+	stripped = append(stripped, body[:baseStart]...)
+	stripped = append(stripped, body[baseEnd:]...)
+	return stripped
+}
+
+func renderedBaseElementRange(body []byte) (baseStart int, baseEnd int, ok bool) {
+	if len(body) == 0 {
+		return 0, 0, false
+	}
+
+	tokenizer := xhtml.NewTokenizer(bytes.NewReader(body))
+	offset := 0
+	inHead := false
+	implicitHead := false
+	templateDepth := 0
+
+	for {
+		tokenType := tokenizer.Next()
+		raw := tokenizer.Raw()
+		start := offset
+		end := start + len(raw)
+		offset = end
+
+		switch tokenType {
+		case xhtml.ErrorToken:
+			return 0, 0, false
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			token := tokenizer.Token()
+			if token.DataAtom == atom.Html || strings.EqualFold(token.Data, "html") {
+				if !inHead {
+					implicitHead = true
+				}
+				continue
+			}
+			if token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head") {
+				if tokenType == xhtml.SelfClosingTagToken {
+					return 0, 0, false
+				}
+				inHead = true
+				implicitHead = false
+				continue
+			}
+			if !inHead && !implicitHead {
+				continue
+			}
+			if implicitHead && templateDepth == 0 && (token.DataAtom == atom.Body || strings.EqualFold(token.Data, "body")) {
+				return 0, 0, false
+			}
+			if implicitHead && templateDepth == 0 && !isImplicitHeadElementToken(token) {
+				return 0, 0, false
+			}
+			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
+				if tokenType != xhtml.SelfClosingTagToken {
+					templateDepth++
+				}
+				continue
+			}
+			if templateDepth > 0 {
+				continue
+			}
+			if token.DataAtom == atom.Base || strings.EqualFold(token.Data, "base") {
+				return start, end, true
+			}
+		case xhtml.EndTagToken:
+			token := tokenizer.Token()
+			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
+				if templateDepth > 0 {
+					templateDepth--
+				}
+				continue
+			}
+			if token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head") || token.DataAtom == atom.Body || strings.EqualFold(token.Data, "body") {
+				return 0, 0, false
+			}
+		}
+	}
+}
+
+func isImplicitHeadElementToken(token xhtml.Token) bool {
+	switch strings.ToLower(strings.TrimSpace(token.Data)) {
+	case "base", "basefont", "bgsound", "link", "meta", "noframes", "noscript", "script", "style", "template", "title":
+		return true
+	default:
+		return false
+	}
+}
+
 func nonFatalSEODiagnostics(note *model.Note, err error) ([]diag.Diagnostic, bool) {
 	var articleErr *seo.ArticleJSONLDError
 	if !errors.As(err, &articleErr) {
@@ -1087,11 +1304,11 @@ func executeTemplate(page model.PageData) ([]byte, error) {
 }
 
 func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
-	templateDir, err := normalizeTemplateDir(site.TemplateDir)
+	identity, err := resolveThemeIdentity(site)
 	if err != nil {
 		return nil, err
 	}
-	if templateDir == "" {
+	if identity.themeRoot == "" {
 		tmpl, err := parseDefaultTemplates()
 		if err != nil {
 			return nil, fmt.Errorf("parse default templates: %w", err)
@@ -1100,7 +1317,7 @@ func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
 		return tmpl, nil
 	}
 
-	snapshot, err := loadTemplateOverrideSnapshot(templateDir)
+	snapshot, err := loadThemeTemplateSnapshot(identity)
 	if err != nil {
 		return nil, err
 	}
@@ -1117,38 +1334,39 @@ func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
 	return tmpl, nil
 }
 
-func loadTemplateOverrideSnapshot(templateDir string) (templateOverrideSnapshot, error) {
-	state, err := scanTemplateOverrideState(templateDir)
+func resolveThemeIdentity(site model.SiteConfig) (themeIdentity, error) {
+	themeRoot, err := normalizeThemeRoot(site.ThemeRoot)
 	if err != nil {
-		return templateOverrideSnapshot{}, err
+		return themeIdentity{}, err
 	}
 
-	entry, _ := templateOverrideSnapshotCache.LoadOrStore(templateDir, &cachedTemplateOverrideSnapshot{})
-	return entry.(*cachedTemplateOverrideSnapshot).load(state)
+	return themeIdentity{
+		activeThemeName: strings.TrimSpace(site.ActiveThemeName),
+		themeRoot:       themeRoot,
+	}, nil
 }
 
-func (cached *cachedTemplateOverrideSnapshot) load(state templateOverrideState) (templateOverrideSnapshot, error) {
+func loadThemeTemplateSnapshot(identity themeIdentity) (themeTemplateSnapshot, error) {
+	state, err := scanThemeTemplateState(identity)
+	if err != nil {
+		return themeTemplateSnapshot{}, err
+	}
+
+	entry, _ := themeTemplateSnapshotCache.LoadOrStore(identity, &cachedThemeTemplateSnapshot{})
+	return entry.(*cachedThemeTemplateSnapshot).load(state)
+}
+
+func (cached *cachedThemeTemplateSnapshot) load(state themeTemplateState) (themeTemplateSnapshot, error) {
 	cached.mu.Lock()
 	defer cached.mu.Unlock()
 
-	if cached.ready && templateOverrideStateMatches(cached.state, state) {
-		refreshed, err := scanTemplateOverrideSnapshotFromState(state)
-		if err != nil {
-			return templateOverrideSnapshot{}, err
-		}
-		if refreshed.signature == cached.snapshot.signature {
-			return cached.snapshot, nil
-		}
-
-		cached.state = state
-		cached.snapshot = refreshed
-
-		return refreshed, nil
+	if cached.ready && themeTemplateStateMatches(cached.state, state) {
+		return cached.snapshot, nil
 	}
 
-	snapshot, err := scanTemplateOverrideSnapshotFromState(state)
+	snapshot, err := scanThemeTemplateSnapshotFromState(state)
 	if err != nil {
-		return templateOverrideSnapshot{}, err
+		return themeTemplateSnapshot{}, err
 	}
 
 	cached.state = state
@@ -1158,8 +1376,8 @@ func (cached *cachedTemplateOverrideSnapshot) load(state templateOverrideState) 
 	return snapshot, nil
 }
 
-func templateOverrideStateMatches(left templateOverrideState, right templateOverrideState) bool {
-	if left.templateDir != right.templateDir || len(left.files) != len(right.files) {
+func themeTemplateStateMatches(left themeTemplateState, right themeTemplateState) bool {
+	if left.identity != right.identity || len(left.files) != len(right.files) {
 		return false
 	}
 
@@ -1172,11 +1390,15 @@ func templateOverrideStateMatches(left templateOverrideState, right templateOver
 	return true
 }
 
-func (snapshot templateOverrideSnapshot) cacheKey() templateSetCacheKey {
-	return templateSetCacheKey{templateDir: snapshot.templateDir, signature: snapshot.signature}
+func (snapshot themeTemplateSnapshot) cacheKey() templateSetCacheKey {
+	return templateSetCacheKey{
+		activeThemeName: snapshot.identity.activeThemeName,
+		themeRoot:       snapshot.identity.themeRoot,
+		signature:       snapshot.signature,
+	}
 }
 
-func cachedTemplateSetLoader(snapshot templateOverrideSnapshot) func() (*template.Template, error) {
+func cachedTemplateSetLoader(snapshot themeTemplateSnapshot) func() (*template.Template, error) {
 	key := snapshot.cacheKey()
 	loader, _ := templateSetCache.LoadOrStore(key, sync.OnceValues(func() (*template.Template, error) {
 		return parseTemplateSet(snapshot)
@@ -1192,7 +1414,7 @@ func pruneTemplateSetCacheEntries(activeKey templateSetCacheKey) {
 		if !ok {
 			return true
 		}
-		if cachedKey.templateDir == activeKey.templateDir && cachedKey.signature != activeKey.signature {
+		if cachedKey.activeThemeName == activeKey.activeThemeName && cachedKey.themeRoot == activeKey.themeRoot && cachedKey.signature != activeKey.signature {
 			keys = append(keys, cachedKey)
 		}
 		return true
@@ -1202,111 +1424,203 @@ func pruneTemplateSetCacheEntries(activeKey templateSetCacheKey) {
 	}
 }
 
-func scanTemplateOverrideState(templateDir string) (templateOverrideState, error) {
-	state := templateOverrideState{
-		templateDir: templateDir,
-		files:       make([]templateOverrideFileState, 0, len(defaultTemplateFileNames)),
+func scanThemeTemplateState(identity themeIdentity) (themeTemplateState, error) {
+	if err := validateRequiredThemeTemplateFiles(identity.themeRoot); err != nil {
+		return themeTemplateState{}, err
 	}
 
-	for _, name := range defaultTemplateFileNames {
-		fileState, err := resolveTemplateOverrideFileStateInDir(templateDir, name)
-		if err != nil {
-			return templateOverrideState{}, err
-		}
-		state.files = append(state.files, fileState)
+	files, err := listThemeTemplateFileStatesInRoot(identity.themeRoot)
+	if err != nil {
+		return themeTemplateState{}, err
 	}
 
-	return state, nil
+	return themeTemplateState{
+		identity: identity,
+		files:    files,
+	}, nil
 }
 
-func scanTemplateOverrideSnapshotFromState(state templateOverrideState) (templateOverrideSnapshot, error) {
+func validateRequiredThemeTemplateFiles(themeRoot string) error {
+	missing := make([]string, 0, len(RequiredHTMLTemplateNames))
+	for _, name := range RequiredHTMLTemplateNames {
+		fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, name)
+		if err != nil {
+			return err
+		}
+		if !fileState.exists {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required theme templates in %q: %s", themeRoot, strings.Join(missing, ", "))
+	}
+
+	return nil
+}
+
+func listThemeTemplateFileStatesInRoot(themeRoot string) ([]themeTemplateFileState, error) {
+	if themeRoot == "" {
+		return nil, nil
+	}
+
+	files := make([]themeTemplateFileState, 0, len(RequiredHTMLTemplateNames))
+	err := filepath.WalkDir(themeRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return fmt.Errorf("walk theme root %q: %w", themeRoot, walkErr)
+		}
+		if entry == nil || entry.IsDir() {
+			return nil
+		}
+
+		relPath, err := themeOwnedRelativePath(themeRoot, currentPath)
+		if err != nil {
+			return fmt.Errorf("relative theme template path %q: %w", currentPath, err)
+		}
+		if !isThemeHTMLTemplatePath(relPath) {
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("theme HTML template %q must be a regular non-symlink file", currentPath)
+		}
+
+		fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, relPath)
+		if err != nil {
+			return err
+		}
+		if !fileState.exists {
+			return nil
+		}
+
+		files = append(files, fileState)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	sort.Slice(files, func(i int, j int) bool {
+		return files[i].name < files[j].name
+	})
+
+	return files, nil
+}
+
+func missingRequiredThemeTemplateNames(files []themeTemplateFileState) []string {
+	present := make(map[string]struct{}, len(files))
+	for _, file := range files {
+		present[file.name] = struct{}{}
+	}
+
+	missing := make([]string, 0)
+	for _, name := range RequiredHTMLTemplateNames {
+		if _, ok := present[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+
+	return missing
+}
+
+func scanThemeTemplateSnapshotFromState(state themeTemplateState) (themeTemplateSnapshot, error) {
 	hasher := sha256.New()
-	files := make([]templateOverrideFile, 0, len(defaultTemplateFileNames))
+	files := make([]themeTemplateFile, 0, len(state.files))
+	_, _ = hasher.Write([]byte(state.identity.activeThemeName))
+	_, _ = hasher.Write([]byte{0})
+	_, _ = hasher.Write([]byte(state.identity.themeRoot))
+	_, _ = hasher.Write([]byte{0})
 	for _, fileState := range state.files {
 		name := fileState.name
 
 		_, _ = hasher.Write([]byte(name))
 		if !fileState.exists {
-			_, _ = hasher.Write([]byte{0, 0})
-			continue
+			return themeTemplateSnapshot{}, fmt.Errorf("missing required theme template %q in %q", name, state.identity.themeRoot)
 		}
 
-		data, err := readTemplateOverrideContents(fileState.path)
+		data, err := readThemeTemplateContents(fileState.path)
 		if err != nil {
-			return templateOverrideSnapshot{}, fmt.Errorf("read template override %q: %w", fileState.path, err)
+			return themeTemplateSnapshot{}, fmt.Errorf("read theme template %q: %w", fileState.path, err)
 		}
 		_, _ = hasher.Write([]byte{0, 1})
 		_, _ = hasher.Write(data)
 		_, _ = hasher.Write([]byte{0})
 
-		files = append(files, templateOverrideFile{
+		files = append(files, themeTemplateFile{
 			path:     fileState.path,
 			contents: string(data),
 		})
 	}
 
-	return templateOverrideSnapshot{
-		templateDir: state.templateDir,
-		files:       files,
-		signature:   hex.EncodeToString(hasher.Sum(nil)),
+	return themeTemplateSnapshot{
+		identity:  state.identity,
+		files:     files,
+		signature: hex.EncodeToString(hasher.Sum(nil)),
 	}, nil
 }
 
-func readTemplateOverrideContents(filePath string) ([]byte, error) {
-	templateOverrideFileReader.mu.RLock()
-	reader := templateOverrideFileReader.read
-	templateOverrideFileReader.mu.RUnlock()
+func readThemeTemplateContents(filePath string) ([]byte, error) {
+	themeTemplateFileReader.mu.RLock()
+	reader := themeTemplateFileReader.read
+	themeTemplateFileReader.mu.RUnlock()
 
 	return reader(filePath)
 }
 
-func parseTemplateSet(snapshot templateOverrideSnapshot) (*template.Template, error) {
-	tmpl, err := parseDefaultTemplates()
-	if err != nil {
-		return nil, fmt.Errorf("parse default templates: %w", err)
-	}
+func parseTemplateSet(snapshot themeTemplateSnapshot) (*template.Template, error) {
+	if snapshot.identity.themeRoot == "" {
+		tmpl, err := parseDefaultTemplates()
+		if err != nil {
+			return nil, fmt.Errorf("parse default templates: %w", err)
+		}
 
-	if len(snapshot.files) == 0 {
 		return tmpl, nil
 	}
 
-	overrideBase, err := parseEmbeddedTemplates()
-	if err != nil {
-		return nil, fmt.Errorf("parse default templates for overrides: %w", err)
-	}
-	for _, override := range snapshot.files {
-		if _, err := overrideBase.Parse(override.contents); err != nil {
-			return nil, fmt.Errorf("parse template override %q: %w", override.path, err)
+	tmpl := template.New(baseTemplateName).Funcs(template.FuncMap{
+		"toJSON":       templateJSON,
+		"pageAssetURL": pageAssetURL,
+		"siteBasePath": siteBasePath,
+	})
+	for _, file := range snapshot.files {
+		if _, err := tmpl.Parse(file.contents); err != nil {
+			return nil, fmt.Errorf("parse theme template %q: %w", file.path, err)
 		}
 	}
 
-	return overrideBase, nil
+	return tmpl, nil
 }
 
-func readStyleAsset(site model.SiteConfig) ([]byte, error) {
-	templateDir, err := normalizeTemplateDir(site.TemplateDir)
+func readStyleAsset(site model.SiteConfig) ([]byte, bool, error) {
+	themeRoot, err := normalizeThemeRoot(site.ThemeRoot)
 	if err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	if themeRoot == "" {
+		data, err := readEmbeddedAsset("style.css")
+		if err != nil {
+			return nil, false, err
+		}
+
+		return data, true, nil
 	}
 
-	overridePath, ok, err := resolveTemplateOverridePathInDir(templateDir, "style.css")
+	stylePath, ok, err := resolveOptionalThemeFilePathInRoot(themeRoot, "style.css")
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !ok {
-		return readEmbeddedAsset("style.css")
+		return nil, false, nil
 	}
 
-	data, err := os.ReadFile(overridePath)
+	data, err := os.ReadFile(stylePath)
 	if err != nil {
-		return nil, fmt.Errorf("read style override %q: %w", overridePath, err)
+		return nil, false, fmt.Errorf("read theme style %q: %w", stylePath, err)
 	}
 
-	return data, nil
+	return data, true, nil
 }
 
-func resolveTemplateOverridePathInDir(templateDir string, name string) (string, bool, error) {
-	fileState, err := resolveTemplateOverrideFileStateInDir(templateDir, name)
+func resolveOptionalThemeFilePathInRoot(themeRoot string, name string) (string, bool, error) {
+	fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, name)
 	if err != nil {
 		return "", false, err
 	}
@@ -1314,35 +1628,35 @@ func resolveTemplateOverridePathInDir(templateDir string, name string) (string, 
 	return fileState.path, fileState.exists, nil
 }
 
-func resolveTemplateOverrideFileStateInDir(templateDir string, name string) (templateOverrideFileState, error) {
-	state := templateOverrideFileState{name: name}
-	if templateDir == "" {
+func resolveThemeTemplateFileStateInRoot(themeRoot string, name string) (themeTemplateFileState, error) {
+	state := themeTemplateFileState{name: name}
+	if themeRoot == "" {
 		return state, nil
 	}
 
-	overridePath := filepath.Join(templateDir, name)
-	info, err := os.Stat(overridePath)
+	themePath := filepath.Join(themeRoot, filepath.FromSlash(name))
+	resolvedPath, info, err := internalfsutil.InspectRegularNonSymlinkFile(themePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return state, nil
 		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+			return themeTemplateFileState{}, fmt.Errorf("theme file %q must be a regular non-symlink file", themePath)
+		}
 
-		return templateOverrideFileState{}, fmt.Errorf("stat template override %q: %w", overridePath, err)
-	}
-	if info.IsDir() {
-		return templateOverrideFileState{}, fmt.Errorf("template override %q is a directory", overridePath)
+		return themeTemplateFileState{}, fmt.Errorf("stat theme file %q: %w", themePath, err)
 	}
 
-	state.path = overridePath
+	state.path = resolvedPath
 	state.exists = true
 	state.size = info.Size()
 	state.modTimeUnixNano = info.ModTime().UnixNano()
-	state.changeToken = templateOverrideFileChangeToken(info)
+	state.changeToken = themeTemplateFileChangeToken(info)
 
 	return state, nil
 }
 
-func templateOverrideFileChangeToken(info os.FileInfo) string {
+func themeTemplateFileChangeToken(info os.FileInfo) string {
 	if info == nil {
 		return ""
 	}
@@ -1363,18 +1677,18 @@ func templateOverrideFileChangeToken(info os.FileInfo) string {
 	}
 
 	parts := []string{
-		templateOverrideStatFieldString(value, "Dev"),
-		templateOverrideStatFieldString(value, "Ino"),
-		templateOverrideStatFieldString(value, "Ctim"),
-		templateOverrideStatFieldString(value, "Ctimespec"),
-		templateOverrideStatFieldString(value, "Mtim"),
-		templateOverrideStatFieldString(value, "Mtimespec"),
+		themeTemplateStatFieldString(value, "Dev"),
+		themeTemplateStatFieldString(value, "Ino"),
+		themeTemplateStatFieldString(value, "Ctim"),
+		themeTemplateStatFieldString(value, "Ctimespec"),
+		themeTemplateStatFieldString(value, "Mtim"),
+		themeTemplateStatFieldString(value, "Mtimespec"),
 	}
 
 	return token + ":" + strings.Join(parts, ":")
 }
 
-func templateOverrideStatFieldString(value reflect.Value, fieldName string) string {
+func themeTemplateStatFieldString(value reflect.Value, fieldName string) string {
 	field := value.FieldByName(fieldName)
 	if !field.IsValid() {
 		return ""
@@ -1383,30 +1697,33 @@ func templateOverrideStatFieldString(value reflect.Value, fieldName string) stri
 	return fmt.Sprint(field.Interface())
 }
 
-func normalizeTemplateDir(templateDir string) (string, error) {
-	trimmedDir := strings.TrimSpace(templateDir)
-	if trimmedDir == "" {
+func normalizeThemeRoot(themeRoot string) (string, error) {
+	trimmedRoot := strings.TrimSpace(themeRoot)
+	if trimmedRoot == "" {
 		return "", nil
 	}
 
-	normalizedDir, err := filepath.Abs(filepath.Clean(trimmedDir))
+	normalizedRoot, err := filepath.Abs(filepath.Clean(trimmedRoot))
 	if err != nil {
-		return "", fmt.Errorf("normalize templateDir %q: %w", trimmedDir, err)
+		return "", fmt.Errorf("normalize theme root %q: %w", trimmedRoot, err)
 	}
-	if err := validateTemplateDir(normalizedDir); err != nil {
+	if err := validateThemeRoot(normalizedRoot); err != nil {
 		return "", err
 	}
 
-	return normalizedDir, nil
+	return normalizedRoot, nil
 }
 
-func validateTemplateDir(templateDir string) error {
-	info, err := os.Stat(templateDir)
+func validateThemeRoot(themeRoot string) error {
+	info, err := os.Lstat(themeRoot)
 	if err != nil {
-		return fmt.Errorf("stat templateDir %q: %w", templateDir, err)
+		return fmt.Errorf("stat theme root %q: %w", themeRoot, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("theme root %q must not be a symlink", themeRoot)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("templateDir %q is not a directory", templateDir)
+		return fmt.Errorf("theme root %q is not a directory", themeRoot)
 	}
 
 	return nil

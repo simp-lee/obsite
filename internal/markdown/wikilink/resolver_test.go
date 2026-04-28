@@ -350,6 +350,73 @@ func TestLookupTargetCanonicalizesUnicodeLookupKeys(t *testing.T) {
 	}
 }
 
+func TestVaultResolverResolveWikilink_ExplicitPathCanonicalizesUnicodePublicMatch(t *testing.T) {
+	t.Parallel()
+
+	current := testNote("notes/current.md", "notes/current")
+	current.OutLinks = []model.LinkRef{{RawTarget: "notes/Café Guide", Line: 27}}
+
+	target := testNote("notes/Cafe\u0301 Guide.md", "notes/cafe-guide")
+	collector := diag.NewCollector()
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current, target}, nil), current, current, "", collector)
+
+	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("notes/Café Guide")})
+	if err != nil {
+		t.Fatalf("ResolveWikilink() error = %v", err)
+	}
+	if string(got) != "../cafe-guide/" {
+		t.Fatalf("ResolveWikilink() = %q, want %q", string(got), "../cafe-guide/")
+	}
+
+	gotOutLinks := resolver.OutLinks()
+	if len(gotOutLinks) != 1 || gotOutLinks[0].ResolvedRelPath != target.RelPath {
+		t.Fatalf("resolver.OutLinks() = %#v, want resolved explicit-path outlink", gotOutLinks)
+	}
+	if current.OutLinks[0].ResolvedRelPath != "" {
+		t.Fatalf("ResolvedRelPath = %q, want source note to remain unchanged", current.OutLinks[0].ResolvedRelPath)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+}
+
+func TestVaultResolverResolveWikilink_ExplicitPathCanonicalizesUnicodeUnpublishedDowngrade(t *testing.T) {
+	t.Parallel()
+
+	current := testNote("notes/current.md", "notes/current")
+	current.OutLinks = []model.LinkRef{{RawTarget: "private/Café Guide", Line: 29}}
+
+	unpublished := testNote("private/Cafe\u0301 Guide.md", "private/cafe-guide")
+	collector := diag.NewCollector()
+	resolver := NewRenderVaultResolver(buildIndex([]*model.Note{current}, []*model.Note{unpublished}), current, current, "", collector)
+
+	got, err := resolver.ResolveWikilink(&gmwikilink.Node{Target: []byte("private/Café Guide")})
+	if err != nil {
+		t.Fatalf("ResolveWikilink() error = %v", err)
+	}
+	if got != nil {
+		t.Fatalf("ResolveWikilink() = %q, want nil destination", string(got))
+	}
+
+	gotOutLinks := resolver.OutLinks()
+	if len(gotOutLinks) != 1 || gotOutLinks[0].ResolvedRelPath != "" {
+		t.Fatalf("resolver.OutLinks() = %#v, want one unresolved outlink", gotOutLinks)
+	}
+	if current.OutLinks[0].ResolvedRelPath != "" {
+		t.Fatalf("ResolvedRelPath = %q, want source note to remain unchanged", current.OutLinks[0].ResolvedRelPath)
+	}
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SeverityWarning,
+		Kind:     kindUnpublishedWikilink,
+		Location: diag.Location{Path: current.RelPath, Line: 29},
+		Message:  `wikilink "private/Café Guide" points to unpublished note "` + unpublished.RelPath + `"; rendering as plain text`,
+	}}
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
+	}
+}
+
 func TestVaultResolverResolveWikilink_CanvasLookupCanonicalizesUnicodeResourceNames(t *testing.T) {
 	t.Parallel()
 

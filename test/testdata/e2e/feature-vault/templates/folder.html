@@ -8,7 +8,10 @@
   {{if .FolderChildren}}
   <ol class="note-list">
     {{range .FolderChildren}}
-    <li class="note-card"><a href="{{.URL}}">{{.Title}}</a></li>
+    <li class="note-card">
+      <a href="{{.URL}}">{{.Title}}</a>
+      {{if .Summary}}<p>{{.Summary}}</p>{{end}}
+    </li>
     {{end}}
   </ol>
   {{else}}

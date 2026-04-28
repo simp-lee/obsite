@@ -353,6 +353,56 @@ func TestNewMarkdownResolvesInlineHashtagsToTagPages(t *testing.T) {
 	}
 }
 
+func TestNewMarkdownResolvesSlashEdgeHashtagsUsingIndexNormalization(t *testing.T) {
+	t.Parallel()
+
+	idx := &model.VaultIndex{
+		Tags: map[string]*model.Tag{
+			"parent/child": {Name: "parent/child", Slug: "tags/parent/child"},
+		},
+	}
+	note := &model.Note{Slug: "launch-pad", RelPath: "notes/launch-pad.md"}
+	md, _ := NewMarkdown(idx, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("Edge tag #parent//child should resolve with the same normalization contract.\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<span class="hashtag"><a href="../tags/parent/child/">#parent//child</a></span>`) {
+		t.Fatalf("HTML = %q, want slash-edge hashtag to link to canonical tag page", html)
+	}
+}
+
+func TestNewMarkdownRendersLeadingCalloutDisplayMathAndTracksHasMath(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "guide", RelPath: "notes/guide.md"}
+	md, renderResult := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("> [!note] Math\n> $$\n> x^2\n> $$\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<div class="callout callout-note">`) {
+		t.Fatalf("HTML = %q, want callout container", html)
+	}
+	if !strings.Contains(html, "<div class=\"math math-display\">$$\nx^2\n$$</div>") {
+		t.Fatalf("HTML = %q, want leading callout body paragraph rewritten as display math", html)
+	}
+	if renderResult == nil || !renderResult.HasMath() {
+		t.Fatal("renderResult.HasMath() = false, want true for callout display math")
+	}
+	if note.HasMath {
+		t.Fatal("note.HasMath = true, want source note to remain unchanged")
+	}
+}
+
 func TestNewMarkdownRewritesImagesRegistersAssetsAndLazyLoadsAfterFirst(t *testing.T) {
 	t.Parallel()
 
@@ -956,6 +1006,49 @@ func TestNewMarkdownPassesThroughRawHTML(t *testing.T) {
 	}
 	if strings.Contains(html, "raw HTML omitted") {
 		t.Fatalf("HTML = %q, want raw HTML to pass through unchanged", html)
+	}
+}
+
+func TestNewMarkdownKeepsRawHTMLPassthroughWhileBlockingDangerousMarkdownURLs(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "posts/security-boundary", RelPath: "notes/security-boundary.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte(strings.Join([]string{
+		`<a href="javascript:rawTrusted()" data-kind="raw">Raw HTML</a>`,
+		"",
+		`[JS Link](javascript:blockedLink())`,
+		"",
+		`![JS Image](javascript:blockedImage())`,
+		"",
+		`[Data Link](data:text/plain,blocked-link)`,
+		"",
+		`![Data Image](data:text/plain,blocked-image)`,
+	}, "\n"))
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<a href="javascript:rawTrusted()" data-kind="raw">Raw HTML</a>`) {
+		t.Fatalf("HTML = %q, want raw HTML anchor to pass through unchanged", html)
+	}
+	for _, blocked := range []string{"javascript:blockedLink()", "javascript:blockedImage()", "data:text/plain,blocked-link", "data:text/plain,blocked-image"} {
+		if strings.Contains(html, blocked) {
+			t.Fatalf("HTML = %q, want dangerous Markdown URL %q to be filtered", html, blocked)
+		}
+	}
+	for _, want := range []string{
+		`<a href="">JS Link</a>`,
+		`<a href="">Data Link</a>`,
+		`<img src="" alt="JS Image">`,
+		`<img src="" alt="Data Image" loading="lazy">`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML = %q, want filtered output %q", html, want)
+		}
 	}
 }
 
@@ -2034,6 +2127,69 @@ func TestNewMarkdownAllowsSameNoteSectionEmbeds(t *testing.T) {
 	}
 }
 
+func TestNewMarkdownCanonicalizesUnicodeFragmentsForLinksAndSectionEmbeds(t *testing.T) {
+	t.Parallel()
+
+	hostSource := "[[Guide#Café Section|Jump]]\n\n![[Guide#Café Section]]\n"
+	host := &model.Note{
+		Slug:       "notes/host",
+		RelPath:    "notes/host.md",
+		RawContent: []byte(hostSource),
+		OutLinks: []model.LinkRef{{
+			RawTarget: "Guide#Café Section",
+			Display:   "Jump",
+			Fragment:  "Café Section",
+			Line:      1,
+		}},
+		Embeds: []model.EmbedRef{{
+			Target:   "Guide",
+			Fragment: "Café Section",
+			Line:     3,
+		}},
+	}
+	guideSource := "# Guide\n\n## Cafe\u0301 Section\n\nBody.\n"
+	guide := noteWithParsedHeadingMetadata(t, "guides/guide", "guides/guide.md", guideSource)
+	if got := guide.Headings[1].ID; got != "café-section" {
+		t.Fatalf("guide.Headings[1].ID = %q, want %q", got, "café-section")
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			host.RelPath:  host,
+			guide.RelPath: guide,
+		},
+		NoteBySlug: map[string]*model.Note{
+			host.Slug:  host,
+			guide.Slug: guide,
+		},
+		NoteByName: map[string][]*model.Note{
+			"host":  {host},
+			"guide": {guide},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, _ := NewMarkdown(idx, host, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert(host.RawContent, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<a href="../../guides/guide/#caf%C3%A9-section">Jump</a>`) {
+		t.Fatalf("HTML = %q, want ordinary fragment wikilink to resolve through shared Unicode canonicalization", html)
+	}
+	if !strings.Contains(html, `<h2 id="embed-1-café-section">Cafe`) {
+		t.Fatalf("HTML = %q, want section embed heading id derived from the shared Unicode-normalized helper", html)
+	}
+	if !strings.Contains(html, `Section</h2>`) {
+		t.Fatalf("HTML = %q, want embedded section heading content rendered", html)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+}
+
 func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 	t.Parallel()
 
@@ -2087,6 +2243,49 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 			Message:  `image embed "missing.png" could not be resolved to a vault asset; rendering as plain text`,
 		},
 	}
+	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNewMarkdownWarnsOnAmbiguousCanonicalImageEmbeds(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{
+		Slug:       "posts/gallery",
+		RelPath:    "notes/gallery.md",
+		RawContent: []byte("![[../images/CAFÉ Chart.png]]\n"),
+		Embeds: []model.EmbedRef{{
+			Target:  "../images/CAFÉ Chart.png",
+			IsImage: true,
+			Line:    1,
+		}},
+	}
+	idx := &model.VaultIndex{
+		Assets: map[string]*model.Asset{
+			"images/Cafe\u0301 Chart.png": {SrcPath: "images/Cafe\u0301 Chart.png"},
+			"images/Café Chart.png":       {SrcPath: "images/Café Chart.png"},
+		},
+	}
+	collector := diag.NewCollector()
+	md, _ := NewMarkdown(idx, note, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert(note.RawContent, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	if !strings.Contains(html, `<p>../images/CAFÉ Chart.png</p>`) {
+		t.Fatalf("HTML = %q, want ambiguous image embed to degrade to visible plain text", html)
+	}
+
+	want := []diag.Diagnostic{{
+		Severity: diag.SeverityWarning,
+		Kind:     diag.KindUnresolvedAsset,
+		Location: diag.Location{Path: note.RelPath, Line: 1},
+		Message:  `image embed "../images/CAFÉ Chart.png" matched multiple publishable vault assets after canonical path normalization (images/Café Chart.png, images/Café Chart.png); refusing canonical fallback and rendering as plain text`,
+	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("collector.Diagnostics() = %#v, want %#v", got, want)
 	}
@@ -2485,6 +2684,81 @@ func collectHeadings(t *testing.T, doc gast.Node) []*gast.Heading {
 	}
 
 	return headings
+}
+
+func noteWithParsedHeadingMetadata(t *testing.T, slug string, relPath string, raw string) *model.Note {
+	t.Helper()
+
+	note := &model.Note{
+		Slug:          slug,
+		RelPath:       relPath,
+		RawContent:    []byte(raw),
+		BodyStartLine: 1,
+	}
+	parser := NewParser(diag.NewCollector())
+	doc := parser.Parser().Parse(text.NewReader(note.RawContent))
+	headings := collectHeadings(t, doc)
+	note.Headings = make([]model.Heading, 0, len(headings))
+	entries := make([]struct {
+		level int
+		id    string
+		start int
+	}, 0, len(headings))
+	searchOffset := 0
+	rawSource := string(note.RawContent)
+	for _, heading := range headings {
+		visibleText := VisibleHeadingText(heading, note.RawContent)
+		id, ok := heading.AttributeString("id")
+		if !ok {
+			t.Fatalf("heading missing id attribute")
+		}
+		idString := ""
+		switch current := id.(type) {
+		case []byte:
+			idString = string(current)
+		case string:
+			idString = current
+		default:
+			idString = fmt.Sprint(current)
+		}
+
+		marker := strings.Repeat("#", heading.Level) + " " + visibleText
+		relativeStart := strings.Index(rawSource[searchOffset:], marker)
+		if relativeStart < 0 {
+			t.Fatalf("source missing heading marker %q", marker)
+		}
+		start := searchOffset + relativeStart
+		searchOffset = start + len(marker)
+
+		note.Headings = append(note.Headings, model.Heading{
+			Level: heading.Level,
+			Text:  visibleText,
+			ID:    idString,
+		})
+		entries = append(entries, struct {
+			level int
+			id    string
+			start int
+		}{
+			level: heading.Level,
+			id:    idString,
+			start: start,
+		})
+	}
+	if len(entries) > 0 {
+		note.HeadingSections = make(map[string]model.SectionRange, len(entries))
+		for i, entry := range entries {
+			end := len(note.RawContent)
+			for j := i + 1; j < len(entries); j++ {
+				if entries[j].level <= entry.level {
+					end = entries[j].start
+					break
+				}
+			}
+			note.HeadingSections[entry.id] = model.SectionRange{StartOffset: entry.start, EndOffset: end}
+		}
+	}
+	return note
 }
 
 func sectionRangeForTest(t *testing.T, source string, startMarker string, endMarker string) model.SectionRange {

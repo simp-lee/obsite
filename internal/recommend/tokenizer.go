@@ -20,8 +20,8 @@ var (
 )
 
 // Tokenize splits mixed-language note content into normalized terms.
-// CJK spans are segmented with gse, while non-CJK letters and numbers use a
-// whitespace-style tokenizer.
+// CJK spans are segmented with gse, while non-CJK spans are split only on
+// whitespace so engineering terms like node.js or path/to/file stay intact.
 func Tokenize(text string) ([]string, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
@@ -69,16 +69,16 @@ func Tokenize(text string) ([]string, error) {
 		case isCJKRune(r):
 			flushLatin()
 			cjk.WriteRune(r)
-		case isWordRune(r):
-			if err := flushCJK(); err != nil {
-				return nil, err
-			}
-			latin.WriteRune(unicode.ToLower(r))
-		default:
+		case unicode.IsSpace(r):
 			if err := flushCJK(); err != nil {
 				return nil, err
 			}
 			flushLatin()
+		default:
+			if err := flushCJK(); err != nil {
+				return nil, err
+			}
+			latin.WriteRune(unicode.ToLower(r))
 		}
 	}
 

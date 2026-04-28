@@ -472,11 +472,22 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		"enabled: true",
 		"timeline:",
 		"path: notes",
-		"templateDir:",
-		"customCSS:",
+		"# themes optionally declares named build-time themes. themes.<name>.root is resolved relative to this obsite.yaml file unless absolute.",
+		"# themes:",
+		"#   feature:",
+		"#     root: themes/feature",
+		"# defaultTheme selects one of the configured theme names when --theme is omitted.",
+		"# defaultTheme: feature",
+		"# Obsite only auto-detects a global override stylesheet at <vault>/custom.css, loaded after the generated site stylesheet.",
+		"# Each selected theme root must provide every required HTML template.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated config missing %q\n%s", want, content)
+		}
+	}
+	for _, forbidden := range []string{"templateDir:", "customCSS:", "assets/theme/", "pageAssetURL"} {
+		if strings.Contains(content, forbidden) {
+			t.Fatalf("generated config unexpectedly contains legacy field %q\n%s", forbidden, content)
 		}
 	}
 
@@ -517,14 +528,14 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	}
 }
 
-func TestBuildIntegrationExternalConfigDirAutoDetectsCustomCSSAndResolvesRelativePagefindPath(t *testing.T) {
+func TestBuildIntegrationExternalConfigDirUsesVaultRootCustomCSSAndResolvesRelativePagefindPath(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configDir := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 	configPath := filepath.Join(configDir, "obsite.yaml")
-	customCSSPath := filepath.Join(configDir, "custom.css")
+	customCSSPath := filepath.Join(vaultPath, "custom.css")
 	expectedPagefindPath := filepath.Join(configDir, "tools", "pagefind_extended")
 
 	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
@@ -560,16 +571,12 @@ Body.
 	if cfg.CustomCSS != customCSSPath {
 		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
 	}
-	if !loadedCfg.AllowMissingCustomCSS {
-		t.Fatal("loadedCfg.AllowMissingCustomCSS = false, want true for config-dir custom.css")
-	}
 	if cfg.Search.PagefindPath != expectedPagefindPath {
 		t.Fatalf("cfg.Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, expectedPagefindPath)
 	}
 
 	var lookPathCalls int
 	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
-		allowMissingCustomCSS: loadedCfg.AllowMissingCustomCSS,
 		pagefindLookPath: func(name string) (string, error) {
 			lookPathCalls++
 			if name != expectedPagefindPath {
@@ -599,13 +606,13 @@ Body.
 
 	customCSS := readBuildOutputFile(t, outputPath, "assets/custom.css")
 	if !bytes.Contains(customCSS, []byte("outline: 2px solid teal")) {
-		t.Fatalf("assets/custom.css = %q, want copied config-dir custom stylesheet", string(customCSS))
+		t.Fatalf("assets/custom.css = %q, want copied vault-root custom stylesheet", string(customCSS))
 	}
 	_ = readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json")
 
 	alphaHTML := readBuildOutputFile(t, outputPath, "alpha/index.html")
 	if !containsAny(alphaHTML, `href="../assets/custom.css"`, `href=../assets/custom.css`) {
-		t.Fatalf("note page missing config-dir custom stylesheet link\n%s", alphaHTML)
+		t.Fatalf("note page missing vault-root custom stylesheet link\n%s", alphaHTML)
 	}
 }
 
@@ -621,8 +628,14 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
 	cfg := loadedCfg.Config
-	if cfg.TemplateDir != filepath.Join(vaultPath, "templates") {
-		t.Fatalf("cfg.TemplateDir = %q, want %q", cfg.TemplateDir, filepath.Join(vaultPath, "templates"))
+	if cfg.DefaultTheme != "feature" {
+		t.Fatalf("cfg.DefaultTheme = %q, want %q", cfg.DefaultTheme, "feature")
+	}
+	if cfg.ActiveThemeName != "feature" {
+		t.Fatalf("cfg.ActiveThemeName = %q, want %q", cfg.ActiveThemeName, "feature")
+	}
+	if cfg.ThemeRoot != filepath.Join(vaultPath, "templates") {
+		t.Fatalf("cfg.ThemeRoot = %q, want %q", cfg.ThemeRoot, filepath.Join(vaultPath, "templates"))
 	}
 	if cfg.CustomCSS != filepath.Join(vaultPath, "custom.css") {
 		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, filepath.Join(vaultPath, "custom.css"))
@@ -944,6 +957,674 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/index.xml", http.StatusOK, "Updated Story")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/_pagefind/pagefind-entry.json", http.StatusOK, `"page_count":1`)
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/custom.css", http.StatusOK, "outline: 3px solid")
+	})
+}
+
+func TestBuildIntegrationThemeSwitchFixtureIsolatesThemeOutputs(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := copyFixtureVault(t, "theme-switch-vault")
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+	const (
+		alphaAssetRelPath = "assets/theme/nested/alpha/theme-marker.txt"
+		betaAssetRelPath  = "assets/theme/nested/beta/theme-marker.txt"
+	)
+	themeLeakageSnippets := []string{
+		"alpha-shell",
+		"alpha-shell-copy",
+		"alpha shell marker",
+		"alpha-note",
+		"alpha-note-copy",
+		"alpha note shell",
+		"beta-shell",
+		"beta-shell-copy",
+		"beta shell marker",
+		"beta-note",
+		"beta-note-copy",
+		"beta note shell",
+		"no-style-shell",
+		"no-style-shell-copy",
+		"no-style shell marker",
+		"no-style-note",
+		"no-style-note-copy",
+		"no-style note shell",
+		"data-theme-shell",
+		"data-theme-note",
+		"data-theme-asset",
+		"assets/theme/nested/alpha/theme-marker.txt",
+		"assets/theme/nested/beta/theme-marker.txt",
+	}
+	type themeFixturePage struct {
+		kind      string
+		relPath   string
+		styleHref string
+	}
+	themePages := []themeFixturePage{
+		{kind: "note", relPath: "switchboard/index.html", styleHref: "../style.css"},
+		{kind: "index", relPath: "index.html", styleHref: "./style.css"},
+		{kind: "folder", relPath: "notes/index.html", styleHref: "../style.css"},
+		{kind: "tag", relPath: "tags/switch/index.html", styleHref: "../../style.css"},
+		{kind: "timeline", relPath: "timeline/index.html", styleHref: "../style.css"},
+		{kind: "404", relPath: "404.html", styleHref: "./style.css"},
+	}
+	type pagefindExpectation struct {
+		Theme string
+		Hash  string
+	}
+	type themeShellExpectation struct {
+		name              string
+		shellMarker       string
+		noteMarker        string
+		noteAssetHref     string
+		expectStyleHref   bool
+		expectPageMarkers bool
+	}
+	allThemeShellMarkers := []string{"alpha-shell", "beta-shell", "no-style-shell"}
+	allThemeNoteMarkers := []string{"alpha-note", "beta-note", "no-style-note"}
+	allThemeAssetHrefs := []string{
+		"../assets/theme/nested/alpha/theme-marker.txt",
+		"../assets/theme/nested/beta/theme-marker.txt",
+	}
+	themeExpectation := func(t *testing.T, name string) themeShellExpectation {
+		t.Helper()
+
+		switch name {
+		case "alpha":
+			return themeShellExpectation{
+				name:              name,
+				shellMarker:       "alpha-shell",
+				noteMarker:        "alpha-note",
+				noteAssetHref:     "../assets/theme/nested/alpha/theme-marker.txt",
+				expectStyleHref:   true,
+				expectPageMarkers: true,
+			}
+		case "beta":
+			return themeShellExpectation{
+				name:              name,
+				shellMarker:       "beta-shell",
+				noteMarker:        "beta-note",
+				noteAssetHref:     "../assets/theme/nested/beta/theme-marker.txt",
+				expectStyleHref:   true,
+				expectPageMarkers: true,
+			}
+		case "no-style":
+			return themeShellExpectation{
+				name:              name,
+				shellMarker:       "no-style-shell",
+				noteMarker:        "no-style-note",
+				expectStyleHref:   false,
+				expectPageMarkers: true,
+			}
+		case "embedded-default":
+			return themeShellExpectation{
+				name:            name,
+				expectStyleHref: true,
+			}
+		default:
+			t.Fatalf("unsupported theme expectation %q", name)
+			return themeShellExpectation{}
+		}
+	}
+
+	loadCfg := func(t *testing.T, theme string) internalmodel.SiteConfig {
+		t.Helper()
+
+		overrides := internalconfig.Overrides{VaultPath: vaultPath}
+		if trimmedTheme := strings.TrimSpace(theme); trimmedTheme != "" {
+			overrides.Theme = trimmedTheme
+		}
+
+		loadedCfg, err := internalconfig.LoadForBuild(configPath, overrides)
+		if err != nil {
+			t.Fatalf("config.LoadForBuild(%q, theme=%q) error = %v", configPath, theme, err)
+		}
+
+		return loadedCfg.Config
+	}
+
+	detectRenderedPagefindTheme := func(t *testing.T, outputPath string) string {
+		t.Helper()
+
+		switchboardHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		switch {
+		case containsAny(
+			switchboardHTML,
+			`data-theme-shell="alpha-shell"`,
+			`data-theme-shell=alpha-shell`,
+		):
+			return "alpha"
+		case containsAny(
+			switchboardHTML,
+			`data-theme-shell="beta-shell"`,
+			`data-theme-shell=beta-shell`,
+		):
+			return "beta"
+		case containsAny(
+			switchboardHTML,
+			`data-theme-shell="no-style-shell"`,
+			`data-theme-shell=no-style-shell`,
+		):
+			return "no-style"
+		default:
+			for _, forbidden := range []string{"alpha-shell", "beta-shell", "no-style-shell", "alpha-note", "beta-note", "no-style-note"} {
+				if bytes.Contains(switchboardHTML, []byte(forbidden)) {
+					t.Fatalf("embedded default switchboard retained theme marker %q\n%s", forbidden, switchboardHTML)
+				}
+			}
+			return "embedded-default"
+		}
+	}
+
+	type pagefindHarness struct {
+		versionChecks int
+		indexRuns     int
+		lastTheme     string
+		lastHash      string
+	}
+
+	writeThemeSwitchPagefindBundle := func(t *testing.T, bundlePath string, current pagefindExpectation, run int) {
+		t.Helper()
+
+		files := map[string]string{
+			"pagefind-ui.css":       ".pagefind-ui{display:block}",
+			"pagefind.js":           "window.__pagefind=function(){};",
+			"pagefind-highlight.js": "window.__pagefindHighlight=function(){};",
+			"pagefind-entry.json": fmt.Sprintf(
+				`{"version":"1.5.2","theme":"%s","languages":{"en":{"hash":"%s","page_count":1}}}`,
+				current.Theme,
+				current.Hash,
+			),
+			fmt.Sprintf("pagefind.%s.pf_meta", current.Hash):       fmt.Sprintf("meta:%s:%s", current.Theme, current.Hash),
+			filepath.Join("index", current.Hash+".pf_index"):       fmt.Sprintf("index:%s:%s", current.Theme, current.Hash),
+			filepath.Join("fragment", current.Hash+".pf_fragment"): fmt.Sprintf("fragment:%s:%s", current.Theme, current.Hash),
+			"pagefind-ui.js": fmt.Sprintf(
+				"window.PagefindUI=function(){return %q;};",
+				fmt.Sprintf("theme=%s hash=%s run=%d", current.Theme, current.Hash, run),
+			),
+			fmt.Sprintf("theme-%s.marker", current.Theme): fmt.Sprintf("theme=%s hash=%s run=%d", current.Theme, current.Hash, run),
+			"wasm.unknown.pagefind":                       "wasm",
+		}
+
+		for relPath, contents := range files {
+			writeBuildTestFile(t, bundlePath, relPath, contents)
+		}
+	}
+
+	buildOptionsFor := func(t *testing.T, cfg internalmodel.SiteConfig, harness *pagefindHarness, writer io.Writer) buildOptions {
+		t.Helper()
+
+		return buildOptions{
+			diagnosticsWriter: writer,
+			pagefindLookPath: func(name string) (string, error) {
+				if name != cfg.Search.PagefindPath {
+					t.Fatalf("pagefindLookPath() name = %q, want %q", name, cfg.Search.PagefindPath)
+				}
+				return "/usr/local/bin/pagefind_extended", nil
+			},
+			pagefindCommand: func(name string, args ...string) ([]byte, error) {
+				if name != "/usr/local/bin/pagefind_extended" {
+					t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
+				}
+				if len(args) == 1 && args[0] == "--version" {
+					harness.versionChecks++
+					return []byte("pagefind_extended 1.5.2\n"), nil
+				}
+				if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
+					t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
+				}
+
+				harness.indexRuns++
+				bundlePath := filepath.Join(args[1], pagefindOutputSubdir)
+				themeKey := detectRenderedPagefindTheme(t, args[1])
+				current := pagefindExpectation{
+					Theme: themeKey,
+					Hash:  fmt.Sprintf("en-%s-%02d", strings.ReplaceAll(themeKey, "-", "_"), harness.indexRuns),
+				}
+				harness.lastTheme = current.Theme
+				harness.lastHash = current.Hash
+				writeThemeSwitchPagefindBundle(t, bundlePath, current, harness.indexRuns)
+				return []byte("Indexed 2 pages\n"), nil
+			},
+		}
+	}
+
+	runBuild := func(t *testing.T, label string, cfg internalmodel.SiteConfig, outputPath string, harness *pagefindHarness) *BuildResult {
+		t.Helper()
+
+		var diagnostics bytes.Buffer
+		result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptionsFor(t, cfg, harness, &diagnostics))
+		if err != nil {
+			t.Fatalf("%s buildWithOptions() error = %v", label, err)
+		}
+		if result == nil {
+			t.Fatalf("%s buildWithOptions() = nil result, want build result", label)
+		}
+		if result.NotePages != 2 {
+			t.Fatalf("%s result.NotePages = %d, want %d", label, result.NotePages, 2)
+		}
+		if strings.TrimSpace(diagnostics.String()) != "" {
+			t.Fatalf("%s diagnostics summary = %q, want empty summary", label, diagnostics.String())
+		}
+
+		return result
+	}
+
+	assertThemePages := func(t *testing.T, outputPath string, current themeShellExpectation) {
+		t.Helper()
+
+		for _, page := range themePages {
+			html := readBuildOutputFile(t, outputPath, page.relPath)
+			head := htmlHead(t, html)
+
+			if current.shellMarker != "" && !containsAny(
+				html,
+				fmt.Sprintf(`data-theme-shell="%s"`, current.shellMarker),
+				fmt.Sprintf(`data-theme-shell=%s`, current.shellMarker),
+			) {
+				t.Fatalf("%s missing current shell marker %q\n%s", page.relPath, current.shellMarker, html)
+			}
+			for _, shellMarker := range allThemeShellMarkers {
+				if shellMarker == current.shellMarker {
+					continue
+				}
+				if bytes.Contains(html, []byte(shellMarker)) {
+					t.Fatalf("%s retained non-current shell marker %q\n%s", page.relPath, shellMarker, html)
+				}
+			}
+
+			if current.expectStyleHref {
+				if !containsAny(head, fmt.Sprintf(`href="%s"`, page.styleHref), fmt.Sprintf(`href=%s`, page.styleHref)) {
+					t.Fatalf("%s missing stylesheet link %q\n%s", page.relPath, page.styleHref, html)
+				}
+			} else if containsAny(head, fmt.Sprintf(`href="%s"`, page.styleHref), fmt.Sprintf(`href=%s`, page.styleHref)) {
+				t.Fatalf("%s unexpectedly retained stylesheet link %q\n%s", page.relPath, page.styleHref, html)
+			}
+
+			if page.kind == "note" {
+				if current.noteMarker != "" && !containsAny(
+					html,
+					fmt.Sprintf(`data-theme-note="%s"`, current.noteMarker),
+					fmt.Sprintf(`data-theme-note=%s`, current.noteMarker),
+				) {
+					t.Fatalf("%s missing current note marker %q\n%s", page.relPath, current.noteMarker, html)
+				}
+				for _, noteMarker := range allThemeNoteMarkers {
+					if noteMarker == current.noteMarker {
+						continue
+					}
+					if bytes.Contains(html, []byte(noteMarker)) {
+						t.Fatalf("%s retained non-current note marker %q\n%s", page.relPath, noteMarker, html)
+					}
+				}
+				if current.noteAssetHref != "" && !containsAny(
+					html,
+					fmt.Sprintf(`href="%s"`, current.noteAssetHref),
+					fmt.Sprintf(`href=%s`, current.noteAssetHref),
+				) {
+					t.Fatalf("%s missing current note asset link %q\n%s", page.relPath, current.noteAssetHref, html)
+				}
+				for _, assetHref := range allThemeAssetHrefs {
+					if assetHref == current.noteAssetHref {
+						continue
+					}
+					if bytes.Contains(html, []byte(assetHref)) {
+						t.Fatalf("%s retained non-current note asset link %q\n%s", page.relPath, assetHref, html)
+					}
+				}
+				continue
+			}
+
+			pageMarkerQuoted := fmt.Sprintf(`data-theme-page="%s"`, page.kind)
+			pageMarkerBare := fmt.Sprintf(`data-theme-page=%s`, page.kind)
+			if current.expectPageMarkers {
+				if !containsAny(html, pageMarkerQuoted, pageMarkerBare) {
+					t.Fatalf("%s missing page marker for %s\n%s", page.relPath, page.kind, html)
+				}
+			} else if containsAny(html, pageMarkerQuoted, pageMarkerBare) {
+				t.Fatalf("%s retained theme-specific page marker for %s\n%s", page.relPath, page.kind, html)
+			}
+		}
+	}
+
+	assertSearchUIAcrossSite := func(t *testing.T, outputPath string, want bool) {
+		t.Helper()
+
+		for _, page := range themePages {
+			html := readBuildOutputFile(t, outputPath, page.relPath)
+			if containsFrameworkSearchUI(html) != want {
+				if want {
+					t.Fatalf("%s missing search UI markers\n%s", page.relPath, html)
+				}
+				t.Fatalf("%s retained search UI markers\n%s", page.relPath, html)
+			}
+		}
+	}
+
+	assertPagefindOutputs := func(t *testing.T, outputPath string, current pagefindExpectation, previous ...pagefindExpectation) []byte {
+		t.Helper()
+
+		entryJSON := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json")
+		if current.Theme == "embedded-default" {
+			if bytes.Contains(entryJSON, []byte(`"theme"`)) {
+				t.Fatalf("_pagefind/pagefind-entry.json retained named-theme marker for embedded default\n%s", entryJSON)
+			}
+		} else if !bytes.Contains(entryJSON, []byte(fmt.Sprintf(`"theme":"%s"`, current.Theme))) {
+			t.Fatalf("_pagefind/pagefind-entry.json missing current theme marker %q\n%s", current.Theme, entryJSON)
+		}
+		if !bytes.Contains(entryJSON, []byte(fmt.Sprintf(`"hash":"%s"`, current.Hash))) {
+			t.Fatalf("_pagefind/pagefind-entry.json missing current hash %q\n%s", current.Hash, entryJSON)
+		}
+
+		metaRelPath := filepath.Join(pagefindOutputSubdir, fmt.Sprintf("pagefind.%s.pf_meta", current.Hash))
+		meta := readBuildOutputFile(t, outputPath, metaRelPath)
+		if !bytes.Contains(meta, []byte(fmt.Sprintf("meta:%s:%s", current.Theme, current.Hash))) {
+			t.Fatalf("%s missing current payload\n%s", metaRelPath, meta)
+		}
+
+		indexRelPath := filepath.Join(pagefindOutputSubdir, "index", current.Hash+".pf_index")
+		indexData := readBuildOutputFile(t, outputPath, indexRelPath)
+		if !bytes.Contains(indexData, []byte(fmt.Sprintf("index:%s:%s", current.Theme, current.Hash))) {
+			t.Fatalf("%s missing current payload\n%s", indexRelPath, indexData)
+		}
+
+		fragmentRelPath := filepath.Join(pagefindOutputSubdir, "fragment", current.Hash+".pf_fragment")
+		fragmentData := readBuildOutputFile(t, outputPath, fragmentRelPath)
+		if !bytes.Contains(fragmentData, []byte(fmt.Sprintf("fragment:%s:%s", current.Theme, current.Hash))) {
+			t.Fatalf("%s missing current payload\n%s", fragmentRelPath, fragmentData)
+		}
+
+		markerRelPath := filepath.Join(pagefindOutputSubdir, fmt.Sprintf("theme-%s.marker", current.Theme))
+		marker := readBuildOutputFile(t, outputPath, markerRelPath)
+		if !bytes.Contains(marker, []byte(fmt.Sprintf("theme=%s hash=%s", current.Theme, current.Hash))) {
+			t.Fatalf("%s missing current theme/hash payload\n%s", markerRelPath, marker)
+		}
+
+		pagefindUI := readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js")
+		if !bytes.Contains(pagefindUI, []byte(fmt.Sprintf("theme=%s hash=%s", current.Theme, current.Hash))) {
+			t.Fatalf("_pagefind/pagefind-ui.js missing current theme/hash marker %q/%q\n%s", current.Theme, current.Hash, pagefindUI)
+		}
+		for _, previousExpectation := range previous {
+			if bytes.Contains(entryJSON, []byte(fmt.Sprintf(`"theme":"%s"`, previousExpectation.Theme))) {
+				t.Fatalf("_pagefind/pagefind-entry.json retained previous theme marker %q\n%s", previousExpectation.Theme, entryJSON)
+			}
+			if bytes.Contains(entryJSON, []byte(previousExpectation.Hash)) {
+				t.Fatalf("_pagefind/pagefind-entry.json retained previous hash %q\n%s", previousExpectation.Hash, entryJSON)
+			}
+			assertPathMissing(t, filepath.Join(outputPath, pagefindOutputSubdir, fmt.Sprintf("theme-%s.marker", previousExpectation.Theme)))
+			assertPathMissing(t, filepath.Join(outputPath, pagefindOutputSubdir, fmt.Sprintf("pagefind.%s.pf_meta", previousExpectation.Hash)))
+			assertPathMissing(t, filepath.Join(outputPath, pagefindOutputSubdir, "index", previousExpectation.Hash+".pf_index"))
+			assertPathMissing(t, filepath.Join(outputPath, pagefindOutputSubdir, "fragment", previousExpectation.Hash+".pf_fragment"))
+			if bytes.Contains(pagefindUI, []byte(previousExpectation.Theme)) {
+				t.Fatalf("_pagefind/pagefind-ui.js retained previous theme marker %q\n%s", previousExpectation.Theme, pagefindUI)
+			}
+			if bytes.Contains(pagefindUI, []byte(previousExpectation.Hash)) {
+				t.Fatalf("_pagefind/pagefind-ui.js retained previous hash %q\n%s", previousExpectation.Hash, pagefindUI)
+			}
+		}
+
+		return append([]byte(nil), pagefindUI...)
+	}
+
+	assertAncillaryOutputs := func(t *testing.T, outputPath string, currentPagefind pagefindExpectation, previousPagefind ...pagefindExpectation) []byte {
+		t.Helper()
+
+		customCSS := readBuildOutputFile(t, outputPath, "assets/custom.css")
+		if !regexp.MustCompile(`(?s)\bbody\s*\{[^}]*\boutline:\s*4px\s+dashed\s+rgb\(17,\s*34,\s*51\)\s*;?[^}]*\}`).Match(customCSS) {
+			t.Fatalf("assets/custom.css missing vault-root custom CSS marker\n%s", customCSS)
+		}
+		pagefindUI := assertPagefindOutputs(t, outputPath, currentPagefind, previousPagefind...)
+
+		popoverJSON := readBuildOutputFile(t, outputPath, "_popover/reference.json")
+		popover := mustUnmarshalJSON[popoverPreviewPayload](t, popoverJSON)
+		if popover.Title != "Reference" {
+			t.Fatalf("_popover/reference.json title = %q, want %q", popover.Title, "Reference")
+		}
+		if len(popover.Tags) != 1 || popover.Tags[0] != "switch" {
+			t.Fatalf("_popover/reference.json tags = %#v, want %#v", popover.Tags, []string{"switch"})
+		}
+		if !strings.Contains(popover.Summary, "Reference note for theme switch integration coverage.") {
+			t.Fatalf("_popover/reference.json summary = %q, want stable note-derived summary", popover.Summary)
+		}
+		for _, forbidden := range themeLeakageSnippets {
+			if bytes.Contains(popoverJSON, []byte(forbidden)) {
+				t.Fatalf("_popover/reference.json retained theme leakage marker %q\n%s", forbidden, popoverJSON)
+			}
+		}
+
+		return pagefindUI
+	}
+
+	t.Run("alpha to beta rebuild replaces theme shell assets and style", func(t *testing.T) {
+		outputPath := filepath.Join(t.TempDir(), "site")
+		harness := &pagefindHarness{}
+
+		alphaCfg := loadCfg(t, "alpha")
+		runBuild(t, "alpha", alphaCfg, outputPath, harness)
+
+		alphaHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		if !containsAny(alphaHTML,
+			`data-theme-shell="alpha-shell"`,
+			`data-theme-shell=alpha-shell`,
+		) {
+			t.Fatalf("alpha note page missing alpha shell marker\n%s", alphaHTML)
+		}
+		if !containsAny(alphaHTML,
+			`data-theme-note="alpha-note"`,
+			`data-theme-note=alpha-note`,
+		) {
+			t.Fatalf("alpha note page missing alpha note marker\n%s", alphaHTML)
+		}
+		if !containsAny(alphaHTML,
+			`href="../assets/theme/nested/alpha/theme-marker.txt"`,
+			`href=../assets/theme/nested/alpha/theme-marker.txt`,
+		) {
+			t.Fatalf("alpha note page missing alpha theme asset link\n%s", alphaHTML)
+		}
+		alphaStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if !bytes.Contains(alphaStyle, []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("style.css missing alpha theme marker\n%s", alphaStyle)
+		}
+		alphaAsset := readBuildOutputFile(t, outputPath, alphaAssetRelPath)
+		if !bytes.Contains(alphaAsset, []byte("alpha asset marker")) {
+			t.Fatalf("%s missing alpha asset marker\n%s", alphaAssetRelPath, alphaAsset)
+		}
+		assertThemePages(t, outputPath, themeExpectation(t, "alpha"))
+		alphaPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		alphaPagefindUI := assertAncillaryOutputs(t, outputPath, alphaPagefind)
+
+		betaCfg := loadCfg(t, "beta")
+		runBuild(t, "beta", betaCfg, outputPath, harness)
+		if harness.versionChecks != 2 {
+			t.Fatalf("pagefind version checks = %d, want %d after alpha->beta rebuild", harness.versionChecks, 2)
+		}
+		if harness.indexRuns != 2 {
+			t.Fatalf("pagefind index runs = %d, want %d after alpha->beta rebuild", harness.indexRuns, 2)
+		}
+
+		betaHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, snippets := range [][]string{
+			{`data-theme-shell="beta-shell"`, `data-theme-shell=beta-shell`},
+			{`data-theme-note="beta-note"`, `data-theme-note=beta-note`},
+			{`href="../assets/theme/nested/beta/theme-marker.txt"`, `href=../assets/theme/nested/beta/theme-marker.txt`},
+			{`href="../assets/custom.css"`, `href=../assets/custom.css`},
+		} {
+			if !containsAny(betaHTML, snippets...) {
+				t.Fatalf("beta note page missing one of %#v\n%s", snippets, betaHTML)
+			}
+		}
+		for _, forbidden := range []string{"alpha-shell", "alpha-note", `../assets/theme/nested/alpha/theme-marker.txt`} {
+			if bytes.Contains(betaHTML, []byte(forbidden)) {
+				t.Fatalf("beta note page retained alpha marker %q\n%s", forbidden, betaHTML)
+			}
+		}
+
+		betaStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if !bytes.Contains(betaStyle, []byte("--theme-switch-marker:beta")) {
+			t.Fatalf("style.css missing beta theme marker\n%s", betaStyle)
+		}
+		if bytes.Contains(betaStyle, []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("style.css retained alpha theme marker after beta rebuild\n%s", betaStyle)
+		}
+
+		betaAsset := readBuildOutputFile(t, outputPath, betaAssetRelPath)
+		if !bytes.Contains(betaAsset, []byte("beta asset marker")) {
+			t.Fatalf("%s missing beta asset marker\n%s", betaAssetRelPath, betaAsset)
+		}
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(alphaAssetRelPath)))
+		assertThemePages(t, outputPath, themeExpectation(t, "beta"))
+		betaPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		if got := assertAncillaryOutputs(t, outputPath, betaPagefind, alphaPagefind); bytes.Equal(got, alphaPagefindUI) {
+			t.Fatalf("_pagefind/pagefind-ui.js did not change after alpha->beta rebuild")
+		}
+	})
+
+	t.Run("alpha to embedded default clears theme outputs but keeps vault custom css", func(t *testing.T) {
+		outputPath := filepath.Join(t.TempDir(), "site")
+		harness := &pagefindHarness{}
+
+		alphaCfg := loadCfg(t, "alpha")
+		runBuild(t, "alpha", alphaCfg, outputPath, harness)
+		assertThemePages(t, outputPath, themeExpectation(t, "alpha"))
+		alphaPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		alphaPagefindUI := assertAncillaryOutputs(t, outputPath, alphaPagefind)
+
+		defaultCfg := loadCfg(t, "")
+		if defaultCfg.ActiveThemeName != "" {
+			t.Fatalf("defaultCfg.ActiveThemeName = %q, want empty string for embedded default theme", defaultCfg.ActiveThemeName)
+		}
+		if defaultCfg.ThemeRoot != "" {
+			t.Fatalf("defaultCfg.ThemeRoot = %q, want empty string for embedded default theme", defaultCfg.ThemeRoot)
+		}
+		runBuild(t, "embedded default", defaultCfg, outputPath, harness)
+		if harness.versionChecks != 2 {
+			t.Fatalf("pagefind version checks = %d, want %d after alpha->embedded default rebuild", harness.versionChecks, 2)
+		}
+		if harness.indexRuns != 2 {
+			t.Fatalf("pagefind index runs = %d, want %d after alpha->embedded default rebuild", harness.indexRuns, 2)
+		}
+
+		defaultHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, forbidden := range []string{"alpha-shell", "alpha-note", `../assets/theme/nested/alpha/theme-marker.txt`} {
+			if bytes.Contains(defaultHTML, []byte(forbidden)) {
+				t.Fatalf("embedded default note page retained alpha marker %q\n%s", forbidden, defaultHTML)
+			}
+		}
+		if !containsAny(defaultHTML,
+			`href="../assets/custom.css"`,
+			`href=../assets/custom.css`,
+		) {
+			t.Fatalf("embedded default note page missing vault-root custom stylesheet link\n%s", defaultHTML)
+		}
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(alphaAssetRelPath)))
+
+		defaultStyle := readBuildOutputFile(t, outputPath, "style.css")
+		if bytes.Contains(defaultStyle, []byte("--theme-switch-marker:alpha")) {
+			t.Fatalf("embedded default style.css retained alpha theme marker\n%s", defaultStyle)
+		}
+		assertThemePages(t, outputPath, themeExpectation(t, "embedded-default"))
+		embeddedDefaultPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		if got := assertAncillaryOutputs(t, outputPath, embeddedDefaultPagefind, alphaPagefind); bytes.Equal(got, alphaPagefindUI) {
+			t.Fatalf("_pagefind/pagefind-ui.js did not change after alpha->embedded default rebuild")
+		}
+	})
+
+	t.Run("no-style theme removes prior style.css and theme assets", func(t *testing.T) {
+		outputPath := filepath.Join(t.TempDir(), "site")
+		harness := &pagefindHarness{}
+
+		alphaCfg := loadCfg(t, "alpha")
+		runBuild(t, "alpha", alphaCfg, outputPath, harness)
+		assertThemePages(t, outputPath, themeExpectation(t, "alpha"))
+		alphaPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		alphaPagefindUI := assertAncillaryOutputs(t, outputPath, alphaPagefind)
+
+		noStyleCfg := loadCfg(t, "no-style")
+		runBuild(t, "no-style", noStyleCfg, outputPath, harness)
+		if harness.versionChecks != 2 {
+			t.Fatalf("pagefind version checks = %d, want %d after alpha->no-style rebuild", harness.versionChecks, 2)
+		}
+		if harness.indexRuns != 2 {
+			t.Fatalf("pagefind index runs = %d, want %d after alpha->no-style rebuild", harness.indexRuns, 2)
+		}
+
+		noStyleHTML := readBuildOutputFile(t, outputPath, "switchboard/index.html")
+		for _, snippets := range [][]string{
+			{`data-theme-shell="no-style-shell"`, `data-theme-shell=no-style-shell`},
+			{`data-theme-note="no-style-note"`, `data-theme-note=no-style-note`},
+			{`href="../assets/custom.css"`, `href=../assets/custom.css`},
+		} {
+			if !containsAny(noStyleHTML, snippets...) {
+				t.Fatalf("no-style note page missing one of %#v\n%s", snippets, noStyleHTML)
+			}
+		}
+		if containsAny(noStyleHTML,
+			`href="../style.css"`,
+			`href=../style.css`,
+		) {
+			t.Fatalf("no-style note page unexpectedly references style.css\n%s", noStyleHTML)
+		}
+		for _, forbidden := range []string{"alpha-shell", "alpha-note", `../assets/theme/nested/alpha/theme-marker.txt`, `assets/theme/`} {
+			if bytes.Contains(noStyleHTML, []byte(forbidden)) {
+				t.Fatalf("no-style note page retained forbidden marker %q\n%s", forbidden, noStyleHTML)
+			}
+		}
+
+		assertPathMissing(t, filepath.Join(outputPath, "style.css"))
+		assertPathMissing(t, filepath.Join(outputPath, filepath.FromSlash(alphaAssetRelPath)))
+		assertThemePages(t, outputPath, themeExpectation(t, "no-style"))
+		noStylePagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		if got := assertAncillaryOutputs(t, outputPath, noStylePagefind, alphaPagefind); bytes.Equal(got, alphaPagefindUI) {
+			t.Fatalf("_pagefind/pagefind-ui.js did not change after alpha->no-style rebuild")
+		}
+	})
+
+	t.Run("search disabled rebuild removes pagefind bundle and search markers across site shells", func(t *testing.T) {
+		outputPath := filepath.Join(t.TempDir(), "site")
+		harness := &pagefindHarness{}
+
+		alphaCfg := loadCfg(t, "alpha")
+		runBuild(t, "alpha", alphaCfg, outputPath, harness)
+		assertThemePages(t, outputPath, themeExpectation(t, "alpha"))
+		alphaPagefind := pagefindExpectation{Theme: harness.lastTheme, Hash: harness.lastHash}
+		_ = assertAncillaryOutputs(t, outputPath, alphaPagefind)
+		assertSearchUIAcrossSite(t, outputPath, true)
+
+		disabledCfg := alphaCfg
+		disabledCfg.Search.Enabled = false
+
+		var diagnostics bytes.Buffer
+		result, err := buildWithOptions(disabledCfg, vaultPath, outputPath, buildOptionsFor(t, disabledCfg, harness, &diagnostics))
+		if err != nil {
+			t.Fatalf("search-disabled buildWithOptions() error = %v", err)
+		}
+		if result == nil {
+			t.Fatal("search-disabled buildWithOptions() = nil result, want build result")
+		}
+		if strings.TrimSpace(diagnostics.String()) != "" {
+			t.Fatalf("search-disabled diagnostics summary = %q, want empty summary", diagnostics.String())
+		}
+		if harness.versionChecks != 1 {
+			t.Fatalf("pagefind version checks = %d, want %d when search disable rebuild skips pagefind", harness.versionChecks, 1)
+		}
+		if harness.indexRuns != 1 {
+			t.Fatalf("pagefind index runs = %d, want %d when search disable rebuild skips pagefind", harness.indexRuns, 1)
+		}
+
+		assertPathMissing(t, filepath.Join(outputPath, pagefindOutputSubdir))
+		assertThemePages(t, outputPath, themeExpectation(t, "alpha"))
+		assertSearchUIAcrossSite(t, outputPath, false)
+	})
+
+	t.Run("incomplete theme reports missing required template", func(t *testing.T) {
+		_, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath, Theme: "incomplete"})
+		if err == nil {
+			t.Fatal("config.LoadForBuild() error = nil, want missing-template error for incomplete theme")
+		}
+		for _, want := range []string{`selected theme "incomplete" root`, `missing required HTML templates`, `tag.html`} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("config.LoadForBuild() error = %q, want substring %q", err.Error(), want)
+			}
+		}
 	})
 }
 

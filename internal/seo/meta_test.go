@@ -87,7 +87,7 @@ func TestBuildDescriptionFallsBackToNoteSummary(t *testing.T) {
 	}
 }
 
-func TestBuildNoteWithoutDescriptionOrSummaryLeavesDescriptionEmpty(t *testing.T) {
+func TestBuildNoteWithoutDescriptionOrSummaryFallsBackToTitle(t *testing.T) {
 	t.Parallel()
 
 	got := Build(model.PageData{
@@ -96,14 +96,19 @@ func TestBuildNoteWithoutDescriptionOrSummaryLeavesDescriptionEmpty(t *testing.T
 			BaseURL:     "https://example.com/",
 			Description: "Site description",
 		},
-		Slug: "notes/empty",
-	}, &model.Note{RelPath: "notes/empty.md"})
+		Slug: "notes/sparse",
+	}, &model.Note{
+		RelPath: "notes/sparse.md",
+		Frontmatter: model.Frontmatter{
+			Title: "Sparse",
+		},
+	})
 
-	if got.Description != "" {
-		t.Fatalf("Build(...).Description = %q, want empty string", got.Description)
+	if got.Description != "Sparse" {
+		t.Fatalf("Build(...).Description = %q, want %q", got.Description, "Sparse")
 	}
-	if got.OG.Description != "" {
-		t.Fatalf("Build(...).OG.Description = %q, want empty string", got.OG.Description)
+	if got.OG.Description != "Sparse" {
+		t.Fatalf("Build(...).OG.Description = %q, want %q", got.OG.Description, "Sparse")
 	}
 }
 
@@ -242,6 +247,28 @@ func TestBuildOpenGraphImageFallsBackToSiteDefaultImage(t *testing.T) {
 	}
 	if got.TwitterCard != "summary_large_image" {
 		t.Fatalf("Build(...).TwitterCard = %q, want %q", got.TwitterCard, "summary_large_image")
+	}
+}
+
+func TestBuildOpenGraphWithoutImageUsesSummaryTwitterCard(t *testing.T) {
+	t.Parallel()
+
+	got := Build(model.PageData{
+		Kind: model.PageNote,
+		Site: model.SiteConfig{BaseURL: "https://example.com/blog/"},
+		Slug: "notes/plain",
+	}, &model.Note{
+		RelPath: "notes/plain.md",
+		Frontmatter: model.Frontmatter{
+			Title: "Plain",
+		},
+	})
+
+	if got.OG.Image != "" {
+		t.Fatalf("Build(...).OG.Image = %q, want empty string", got.OG.Image)
+	}
+	if got.TwitterCard != "summary" {
+		t.Fatalf("Build(...).TwitterCard = %q, want %q", got.TwitterCard, "summary")
 	}
 }
 

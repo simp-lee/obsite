@@ -1,0 +1,917 @@
+{{define "base"}}
+<!doctype html>
+<html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{if .Title}}{{.Title}}{{if and .Site.Title (ne .Title .Site.Title)}} · {{.Site.Title}}{{end}}{{else if .Site.Title}}{{.Site.Title}}{{else}}Untitled Site{{end}}</title>
+  {{if eq .Kind "404"}}<base href="{{siteBasePath .Site.BaseURL}}">{{end}}
+  {{with .Description}}<meta name="description" content="{{.}}">{{end}}
+  {{with .Site.Author}}<meta name="author" content="{{.}}">{{end}}
+  {{with .Canonical}}<link rel="canonical" href="{{.}}">{{end}}
+  {{if .HasRSS}}<link rel="alternate" type="application/rss+xml" title="{{.Site.Title}} RSS" href="{{.SiteRootRel}}index.xml">{{end}}
+  {{with .Pagination}}{{if .PrevURL}}<link rel="prev" href="{{.PrevURL}}">{{end}}{{if .NextURL}}<link rel="next" href="{{.NextURL}}">{{end}}{{end}}
+
+  {{with .OG.Title}}<meta property="og:title" content="{{.}}">{{end}}
+  <meta property="og:type" content="{{if .OG.Type}}{{.OG.Type}}{{else}}website{{end}}">
+  {{with .OG.Description}}<meta property="og:description" content="{{.}}">{{end}}
+  {{with .OG.URL}}<meta property="og:url" content="{{.}}">{{end}}
+  {{with .OG.Image}}<meta property="og:image" content="{{.}}">{{end}}
+  {{with .Site.Title}}<meta property="og:site_name" content="{{.}}">{{end}}
+
+  {{with .TwitterCard}}<meta name="twitter:card" content="{{.}}">{{end}}
+  {{with .OG.Title}}<meta name="twitter:title" content="{{.}}">{{end}}
+  {{with .OG.Description}}<meta name="twitter:description" content="{{.}}">{{end}}
+  {{with .OG.Image}}<meta name="twitter:image" content="{{.}}">{{end}}
+  <meta name="color-scheme" content="light dark">
+
+  <script>
+    (function () {
+      var storageKey = "obsite.theme.v1:{{siteBasePath .Site.BaseURL}}";
+      var legacyStorageKey = "theme";
+      var root = document.documentElement;
+      var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+      function isStoredTheme(value) {
+        return value === "light" || value === "dark";
+      }
+
+      function migrateStoredTheme(value) {
+        if (!isStoredTheme(value)) {
+          return "";
+        }
+
+        try {
+          localStorage.setItem(storageKey, value);
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+
+        return value;
+      }
+
+      function readStoredTheme() {
+        try {
+          var value = localStorage.getItem(storageKey);
+          if (isStoredTheme(value)) {
+            return value;
+          }
+
+          value = localStorage.getItem(legacyStorageKey);
+          if (isStoredTheme(value)) {
+            return migrateStoredTheme(value);
+          }
+        } catch (error) {
+        }
+
+        return "";
+      }
+
+      function resolveTheme(preference) {
+        if (preference === "light" || preference === "dark") {
+          return preference;
+        }
+
+        return media && media.matches ? "dark" : "light";
+      }
+
+      function setToggleText(toggle, selector, value) {
+        var element = toggle.querySelector(selector);
+        if (element) {
+          element.textContent = value;
+        }
+      }
+
+      function syncThemeToggle(toggle, preference, resolved) {
+        if (!toggle) {
+          return;
+        }
+
+        setToggleText(toggle, "[data-theme-toggle-value]", resolved === "dark" ? "Dark" : "Light");
+        setToggleText(toggle, "[data-theme-toggle-state]", "Current mode " + resolved + ".");
+        setToggleText(toggle, "[data-theme-toggle-source]", preference ? "Theme locked to " + preference + "." : "Following system preference.");
+        toggle.setAttribute("aria-pressed", String(resolved === "dark"));
+        toggle.hidden = false;
+      }
+
+      function applyTheme(preference) {
+        var resolved = resolveTheme(preference);
+        if (preference === "light" || preference === "dark") {
+          root.setAttribute("data-theme", preference);
+        } else {
+          root.removeAttribute("data-theme");
+        }
+        root.style.colorScheme = resolved;
+
+        var toggle = document.querySelector("[data-theme-toggle]");
+        syncThemeToggle(toggle, preference, resolved);
+      }
+
+      function initThemeToggle() {
+        var toggle = document.querySelector("[data-theme-toggle]");
+        if (!toggle || toggle.getAttribute("data-theme-toggle-ready") === "true") {
+          return;
+        }
+
+        toggle.setAttribute("data-theme-toggle-ready", "true");
+        toggle.addEventListener("click", function () {
+          toggleTheme();
+        });
+        applyTheme(readStoredTheme());
+      }
+
+      function toggleTheme() {
+        var nextTheme = resolveTheme(readStoredTheme()) === "dark" ? "light" : "dark";
+        try {
+          localStorage.setItem(storageKey, nextTheme);
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+
+        applyTheme(nextTheme);
+      }
+
+      applyTheme(readStoredTheme());
+      window.__obsiteInitThemeToggle = initThemeToggle;
+
+      if (media && typeof media.addEventListener === "function") {
+        media.addEventListener("change", function () {
+          if (!readStoredTheme()) {
+            applyTheme("");
+          }
+        });
+      } else if (media && typeof media.addListener === "function") {
+        media.addListener(function () {
+          if (!readStoredTheme()) {
+            applyTheme("");
+          }
+        });
+      }
+    })();
+  </script>
+
+  <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
+  {{if .HasSearch}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.css" data-obsite-search-ui="true">{{end}}
+  {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
+
+  {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
+  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel .Site.KaTeXCSSURL}}">
+  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXJSURL}}"></script>
+  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXAutoRenderURL}}"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      var target = document.querySelector("[data-page-content]");
+      if (target && typeof renderMathInElement === "function") {
+        renderMathInElement(target, {
+          delimiters: [
+            {left: "$$", right: "$$", display: true},
+            {left: "$", right: "$", display: false}
+          ],
+          throwOnError: false
+        });
+      }
+    });
+  </script>
+  {{end}}
+
+  {{if and .HasMermaid .Site.MermaidJSURL}}
+  <script type="module">
+    import mermaid from "{{pageAssetURL .SiteRootRel .Site.MermaidJSURL}}";
+
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "neutral",
+      securityLevel: "loose"
+    });
+  </script>
+  {{end}}
+
+  {{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>{{end}}
+</head>
+<body class="kind-{{.Kind}}">
+  <div class="site-frame">
+    <header class="site-masthead">
+      <div class="masthead-band">
+        <a class="site-mark" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}">{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}</a>
+        <p class="site-mark-caption">Notes, references, and linked fragments.</p>
+      </div>
+      <div class="masthead-copy">
+        <div class="masthead-actions">
+          {{if and .Site.Sidebar.Enabled .SidebarTree}}
+          <button class="sidebar-launch" type="button" data-sidebar-toggle aria-controls="sidebar-panel" aria-expanded="false" hidden>
+            <span class="sidebar-launch-icon" aria-hidden="true"></span>
+            <span>Browse</span>
+          </button>
+          {{end}}
+          <button class="theme-toggle" type="button" data-theme-toggle aria-labelledby="theme-toggle-name" aria-describedby="theme-toggle-state theme-toggle-source" aria-pressed="false" hidden>
+            <span class="theme-toggle-caption" id="theme-toggle-name">Theme</span>
+            <span class="theme-toggle-value" aria-hidden="true" data-theme-toggle-value>Mode</span>
+            <span class="sr-only" id="theme-toggle-state" data-theme-toggle-state>Current mode unavailable.</span>
+            <span class="sr-only" id="theme-toggle-source" data-theme-toggle-source>Theme preference syncing.</span>
+          </button>
+          <script>
+            if (typeof window.__obsiteInitThemeToggle === "function") {
+              window.__obsiteInitThemeToggle();
+            }
+          </script>
+        </div>
+        {{with .Site.Description}}<p class="site-description">{{.}}</p>{{end}}
+        {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}
+        {{if .HasSearch}}
+        <div class="site-search" data-obsite-search-ui="true">
+          <div id="obsite-search-root"></div>
+        </div>
+        {{end}}
+      </div>
+    </header>
+
+    {{if .Breadcrumbs}}
+    <nav class="breadcrumbs" aria-label="Breadcrumb">
+      <ol>
+        {{range .Breadcrumbs}}
+        <li>
+          {{if .URL}}
+          <a href="{{.URL}}">{{.Name}}</a>
+          {{else}}
+          <span aria-current="page">{{.Name}}</span>
+          {{end}}
+        </li>
+        {{end}}
+      </ol>
+    </nav>
+    {{end}}
+
+    <div class="site-body" data-site-body>
+      {{if and .Site.Sidebar.Enabled .SidebarTree}}
+      <aside id="sidebar-panel" class="sidebar-shell" data-sidebar-shell hidden>
+        <div class="sidebar-panel-head">
+          <p class="page-eyebrow">Browser</p>
+          <button class="sidebar-close" type="button" data-sidebar-close aria-label="Close file browser">Close</button>
+        </div>
+        <nav class="sidebar" data-sidebar-root data-site-root-rel="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}" aria-label="File browser"></nav>
+      </aside>
+      {{end}}
+
+      <main class="site-main">
+        {{template "content" .}}
+      </main>
+    </div>
+
+    <footer class="site-footer">
+      <p>{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}{{if .Site.Author}} · {{.Site.Author}}{{end}}</p>
+      <p class="site-footer-note">Built for long-form reading, quick scanning, and durable internal links.</p>
+    </footer>
+  </div>
+
+  {{if and .Site.Sidebar.Enabled .SidebarTree}}
+  <div class="sidebar-overlay" data-sidebar-overlay hidden></div>
+  <script id="sidebar-data" type="application/json">{{toJSON .SidebarTree}}</script>
+  <script>
+    (function () {
+      var dataNode = document.getElementById("sidebar-data");
+      var shell = document.querySelector("[data-sidebar-shell]");
+      var root = document.querySelector("[data-sidebar-root]");
+      var siteBody = document.querySelector("[data-site-body]");
+      var toggle = document.querySelector("[data-sidebar-toggle]");
+      var closeButton = document.querySelector("[data-sidebar-close]");
+      var overlay = document.querySelector("[data-sidebar-overlay]");
+      var storageKey = "obsite.sidebar.expanded.v1:{{siteBasePath .Site.BaseURL}}";
+      var legacyStorageKey = "obsite.sidebar.expanded.v1";
+      var media = window.matchMedia ? window.matchMedia("(max-width: 56rem)") : null;
+      var siteRootRel = root ? root.getAttribute("data-site-root-rel") || "./" : "./";
+      var popoverEnabled = {{if .Site.Popover.Enabled}}true{{else}}false{{end}};
+      var nodes = [];
+      var expanded = {};
+
+      if (!dataNode || !shell || !root || !siteBody) {
+        return;
+      }
+
+      try {
+        nodes = JSON.parse(dataNode.textContent || "[]");
+      } catch (error) {
+        return;
+      }
+
+      if (!Array.isArray(nodes) || !nodes.length) {
+        return;
+      }
+
+      expanded = readExpandedState();
+      root.textContent = "";
+      root.appendChild(renderList(nodes, true));
+      shell.hidden = false;
+      siteBody.setAttribute("data-sidebar-ready", "true");
+
+      if (toggle) {
+        toggle.hidden = false;
+        toggle.addEventListener("click", function () {
+          setMobileSidebarOpen(!isMobileSidebarOpen());
+        });
+      }
+      if (closeButton) {
+        closeButton.addEventListener("click", function () {
+          setMobileSidebarOpen(false);
+        });
+      }
+      if (overlay) {
+        overlay.addEventListener("click", function () {
+          setMobileSidebarOpen(false);
+        });
+      }
+      root.addEventListener("click", function (event) {
+        var link = event.target.closest("a.sidebar-link");
+        if (!link || !isMobileViewport()) {
+          return;
+        }
+
+        setMobileSidebarOpen(false);
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          setMobileSidebarOpen(false);
+        }
+      });
+
+      if (media && typeof media.addEventListener === "function") {
+        media.addEventListener("change", syncViewportState);
+      } else if (media && typeof media.addListener === "function") {
+        media.addListener(syncViewportState);
+      }
+
+      syncViewportState();
+
+      function renderList(items, isRoot) {
+        var list = document.createElement("ul");
+        var index = 0;
+        var node = null;
+
+        list.className = isRoot ? "sidebar-list sidebar-list-root" : "sidebar-list";
+        for (index = 0; index < items.length; index++) {
+          node = items[index];
+          if (!node || typeof node.name !== "string") {
+            continue;
+          }
+
+          list.appendChild(renderNode(node));
+        }
+
+        return list;
+      }
+
+      function renderNode(node) {
+        var item = document.createElement("li");
+        var row = document.createElement("div");
+        var link = document.createElement("a");
+        var children = Array.isArray(node.children) ? node.children : [];
+        var isExpandable = !!node.isDir && children.length > 0;
+        var branch = null;
+        var key = stableNodeKey(node);
+        var hasStoredExpanded = Object.prototype.hasOwnProperty.call(expanded, key);
+        var isExpanded = hasStoredExpanded ? !!expanded[key] : nodeHasActive(node);
+
+        item.className = node.isDir ? "sidebar-node sidebar-node-dir" : "sidebar-node sidebar-node-file";
+        if (node.isActive) {
+          item.classList.add("is-active");
+        }
+        if (isExpandable) {
+          item.setAttribute("data-expanded", String(isExpanded));
+        }
+
+        row.className = "sidebar-item";
+        if (isExpandable) {
+          row.appendChild(renderToggle(node, item, isExpanded));
+        } else {
+          row.appendChild(renderToggleSpacer());
+        }
+
+        link.className = node.isDir ? "sidebar-link sidebar-link-dir" : "sidebar-link";
+        link.href = buildNodeHref(node.url);
+        link.textContent = node.name;
+        if (popoverEnabled && !node.isDir) {
+          link.setAttribute("data-popover-path", stableNodeKey(node));
+        }
+        if (node.isActive) {
+          link.classList.add("is-current");
+          link.setAttribute("aria-current", "page");
+        }
+        row.appendChild(link);
+        item.appendChild(row);
+
+        if (isExpandable) {
+          branch = renderList(children, false);
+          branch.hidden = !isExpanded;
+          item.appendChild(branch);
+        }
+
+        return item;
+      }
+
+      function renderToggle(node, item, isExpanded) {
+        var button = document.createElement("button");
+        var glyph = document.createElement("span");
+        var srText = document.createElement("span");
+        var children = item.querySelector(":scope > ul");
+
+        button.className = "sidebar-toggle";
+        button.type = "button";
+        button.setAttribute("aria-expanded", String(isExpanded));
+
+        glyph.className = "sidebar-toggle-glyph";
+        glyph.setAttribute("aria-hidden", "true");
+        glyph.textContent = "▾";
+        srText.className = "sr-only";
+        srText.textContent = "Toggle " + node.name;
+
+        button.appendChild(glyph);
+        button.appendChild(srText);
+        button.addEventListener("click", function () {
+          var nextExpanded = item.getAttribute("data-expanded") !== "true";
+          var branchNode = item.querySelector(":scope > ul");
+
+          item.setAttribute("data-expanded", String(nextExpanded));
+          button.setAttribute("aria-expanded", String(nextExpanded));
+          if (branchNode) {
+            branchNode.hidden = !nextExpanded;
+          }
+
+          expanded[stableNodeKey(node)] = nextExpanded;
+          persistExpandedState();
+        });
+
+        if (children) {
+          children.hidden = !isExpanded;
+        }
+
+        return button;
+      }
+
+      function renderToggleSpacer() {
+        var spacer = document.createElement("span");
+        spacer.className = "sidebar-toggle sidebar-toggle-spacer";
+        spacer.setAttribute("aria-hidden", "true");
+        return spacer;
+      }
+
+      function buildNodeHref(rawURL) {
+        var cleanURL = normalizeNodeURL(rawURL);
+        if (!cleanURL) {
+          return siteRootRel;
+        }
+
+        return siteRootRel + cleanURL;
+      }
+
+      function normalizeNodeURL(rawURL) {
+        if (typeof rawURL !== "string") {
+          return "";
+        }
+
+        return rawURL.replace(/^\/+/, "").trim();
+      }
+
+      function stableNodeKey(node) {
+        var cleanURL = normalizeNodeURL(node && node.url);
+        cleanURL = cleanURL.replace(/\/+$/, "");
+        return cleanURL || ".";
+      }
+
+      function nodeHasActive(node) {
+        var children = Array.isArray(node && node.children) ? node.children : [];
+        var index = 0;
+
+        if (node && node.isActive) {
+          return true;
+        }
+        for (index = 0; index < children.length; index++) {
+          if (nodeHasActive(children[index])) {
+            return true;
+          }
+        }
+
+        return false;
+      }
+
+      function parseExpandedState(raw) {
+        var parsed = null;
+
+        if (!raw) {
+          return null;
+        }
+
+        try {
+          parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            return parsed;
+          }
+        } catch (error) {
+        }
+
+        return null;
+      }
+
+      function migrateExpandedState(value) {
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          return {};
+        }
+
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(value));
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+
+        return value;
+      }
+
+      function readExpandedState() {
+        var raw = "";
+        var parsed = null;
+
+        try {
+          raw = localStorage.getItem(storageKey) || "";
+        } catch (error) {
+        }
+
+        parsed = parseExpandedState(raw);
+        if (parsed) {
+          return parsed;
+        }
+
+        try {
+          raw = localStorage.getItem(legacyStorageKey) || "";
+        } catch (error) {
+        }
+
+        parsed = parseExpandedState(raw);
+        if (parsed) {
+          return migrateExpandedState(parsed);
+        }
+
+        return {};
+      }
+
+      function persistExpandedState() {
+        try {
+          localStorage.setItem(storageKey, JSON.stringify(expanded));
+          if (legacyStorageKey !== storageKey) {
+            localStorage.removeItem(legacyStorageKey);
+          }
+        } catch (error) {
+        }
+      }
+
+      function syncSidebarAccessibility(open) {
+        var isAccessible = open || !isMobileViewport();
+
+        if (isAccessible) {
+          shell.removeAttribute("aria-hidden");
+          shell.removeAttribute("inert");
+          if ("inert" in shell) {
+            shell.inert = false;
+          }
+          return;
+        }
+
+        shell.setAttribute("aria-hidden", "true");
+        shell.setAttribute("inert", "");
+        if ("inert" in shell) {
+          shell.inert = true;
+        }
+      }
+
+      function isMobileViewport() {
+        return !!(media && media.matches);
+      }
+
+      function isMobileSidebarOpen() {
+        return document.body.getAttribute("data-sidebar-open") === "true";
+      }
+
+      function setMobileSidebarOpen(open) {
+        if (!isMobileViewport()) {
+          open = false;
+        }
+
+        if (open) {
+          document.body.setAttribute("data-sidebar-open", "true");
+        } else {
+          document.body.removeAttribute("data-sidebar-open");
+        }
+
+        syncSidebarAccessibility(open);
+
+        if (overlay) {
+          overlay.hidden = !open;
+        }
+        if (toggle) {
+          toggle.setAttribute("aria-expanded", String(open));
+        }
+      }
+
+      function syncViewportState() {
+        setMobileSidebarOpen(false);
+      }
+    })();
+  </script>
+  {{end}}
+
+  {{if .Site.Popover.Enabled}}
+  <aside class="popover-card" data-popover-card data-site-root-rel="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}" data-popover-root="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_popover/" hidden aria-hidden="true"></aside>
+  <script>
+    (function () {
+      var card = document.querySelector("[data-popover-card]");
+      if (!card) {
+        return;
+      }
+
+      var linkNodes = document.querySelectorAll("[data-popover-path]");
+      if (!linkNodes.length) {
+        return;
+      }
+
+      var siteRootRel = card.getAttribute("data-site-root-rel") || "./";
+      var popoverRoot = card.getAttribute("data-popover-root") || (siteRootRel + "_popover/");
+      var cache = new Map();
+      var showTimer = 0;
+      var hideTimer = 0;
+      var activeLink = null;
+      var activeRequest = 0;
+
+      function clearTimers() {
+        window.clearTimeout(showTimer);
+        window.clearTimeout(hideTimer);
+      }
+
+      function hidePopover() {
+        clearTimers();
+        activeLink = null;
+        activeRequest++;
+        card.hidden = true;
+        card.setAttribute("aria-hidden", "true");
+        card.textContent = "";
+        card.style.left = "";
+        card.style.top = "";
+      }
+
+      function scheduleHide() {
+        window.clearTimeout(hideTimer);
+        hideTimer = window.setTimeout(hidePopover, 90);
+      }
+
+      function resolvePopoverURL(link) {
+        var notePath = "";
+
+        if (!link) {
+          return "";
+        }
+
+        notePath = (link.getAttribute("data-popover-path") || "").trim().replace(/^\/+|\/+$/g, "");
+        if (!notePath) {
+          return "";
+        }
+
+        return new URL(popoverRoot + notePath + ".json", document.baseURI).toString();
+      }
+
+      function loadPopover(popoverURL) {
+        if (cache.has(popoverURL)) {
+          return cache.get(popoverURL);
+        }
+
+        var pending = window.fetch(popoverURL, {
+          headers: {
+            Accept: "application/json"
+          }
+        }).then(function (response) {
+          if (!response.ok) {
+            throw new Error("popover fetch failed");
+          }
+
+          return response.json().then(function (payload) {
+            if (!payload || typeof payload.title !== "string" || typeof payload.summary !== "string" || !Array.isArray(payload.tags)) {
+              throw new Error("invalid popover payload");
+            }
+
+            return {
+              title: payload.title,
+              summary: payload.summary,
+              tags: payload.tags.filter(function (tag) {
+                return typeof tag === "string" && tag.trim() !== "";
+              })
+            };
+          });
+        }).catch(function () {
+          cache.delete(popoverURL);
+          return null;
+        });
+
+        cache.set(popoverURL, pending);
+        return pending;
+      }
+
+      function renderPopover(payload) {
+        var title = document.createElement("p");
+        var summary = null;
+        var tags = null;
+        var index = 0;
+        var tag = null;
+        var pill = null;
+
+        if (!payload || !payload.title) {
+          hidePopover();
+          return;
+        }
+
+        card.textContent = "";
+
+        title.className = "popover-card-title";
+        title.textContent = payload.title;
+        card.appendChild(title);
+
+        if (payload.summary) {
+          summary = document.createElement("p");
+          summary.className = "popover-card-summary";
+          summary.textContent = payload.summary;
+          card.appendChild(summary);
+        }
+
+        if (payload.tags && payload.tags.length) {
+          tags = document.createElement("div");
+          tags.className = "popover-card-tags";
+          for (index = 0; index < payload.tags.length; index++) {
+            tag = payload.tags[index];
+            pill = document.createElement("span");
+            pill.className = "popover-card-tag";
+            pill.textContent = "#" + tag;
+            tags.appendChild(pill);
+          }
+          card.appendChild(tags);
+        }
+
+        card.style.left = "-9999px";
+        card.style.top = "0";
+        card.hidden = false;
+        card.setAttribute("aria-hidden", "false");
+      }
+
+      function positionPopover(link) {
+        var rect;
+        var left;
+        var top;
+        var gap = 14;
+        var viewportPadding = 16;
+        var width;
+        var height;
+
+        if (!link || card.hidden) {
+          return;
+        }
+
+        rect = link.getBoundingClientRect();
+        width = card.offsetWidth;
+        height = card.offsetHeight;
+        left = rect.left;
+        top = rect.bottom + gap;
+
+        if (left + width > window.innerWidth - viewportPadding) {
+          left = window.innerWidth - width - viewportPadding;
+        }
+        if (left < viewportPadding) {
+          left = viewportPadding;
+        }
+        if (top + height > window.innerHeight - viewportPadding) {
+          top = rect.top - height - gap;
+        }
+        if (top < viewportPadding) {
+          top = viewportPadding;
+        }
+
+        card.style.left = Math.round(left) + "px";
+        card.style.top = Math.round(top) + "px";
+      }
+
+      function showPopover(link) {
+        var popoverURL = resolvePopoverURL(link);
+        var requestID;
+
+        if (!popoverURL) {
+          return;
+        }
+
+        activeLink = link;
+        activeRequest++;
+        requestID = activeRequest;
+        window.clearTimeout(hideTimer);
+        window.clearTimeout(showTimer);
+        card.hidden = true;
+        card.setAttribute("aria-hidden", "true");
+        card.textContent = "";
+
+        showTimer = window.setTimeout(function () {
+          loadPopover(popoverURL).then(function (payload) {
+            if (requestID !== activeRequest || activeLink !== link || !payload) {
+              return;
+            }
+
+            renderPopover(payload);
+            positionPopover(link);
+          });
+        }, 150);
+      }
+
+      function bindPopover(link) {
+        link.addEventListener("mouseenter", function () {
+          showPopover(link);
+        });
+        link.addEventListener("mouseleave", scheduleHide);
+        link.addEventListener("focusin", function () {
+          showPopover(link);
+        });
+        link.addEventListener("focusout", scheduleHide);
+      }
+
+      for (var index = 0; index < linkNodes.length; index++) {
+        bindPopover(linkNodes[index]);
+      }
+
+      window.addEventListener("scroll", function () {
+        if (activeLink && !card.hidden) {
+          positionPopover(activeLink);
+        }
+      });
+      window.addEventListener("resize", function () {
+        if (activeLink && !card.hidden) {
+          positionPopover(activeLink);
+        }
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape") {
+          hidePopover();
+        }
+      });
+    })();
+  </script>
+  {{end}}
+
+  {{if .HasSearch}}
+  <script src="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>
+  <script data-obsite-search-ui="true">
+    new PagefindUI({ element: "#obsite-search-root" });
+  </script>
+  {{end}}
+</body>
+</html>
+{{end}}
+
+{{define "pagination-nav"}}
+  {{with .Pagination}}
+    {{if gt .TotalPages 1}}
+    <nav class="pagination-nav" aria-label="Pagination">
+      {{if .PrevURL}}
+      <a class="pagination-link pagination-link-prev" href="{{.PrevURL}}" rel="prev">Previous</a>
+      {{else}}
+      <span class="pagination-link pagination-link-prev" aria-disabled="true">Previous</span>
+      {{end}}
+      <ol class="pagination-pages">
+        {{range .Pages}}
+        <li>
+          {{if eq .Number $.Pagination.CurrentPage}}
+          <span class="pagination-page" aria-current="page">{{.Number}}</span>
+          {{else}}
+          <a class="pagination-page" href="{{.URL}}">{{.Number}}</a>
+          {{end}}
+        </li>
+        {{end}}
+      </ol>
+      {{if .NextURL}}
+      <a class="pagination-link pagination-link-next" href="{{.NextURL}}" rel="next">Next</a>
+      {{else}}
+      <span class="pagination-link pagination-link-next" aria-disabled="true">Next</span>
+      {{end}}
+    </nav>
+    {{end}}
+  {{end}}
+{{end}}
+
+{{define "content"}}
+  {{if eq .Kind "note"}}
+    {{template "content-note" .}}
+  {{else if eq .Kind "index"}}
+    {{template "content-index" .}}
+  {{else if eq .Kind "tag"}}
+    {{template "content-tag" .}}
+  {{else if eq .Kind "folder"}}
+    {{template "content-folder" .}}
+  {{else if eq .Kind "timeline"}}
+    {{template "content-timeline" .}}
+  {{else if eq .Kind "404"}}
+    {{template "content-404" .}}
+  {{end}}
+{{end}}

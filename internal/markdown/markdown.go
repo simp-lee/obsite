@@ -17,9 +17,7 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
-	gmhtml "github.com/yuin/goldmark/renderer/html"
 	"github.com/yuin/goldmark/util"
-	gmfrontmatter "go.abhg.dev/goldmark/frontmatter"
 	gmhashtag "go.abhg.dev/goldmark/hashtag"
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
 )
@@ -136,6 +134,7 @@ func newMarkdownWithState(
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
+		newRawHTMLExtender(),
 		newImageExtender(sourceNote, outputNote, idx, assetSink, imageCount),
 	)
 
@@ -194,9 +193,6 @@ func newMarkdownWithState(
 			newParserOptions(sourceNote, headingIDPrefix)...,
 		),
 		goldmark.WithExtensions(extensions...),
-		goldmark.WithRendererOptions(
-			gmhtml.WithUnsafe(),
-		),
 	)
 
 	return md
@@ -214,7 +210,6 @@ func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmh
 	return []goldmark.Extender{
 		extension.GFM,
 		extension.Footnote,
-		&gmfrontmatter.Extender{},
 		&gmhashtag.Extender{Variant: gmhashtag.ObsidianVariant, Resolver: hashtagResolver},
 		&gmwikilink.Extender{Resolver: wikilinkResolver},
 		callout.New(),

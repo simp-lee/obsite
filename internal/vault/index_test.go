@@ -243,6 +243,47 @@ A-->B
 	}
 }
 
+func TestBuildIndexMarksLeadingCalloutDisplayMathAndNormalizesSlashEdgeHashtags(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/math.md", `> [!note] Math
+> $$
+> x^2
+> $$
+
+#parent//child
+`)
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/math.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/math.md] = nil, want note")
+	}
+	if !note.HasMath {
+		t.Fatal("note.HasMath = false, want true for leading callout display math")
+	}
+	wantTags := []string{"parent/child"}
+	if !reflect.DeepEqual(note.Tags, wantTags) {
+		t.Fatalf("note.Tags = %#v, want %#v", note.Tags, wantTags)
+	}
+	tag := idx.Tags["parent/child"]
+	if tag == nil {
+		t.Fatal("idx.Tags[parent/child] = nil, want canonicalized slash-edge tag")
+	}
+	if tag.Slug != "tags/parent/child" {
+		t.Fatalf("tag.Slug = %q, want %q", tag.Slug, "tags/parent/child")
+	}
+	if !reflect.DeepEqual(tag.Notes, []string{"notes/math.md"}) {
+		t.Fatalf("tag.Notes = %#v, want canonical tag membership", tag.Notes)
+	}
+}
+
 func TestBuildIndexExtractsVisibleHeadingText(t *testing.T) {
 	t.Parallel()
 
@@ -465,6 +506,95 @@ func TestBuildIndexRecognizesAttachmentFolderEmbedsAndDecodedMarkdownImages(t *t
 	}
 	if asset.SrcPath != "images/My Chart.png" || asset.RefCount != 1 {
 		t.Fatalf("asset = %#v, want decoded SrcPath and RefCount populated", asset)
+	}
+}
+
+func TestBuildIndexRecognizesSlashPathImageEmbedsAsAssets(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/gallery.md", "![[assets/diagram.png|600]]\n")
+	writeVaultFile(t, vaultPath, "assets/diagram.png", "png")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/gallery.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/gallery.md] = nil, want note")
+	}
+	if len(note.Embeds) != 1 {
+		t.Fatalf("len(note.Embeds) = %d, want 1", len(note.Embeds))
+	}
+	if got := note.Embeds[0]; got.Target != "assets/diagram.png" || got.Fragment != "" || !got.IsImage || got.Width != 600 || got.Line != 1 {
+		t.Fatalf("note.Embeds[0] = %#v, want slash-path image embed metadata", got)
+	}
+	if asset := idx.Assets["assets/diagram.png"]; asset == nil || asset.SrcPath != "assets/diagram.png" || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[assets/diagram.png] = %#v, want slash-path image embed asset registration", asset)
+	}
+}
+
+func TestBuildIndexCanonicalizesUnicodeSlashPathImageEmbeds(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/gallery.md", "![[assets/Café Diagram.png|600]]\n")
+	writeVaultFile(t, vaultPath, "assets/Cafe\u0301 Diagram.png", "png")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/gallery.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/gallery.md] = nil, want note")
+	}
+	if len(note.Embeds) != 1 {
+		t.Fatalf("len(note.Embeds) = %d, want 1", len(note.Embeds))
+	}
+	if got := note.Embeds[0]; got.Target != "assets/Café Diagram.png" || !got.IsImage || got.Width != 600 {
+		t.Fatalf("note.Embeds[0] = %#v, want canonicalized slash-path image embed metadata", got)
+	}
+	if asset := idx.Assets["assets/Cafe\u0301 Diagram.png"]; asset == nil || asset.RefCount != 1 {
+		t.Fatalf("idx.Assets[assets/Cafe\\u0301 Diagram.png] = %#v, want canonicalized slash-path image embed asset", asset)
+	}
+}
+
+func TestBuildIndexKeepsLeadingNonFrontmatterDelimiterBlocksVisibleToPass1(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/rule.md", "---\n# Heading\n\nLead #topic [[Target]]\n\n---\n\nBody\n")
+	writeVaultFile(t, vaultPath, "notes/target.md", "# Target\n")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	idx, err := buildIndexForTest(scanResult, frontmatterResult, diag.NewCollector())
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+
+	note := idx.Notes["notes/rule.md"]
+	if note == nil {
+		t.Fatal("idx.Notes[notes/rule.md] = nil, want note")
+	}
+
+	wantHeadings := []model.Heading{{Level: 1, Text: "Heading", ID: "heading"}}
+	if !reflect.DeepEqual(note.Headings, wantHeadings) {
+		t.Fatalf("note.Headings = %#v, want %#v", note.Headings, wantHeadings)
+	}
+	if !reflect.DeepEqual(note.Tags, []string{"topic"}) {
+		t.Fatalf("note.Tags = %#v, want %#v", note.Tags, []string{"topic"})
+	}
+	if len(note.OutLinks) != 1 {
+		t.Fatalf("len(note.OutLinks) = %d, want 1", len(note.OutLinks))
+	}
+	if got := note.OutLinks[0]; got.RawTarget != "Target" || got.Display != "Target" {
+		t.Fatalf("note.OutLinks[0] = %#v, want visible outlink extracted from leading delimiter block", got)
 	}
 }
 

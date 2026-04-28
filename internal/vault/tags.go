@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/model"
-	"github.com/simp-lee/obsite/internal/slug"
 )
 
 const tagSlugRoot = "tags"
@@ -66,32 +65,7 @@ func mergeNoteTags(existing []string, inline []string) []string {
 }
 
 func normalizeTag(value string) string {
-	trimmed := strings.TrimSpace(value)
-	trimmed = strings.TrimPrefix(trimmed, "#")
-	trimmed = strings.TrimSpace(trimmed)
-	if trimmed == "" {
-		return ""
-	}
-
-	rawSegments := strings.Split(trimmed, "/")
-	segments := make([]string, 0, len(rawSegments))
-	for _, segment := range rawSegments {
-		segment = strings.TrimSpace(segment)
-		if segment == "" {
-			continue
-		}
-
-		normalized, ok := normalizeTagSegment(segment)
-		if !ok {
-			return ""
-		}
-		segments = append(segments, normalized)
-	}
-	if len(segments) == 0 {
-		return ""
-	}
-
-	return strings.Join(segments, "/")
+	return model.NormalizeTagName(value)
 }
 
 func tagAggregates(tagName string) []string {
@@ -157,17 +131,4 @@ func tagPath(tagName string) string {
 	}
 
 	return path.Join(tagSlugRoot, normalized)
-}
-
-func normalizeTagSegment(segment string) (string, bool) {
-	segment = normalizeSummaryWhitespace(strings.ToLower(strings.TrimSpace(segment)))
-	if segment == "" {
-		return "", false
-	}
-
-	normalized, err := slug.Generate(&segment, "")
-	if err != nil {
-		return "", false
-	}
-	return normalized, true
 }

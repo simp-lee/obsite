@@ -31,12 +31,29 @@ func CandidatePaths(note *model.Note, attachmentFolderPath string, rawDestinatio
 
 	candidates := make([]string, 0, 3)
 	appendUniqueCandidate(&candidates, resolveVaultPath(note, normalized))
-	appendUniqueCandidate(&candidates, normalizePath(normalized))
+	if shouldProbeVaultRoot(normalized) {
+		appendUniqueCandidate(&candidates, normalizePath(normalized))
+	}
 	if isBarePath(normalized) {
 		appendUniqueCandidate(&candidates, attachmentFolderPathCandidate(attachmentFolderPath, normalized))
 	}
 
 	return candidates
+}
+
+// VaultRelativePathCandidate returns an exact vault-relative path candidate for
+// explicit destinations that already contain path segments.
+func VaultRelativePathCandidate(rawDestination string) string {
+	normalized := normalizeDestination(rawDestination)
+	normalized = strings.TrimPrefix(normalized, "/")
+	if normalized == "" || !strings.Contains(normalized, "/") {
+		return ""
+	}
+	if strings.HasPrefix(normalized, "./") || strings.HasPrefix(normalized, "../") {
+		return ""
+	}
+
+	return normalizePath(normalized)
 }
 
 func splitDestinationSuffix(value string) (string, string) {
@@ -87,7 +104,9 @@ func resolveVaultPath(note *model.Note, rawDestination string) string {
 	case strings.HasPrefix(normalized, "/"):
 		resolved = normalizePath(normalized)
 	case note == nil || strings.TrimSpace(note.RelPath) == "":
-		resolved = normalizePath(normalized)
+		if isBarePath(normalized) {
+			resolved = normalizePath(normalized)
+		}
 	default:
 		noteDir := path.Dir(strings.ReplaceAll(note.RelPath, "\\", "/"))
 		resolved = normalizePath(path.Join(noteDir, normalized))
@@ -98,6 +117,11 @@ func resolveVaultPath(note *model.Note, rawDestination string) string {
 	}
 
 	return resolved
+}
+
+func shouldProbeVaultRoot(value string) bool {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
+	return value != "" && (strings.HasPrefix(value, "/") || isBarePath(value))
 }
 
 func attachmentFolderPathCandidate(attachmentFolderPath string, target string) string {

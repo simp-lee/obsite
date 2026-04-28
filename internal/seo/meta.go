@@ -8,7 +8,10 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-const twitterCardSummaryLargeImage = "summary_large_image"
+const (
+	twitterCardSummary           = "summary"
+	twitterCardSummaryLargeImage = "summary_large_image"
+)
 
 // Metadata contains the template-safe SEO fields derived for a single page.
 type Metadata struct {
@@ -33,7 +36,6 @@ func Build(page model.PageData, note *model.Note) Metadata {
 		Title:       title,
 		Description: description,
 		Canonical:   canonical,
-		TwitterCard: twitterCardSummaryLargeImage,
 	}
 
 	metadata.OG = model.OpenGraph{
@@ -46,6 +48,11 @@ func Build(page model.PageData, note *model.Note) Metadata {
 
 	if page.OG.Image != "" {
 		metadata.OG.Image = absoluteAssetURL(page.Site.BaseURL, page.OG.Image)
+	}
+	if metadata.OG.Image != "" {
+		metadata.TwitterCard = twitterCardSummaryLargeImage
+	} else {
+		metadata.TwitterCard = twitterCardSummary
 	}
 
 	return metadata
@@ -103,18 +110,16 @@ func pickDescription(page model.PageData, note *model.Note) string {
 	}
 
 	if page.Kind == model.PageNote {
-		if note == nil {
-			return ""
+		if note != nil {
+			if description := firstNonEmpty(note.Frontmatter.Description); description != "" {
+				return description
+			}
+			if description := firstNonEmpty(note.Summary); description != "" {
+				return description
+			}
 		}
 
-		if description := firstNonEmpty(note.Frontmatter.Description); description != "" {
-			return description
-		}
-		if description := firstNonEmpty(note.Summary); description != "" {
-			return description
-		}
-
-		return ""
+		return firstNonEmpty(pickTitle(page, note), page.Site.Description)
 	}
 
 	return firstNonEmpty(page.Site.Description)

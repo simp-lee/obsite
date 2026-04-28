@@ -1,5 +1,10 @@
 package model
 
+// ThemeConfig describes a named build-time theme root.
+type ThemeConfig struct {
+	Root string
+}
+
 // SiteConfig is the stable site-level configuration contract shared across packages.
 // URL-like fields intentionally remain plain strings so html/template keeps contextual escaping.
 // DefaultPublishSet and RSS.EnabledSet disambiguate explicit false from shared
@@ -13,7 +18,10 @@ type SiteConfig struct {
 	DefaultPublish    bool
 	DefaultPublishSet bool
 	DefaultImg        string
-	TemplateDir       string
+	Themes            map[string]ThemeConfig
+	DefaultTheme      string
+	ActiveThemeName   string
+	ThemeRoot         string
 	CustomCSS         string
 	Search            SearchConfig
 	Pagination        PaginationConfig

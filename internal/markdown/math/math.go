@@ -121,8 +121,8 @@ func NewParagraphTransformer() parser.ParagraphTransformer {
 }
 
 func (t *paragraphTransformer) Transform(node *gast.Paragraph, reader text.Reader, _ parser.Context) {
-	display, ok := parseDisplayMath(node, reader.Source())
-	if !ok {
+	rewritten := RewriteParagraph(node, reader.Source())
+	if rewritten == node {
 		return
 	}
 
@@ -131,7 +131,21 @@ func (t *paragraphTransformer) Transform(node *gast.Paragraph, reader text.Reade
 		return
 	}
 
-	parent.ReplaceChild(parent, node, display)
+	parent.ReplaceChild(parent, node, rewritten)
+}
+
+// RewriteParagraph applies the package display-math paragraph rewrite contract.
+func RewriteParagraph(node *gast.Paragraph, source []byte) gast.Node {
+	if node == nil {
+		return nil
+	}
+
+	display, ok := parseDisplayMath(node, source)
+	if !ok {
+		return node
+	}
+
+	return display
 }
 
 type documentTransformer struct{}

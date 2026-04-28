@@ -198,12 +198,13 @@ func (r *Recommender) scoreProfiles(queryProfile documentProfile, candidateProfi
 	}
 
 	score := r.bm25.scoreQueryTerms(queryProfile.queryTerms, candidateProfile.note.RelPath)
+	if score <= 0 {
+		return 0
+	}
+
 	score += sharedTagBoost(queryProfile.tags, candidateProfile.tags)
 	if hasMutualWikilink(r.mutual, queryProfile.note.RelPath, candidateProfile.note.RelPath) {
 		score += mutualWikilinkBoost
-	}
-	if score <= 0 {
-		return 0
 	}
 
 	return score
@@ -332,10 +333,6 @@ func buildCandidatePaths(profile documentProfile, bm25 *BM25, tagPaths map[strin
 	if bm25 != nil {
 		estimate += bm25.candidateEstimate(profile.queryTerms)
 	}
-	for tag := range profile.tags {
-		estimate += len(tagPaths[tag])
-	}
-	estimate += len(mutual[profile.note.RelPath])
 	if estimate == 0 {
 		return nil
 	}
@@ -343,14 +340,6 @@ func buildCandidatePaths(profile documentProfile, bm25 *BM25, tagPaths map[strin
 	candidates := make(map[string]struct{}, estimate)
 	if bm25 != nil {
 		bm25.collectCandidateIDs(profile.queryTerms, candidates)
-	}
-	for tag := range profile.tags {
-		for _, candidatePath := range tagPaths[tag] {
-			candidates[candidatePath] = struct{}{}
-		}
-	}
-	for candidatePath := range mutual[profile.note.RelPath] {
-		candidates[candidatePath] = struct{}{}
 	}
 	delete(candidates, profile.note.RelPath)
 	if len(candidates) == 0 {

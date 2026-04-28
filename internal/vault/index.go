@@ -512,12 +512,16 @@ func normalizeSummaryWhitespace(value string) string {
 }
 
 func looksLikeImageEmbed(note *model.Note, scanResult ScanResult, target string) bool {
-	lookup := lookupImageAssetPath(note, scanResult, target)
+	lookup := lookupImageEmbedAssetPath(note, scanResult, target)
 	return lookup.Path != "" && resourcepath.LooksLikeImage(lookup.Path)
 }
 
 func resolveImageAssetPath(note *model.Note, scanResult ScanResult, target string) string {
-	return lookupImageAssetPath(note, scanResult, target).Path
+	return lookupImageEmbedAssetPath(note, scanResult, target).Path
+}
+
+func lookupImageEmbedAssetPath(note *model.Note, scanResult ScanResult, target string) model.PathLookupResult {
+	return resourcepath.LookupImageEmbedPath(note, scanResult.AttachmentFolderPath, target, scanResult.LookupResourcePath)
 }
 
 func lookupImageAssetPath(note *model.Note, scanResult ScanResult, target string) model.PathLookupResult {

@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,6 +18,7 @@ import (
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/model"
+	internalrender "github.com/simp-lee/obsite/internal/render"
 )
 
 func TestServeCommandRequiresOutputFlag(t *testing.T) {
@@ -88,7 +91,7 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 		if options.DiagnosticsWriter == nil {
 			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
 		}
-		if input != expectedInput {
+		if !reflect.DeepEqual(input, expectedInput) {
 			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		if _, err := options.DiagnosticsWriter.Write([]byte("Warnings (1):\n- build [structured_data] synthetic build warning\n")); err != nil {
@@ -238,25 +241,47 @@ func TestServeCommandWatchRequiresVaultFlag(t *testing.T) {
 	}
 }
 
+func TestServeCommandRejectsThemeWithoutWatch(t *testing.T) {
+	t.Parallel()
+
+	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{
+		"serve",
+		"--output", filepath.Join(t.TempDir(), "site"),
+		"--theme", "feature",
+	})
+	if err == nil {
+		t.Fatal("executeForTest() error = nil, want invalid --theme combination")
+	}
+	if stdout != "" {
+		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	}
+	if stderr != "" {
+		t.Fatalf("stderr = %q, want empty stderr", stderr)
+	}
+	if err.Error() != "--theme can only be used together with --watch" {
+		t.Fatalf("error = %q, want explicit --theme watch-only guidance", err.Error())
+	}
+}
+
 func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configDir := t.TempDir()
 	configPath := filepath.Join(configDir, "obsite.yaml")
-	templateDir := filepath.Join(configDir, "templates")
-	customCSSPath := filepath.Join(configDir, "styles", "custom.css")
+	themeRoot := filepath.Join(configDir, "themes", "feature")
+	extraWatchFilePath := filepath.Join(t.TempDir(), "watch-inputs", "explicit-input.txt")
 	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
 	}
-	if err := os.MkdirAll(templateDir, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", templateDir, err)
+	if err := os.MkdirAll(themeRoot, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", themeRoot, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(customCSSPath), 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(customCSSPath), err)
+	if err := os.MkdirAll(filepath.Dir(extraWatchFilePath), 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(extraWatchFilePath), err)
 	}
-	if err := os.WriteFile(customCSSPath, []byte("body { color: tomato; }\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
+	if err := os.WriteFile(extraWatchFilePath, []byte("watch input\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", extraWatchFilePath, err)
 	}
 	outputPath := filepath.Join(t.TempDir(), "site")
 
@@ -267,7 +292,7 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	var gotOverrides internalconfig.Overrides
 	var gotVaultPath string
 	var gotOutputPath string
-	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", TemplateDir: templateDir, CustomCSS: customCSSPath}}
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", ThemeRoot: themeRoot, CustomCSS: extraWatchFilePath}}
 	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
 		gotConfigPath = path
 		gotOverrides = overrides
@@ -279,7 +304,7 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 		if options.DiagnosticsWriter == nil {
 			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
 		}
-		if input != expectedInput {
+		if !reflect.DeepEqual(input, expectedInput) {
 			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		if err := os.MkdirAll(outputPath, 0o755); err != nil {
@@ -294,7 +319,7 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 		return watcher, nil
 	}
 
-	stdout, stderr, err := executeForTest(t, deps, []string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath})
+	stdout, stderr, err := executeForTest(t, deps, []string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath, "--theme", "feature"})
 	if err != nil {
 		t.Fatalf("executeForTest() error = %v", err)
 	}
@@ -310,6 +335,9 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	if gotOverrides.VaultPath != vaultPath {
 		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
 	}
+	if gotOverrides.Theme != "feature" {
+		t.Fatalf("loadConfig overrides.Theme = %q, want %q", gotOverrides.Theme, "feature")
+	}
 	if gotVaultPath != vaultPath {
 		t.Fatalf("build vaultPath = %q, want %q", gotVaultPath, vaultPath)
 	}
@@ -319,10 +347,334 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	if server.enableCalls != 1 {
 		t.Fatalf("EnableLiveReload calls = %d, want 1 in watch mode", server.enableCalls)
 	}
-	waitForServeWatchAddCount(t, watcher, templateDir, 1)
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(customCSSPath), 1)
+	waitForServeWatchAddCount(t, watcher, themeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Dir(extraWatchFilePath), 1)
 	if server.listenCalls != 1 {
 		t.Fatalf("ListenAndServe calls = %d, want 1", server.listenCalls)
+	}
+}
+
+func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(t.TempDir(), "site")
+	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+
+	deps := testCommandDependencies()
+	watcher := newFakeFileWatcher()
+	listenStarted := make(chan struct{}, 1)
+	listenBlock := make(chan struct{})
+	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
+	buildSignal := make(chan struct{}, 4)
+	var overridesMu sync.Mutex
+	gotOverrides := make([]internalconfig.Overrides, 0, 2)
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
+
+	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		overridesMu.Lock()
+		gotOverrides = append(gotOverrides, overrides)
+		overridesMu.Unlock()
+		return expectedInput, nil
+	}
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		if !reflect.DeepEqual(input, expectedInput) {
+			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
+		}
+		if err := os.MkdirAll(outputPath, 0o755); err != nil {
+			return nil, err
+		}
+		buildSignal <- struct{}{}
+		return &internalbuild.BuildResult{}, nil
+	}
+	deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
+		return server, nil
+	}
+	deps.newFileWatcher = func() (fileWatcher, error) {
+		return watcher, nil
+	}
+
+	var stdoutBuf lockedBuffer
+	var stderrBuf lockedBuffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath, "--theme", "feature"}, deps, &stdoutBuf, &stderrBuf)
+	}()
+
+	select {
+	case <-listenStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for preview server to start listening")
+	}
+	waitForServeWatchSignal(t, buildSignal, "initial build")
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForServeWatchSignalWithin(t, buildSignal, "config rebuild", 900*time.Millisecond)
+
+	overridesMu.Lock()
+	overrides := append([]internalconfig.Overrides(nil), gotOverrides...)
+	overridesMu.Unlock()
+	if len(overrides) < 2 {
+		t.Fatalf("loadSiteInput override calls = %d, want at least %d", len(overrides), 2)
+	}
+	for index, overrides := range overrides[:2] {
+		if overrides.VaultPath != vaultPath {
+			t.Fatalf("loadSiteInput call %d overrides.VaultPath = %q, want %q", index, overrides.VaultPath, vaultPath)
+		}
+		if overrides.Theme != "feature" {
+			t.Fatalf("loadSiteInput call %d overrides.Theme = %q, want %q", index, overrides.Theme, "feature")
+		}
+	}
+
+	close(listenBlock)
+	if err := <-errCh; err != nil {
+		t.Fatalf("executeWithDeps() error = %v", err)
+	}
+	if got := stdoutBuf.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty stdout", got)
+	}
+	if got := stderrBuf.String(); got != "" {
+		t.Fatalf("stderr = %q, want empty stderr", got)
+	}
+}
+
+func TestServeCommandWatchRecoversAfterConfigSelectsMissingThemeRoot(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		hiddenInVault bool
+	}{
+		{name: "missing external selected theme root"},
+		{name: "missing hidden selected theme root", hiddenInVault: true},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			configPath := filepath.Join(vaultPath, defaultConfigFilename)
+			outputPath := filepath.Join(t.TempDir(), "site")
+			initialThemeRoot := filepath.Join(t.TempDir(), "themes-initial", "feature")
+			writeServeWatchThemeTemplates(t, initialThemeRoot)
+
+			var nextThemeRootValue string
+			var nextThemeRootPath string
+			var recoveryEventDirs []string
+			var recoveryWatchDir string
+			if tt.hiddenInVault {
+				nextThemeRootValue = filepath.ToSlash(filepath.Join(".obsidian", "themes", "experiments", "feature"))
+				nextThemeRootPath = filepath.Join(vaultPath, filepath.FromSlash(nextThemeRootValue))
+				recoveryEventDirs = []string{
+					filepath.Join(vaultPath, ".obsidian"),
+					filepath.Join(vaultPath, ".obsidian", "themes"),
+					filepath.Join(vaultPath, ".obsidian", "themes", "experiments"),
+				}
+			} else {
+				recoveryWatchDir = t.TempDir()
+				nextThemeRootPath = filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
+				nextThemeRootValue = nextThemeRootPath
+				recoveryEventDirs = []string{
+					filepath.Join(recoveryWatchDir, "themes-next"),
+					filepath.Join(recoveryWatchDir, "themes-next", "nested"),
+				}
+			}
+
+			writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
+
+			deps := testCommandDependencies()
+			deps.loadSiteInput = internalbuild.LoadSiteInput
+
+			watcher := newFakeFileWatcher()
+			listenStarted := make(chan struct{}, 1)
+			listenBlock := make(chan struct{})
+			server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
+			buildSignal := make(chan struct{}, 4)
+			var builtThemeRootsMu sync.Mutex
+			builtThemeRoots := make([]string, 0, 2)
+			deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+				builtThemeRootsMu.Lock()
+				builtThemeRoots = append(builtThemeRoots, input.Config.ThemeRoot)
+				builtThemeRootsMu.Unlock()
+				if err := os.MkdirAll(outputPath, 0o755); err != nil {
+					return nil, err
+				}
+				buildSignal <- struct{}{}
+				return &internalbuild.BuildResult{}, nil
+			}
+			deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
+				return server, nil
+			}
+			deps.newFileWatcher = func() (fileWatcher, error) {
+				return watcher, nil
+			}
+
+			var stdoutBuf lockedBuffer
+			var stderrBuf lockedBuffer
+			errCh := make(chan error, 1)
+			go func() {
+				errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+			}()
+
+			select {
+			case <-listenStarted:
+			case <-time.After(250 * time.Millisecond):
+				t.Fatal("timed out waiting for preview server to start listening")
+			}
+			waitForServeWatchSignal(t, buildSignal, "initial build")
+			waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+			waitForServeWatchAddCount(t, watcher, initialThemeRoot, 1)
+
+			writeServeWatchThemeConfig(t, configPath, nextThemeRootValue)
+			watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+			waitForLockedBufferContainsWithin(t, &stderrBuf, "watch: load config:", 900*time.Millisecond)
+			if recoveryWatchDir != "" {
+				waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+			}
+			waitForServeWatchRemoveCount(t, watcher, initialThemeRoot, 1)
+			select {
+			case <-buildSignal:
+				t.Fatal("missing selected theme root config unexpectedly completed a rebuild")
+			default:
+			}
+
+			for _, dirPath := range recoveryEventDirs {
+				mkdirServeWatchDir(t, dirPath)
+				sendServeWatchCreateFromWatchedParent(t, watcher, dirPath)
+				waitForServeWatchAddCount(t, watcher, dirPath, 1)
+			}
+
+			mkdirServeWatchDir(t, nextThemeRootPath)
+			writeServeWatchThemeTemplates(t, nextThemeRootPath)
+			sendServeWatchCreateFromWatchedParent(t, watcher, nextThemeRootPath)
+			waitForServeWatchAddCount(t, watcher, nextThemeRootPath, 1)
+			waitForServeWatchSignalWithin(t, buildSignal, "recovered selected theme root rebuild", 900*time.Millisecond)
+
+			builtThemeRootsMu.Lock()
+			gotBuiltThemeRoots := append([]string(nil), builtThemeRoots...)
+			builtThemeRootsMu.Unlock()
+			if len(gotBuiltThemeRoots) != 2 {
+				t.Fatalf("successful builds used theme roots %#v, want initial and recovered roots", gotBuiltThemeRoots)
+			}
+			if gotBuiltThemeRoots[0] != initialThemeRoot {
+				t.Fatalf("initial build theme root = %q, want %q", gotBuiltThemeRoots[0], initialThemeRoot)
+			}
+			if gotBuiltThemeRoots[1] != nextThemeRootPath {
+				t.Fatalf("recovered build theme root = %q, want %q", gotBuiltThemeRoots[1], nextThemeRootPath)
+			}
+
+			close(listenBlock)
+			if err := <-errCh; err != nil {
+				t.Fatalf("executeWithDeps() error = %v", err)
+			}
+			if got := stdoutBuf.String(); got != "" {
+				t.Fatalf("stdout = %q, want empty stdout", got)
+			}
+		})
+	}
+}
+
+func TestServeCommandWatchRecoversAfterOneShotDeepRecreationOfSelectedThemeRoot(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(t.TempDir(), "site")
+	initialThemeRoot := filepath.Join(t.TempDir(), "themes-initial", "feature")
+	writeServeWatchThemeTemplates(t, initialThemeRoot)
+
+	recoveryWatchDir := t.TempDir()
+	nextThemeRootPath := filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
+	brokenThemeTopDir := filepath.Join(recoveryWatchDir, "themes-next")
+	brokenThemeParent := filepath.Join(recoveryWatchDir, "themes-next", "nested")
+	writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
+
+	deps := testCommandDependencies()
+	deps.loadSiteInput = internalbuild.LoadSiteInput
+
+	watcher := newFakeFileWatcher()
+	listenStarted := make(chan struct{}, 1)
+	listenBlock := make(chan struct{})
+	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
+	buildSignal := make(chan struct{}, 4)
+	var builtThemeRootsMu sync.Mutex
+	builtThemeRoots := make([]string, 0, 2)
+	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		builtThemeRootsMu.Lock()
+		builtThemeRoots = append(builtThemeRoots, input.Config.ThemeRoot)
+		builtThemeRootsMu.Unlock()
+		if err := os.MkdirAll(outputPath, 0o755); err != nil {
+			return nil, err
+		}
+		buildSignal <- struct{}{}
+		return &internalbuild.BuildResult{}, nil
+	}
+	deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
+		return server, nil
+	}
+	deps.newFileWatcher = func() (fileWatcher, error) {
+		return watcher, nil
+	}
+
+	var stdoutBuf lockedBuffer
+	var stderrBuf lockedBuffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+	}()
+
+	select {
+	case <-listenStarted:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("timed out waiting for preview server to start listening")
+	}
+	waitForServeWatchSignal(t, buildSignal, "initial build")
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+	waitForServeWatchAddCount(t, watcher, initialThemeRoot, 1)
+
+	writeServeWatchThemeConfig(t, configPath, nextThemeRootPath)
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForLockedBufferContainsWithin(t, &stderrBuf, "watch: load config:", 900*time.Millisecond)
+	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+	waitForServeWatchRemoveCount(t, watcher, initialThemeRoot, 1)
+	select {
+	case <-buildSignal:
+		t.Fatal("missing selected theme root config unexpectedly completed a rebuild")
+	default:
+	}
+
+	writeServeWatchThemeTemplates(t, nextThemeRootPath)
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenThemeTopDir)
+	waitForServeWatchAddCount(t, watcher, brokenThemeParent, 1)
+	waitForServeWatchAddCount(t, watcher, nextThemeRootPath, 1)
+	waitForServeWatchSignalWithin(t, buildSignal, "one-shot recovered selected theme root rebuild", 900*time.Millisecond)
+
+	builtThemeRootsMu.Lock()
+	gotBuiltThemeRoots := append([]string(nil), builtThemeRoots...)
+	builtThemeRootsMu.Unlock()
+	if len(gotBuiltThemeRoots) != 2 {
+		t.Fatalf("successful builds used theme roots %#v, want initial and recovered roots", gotBuiltThemeRoots)
+	}
+	if gotBuiltThemeRoots[0] != initialThemeRoot {
+		t.Fatalf("initial build theme root = %q, want %q", gotBuiltThemeRoots[0], initialThemeRoot)
+	}
+	if gotBuiltThemeRoots[1] != nextThemeRootPath {
+		t.Fatalf("recovered build theme root = %q, want %q", gotBuiltThemeRoots[1], nextThemeRootPath)
+	}
+
+	close(listenBlock)
+	if err := <-errCh; err != nil {
+		t.Fatalf("executeWithDeps() error = %v", err)
+	}
+	if got := stdoutBuf.String(); got != "" {
+		t.Fatalf("stdout = %q, want empty stdout", got)
+	}
+	if got := stderrBuf.String(); strings.Count(got, "watch: load config:") != 1 {
+		t.Fatalf("stderr = %q, want exactly one missing-theme-root diagnostic", got)
 	}
 }
 
@@ -621,17 +973,16 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 	assertNoServeWatchError(t, errorSignal)
 }
 
-func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
+func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFile(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	configDir := t.TempDir()
 	attachmentPath := filepath.Join(vaultPath, "files", "manual.pdf")
 	customCSSPath := filepath.Join(vaultPath, "custom.css")
-	externalCustomCSSPath := filepath.Join(configDir, "styles", "custom.css")
+	extraWatchFilePath := filepath.Join(t.TempDir(), "watch-inputs", "explicit-input.txt")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
-	for _, filePath := range []string{attachmentPath, customCSSPath, externalCustomCSSPath, configPath} {
+	for _, filePath := range []string{attachmentPath, customCSSPath, extraWatchFilePath, configPath} {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 		}
@@ -655,7 +1006,7 @@ func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
 		vaultPath:        vaultPath,
 		outputPath:       outputPath,
 		configPath:       configPath,
-		extraWatchInputs: []serveWatchInput{{path: externalCustomCSSPath, kind: serveWatchInputFile}},
+		extraWatchInputs: []serveWatchInput{{path: extraWatchFilePath, kind: serveWatchInputFile}},
 		debounce:         15 * time.Millisecond,
 		rebuild: func() error {
 			rebuildSignal <- struct{}{}
@@ -670,7 +1021,7 @@ func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("startServeWatchLoop() error = %v", err)
 	}
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(externalCustomCSSPath), 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Dir(extraWatchFilePath), 1)
 
 	tests := []struct {
 		name   string
@@ -712,13 +1063,13 @@ func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
 			},
 		},
 		{
-			name: "config-relative custom.css write",
-			path: externalCustomCSSPath,
+			name: "generic extra watch file write",
+			path: extraWatchFilePath,
 			op:   fsnotify.Write,
 			before: func(t *testing.T) {
 				t.Helper()
-				if err := os.WriteFile(externalCustomCSSPath, []byte("body { color: royalblue; }\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", externalCustomCSSPath, err)
+				if err := os.WriteFile(extraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
+					t.Fatalf("os.WriteFile(%q) error = %v", extraWatchFilePath, err)
 				}
 			},
 		},
@@ -734,6 +1085,178 @@ func TestStartServeWatchLoopRebuildsForAttachmentsAndCustomCSS(t *testing.T) {
 			assertNoServeWatchError(t, errorSignal)
 		})
 	}
+}
+
+func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	oldExtraWatchFilePath := filepath.Join(t.TempDir(), "watch-a", "explicit-input.txt")
+	recoveryWatchDir := t.TempDir()
+	brokenExtraWatchParent := filepath.Join(recoveryWatchDir, "watch-b", "nested")
+	brokenExtraWatchFilePath := filepath.Join(brokenExtraWatchParent, "explicit-input.txt")
+	for _, filePath := range []string{configPath, oldExtraWatchFilePath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	currentExtraWatchInputs := []serveWatchInput{{path: oldExtraWatchFilePath, kind: serveWatchInputFile}}
+	rebuildSignal := make(chan struct{}, 8)
+	errorSignal := make(chan error, 4)
+	rebuildCalls := 0
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: currentExtraWatchInputs,
+		currentExtraWatchInputs: func() []serveWatchInput {
+			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
+		},
+		debounce: 15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildCalls++
+			if rebuildCalls == 1 {
+				currentExtraWatchInputs = []serveWatchInput{{path: brokenExtraWatchFilePath, kind: serveWatchInputFile}}
+				return errors.New("missing external extra watch file")
+			}
+
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
+
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForServeWatchErrorContains(t, errorSignal, "missing external extra watch file")
+	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+	waitForServeWatchRemoveCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
+
+	brokenExtraWatchTopDir := filepath.Join(recoveryWatchDir, "watch-b")
+	mkdirServeWatchDir(t, brokenExtraWatchTopDir)
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchTopDir)
+	waitForServeWatchAddCount(t, watcher, brokenExtraWatchTopDir, 1)
+
+	mkdirServeWatchDir(t, brokenExtraWatchParent)
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchParent)
+	waitForServeWatchAddCount(t, watcher, brokenExtraWatchParent, 1)
+
+	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("restored extra watch input\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
+	}
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchFilePath)
+	waitForServeWatchSignal(t, rebuildSignal, "recreated external extra watch file rebuild")
+	assertNoServeWatchError(t, errorSignal)
+
+	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
+	}
+	watcher.send(fsnotify.Event{Name: brokenExtraWatchFilePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "fixed external extra watch file rebuild")
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFromOneShotDeepCreation(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	oldExtraWatchFilePath := filepath.Join(t.TempDir(), "watch-a", "explicit-input.txt")
+	recoveryWatchDir := t.TempDir()
+	brokenExtraWatchParent := filepath.Join(recoveryWatchDir, "watch-b", "nested")
+	brokenExtraWatchFilePath := filepath.Join(brokenExtraWatchParent, "explicit-input.txt")
+	brokenExtraWatchTopDir := filepath.Join(recoveryWatchDir, "watch-b")
+	for _, filePath := range []string{configPath, oldExtraWatchFilePath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	currentExtraWatchInputs := []serveWatchInput{{path: oldExtraWatchFilePath, kind: serveWatchInputFile}}
+	rebuildSignal := make(chan struct{}, 8)
+	errorSignal := make(chan error, 4)
+	rebuildCalls := 0
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: currentExtraWatchInputs,
+		currentExtraWatchInputs: func() []serveWatchInput {
+			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
+		},
+		debounce: 15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildCalls++
+			if rebuildCalls == 1 {
+				currentExtraWatchInputs = []serveWatchInput{{path: brokenExtraWatchFilePath, kind: serveWatchInputFile}}
+				return errors.New("missing external extra watch file")
+			}
+
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
+
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForServeWatchErrorContains(t, errorSignal, "missing external extra watch file")
+	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+	waitForServeWatchRemoveCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
+
+	if err := os.MkdirAll(brokenExtraWatchParent, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", brokenExtraWatchParent, err)
+	}
+	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("restored extra watch input\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
+	}
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchTopDir)
+	waitForServeWatchAddCount(t, watcher, brokenExtraWatchParent, 1)
+	waitForServeWatchSignal(t, rebuildSignal, "one-shot recreated external extra watch file rebuild")
+	assertNoServeWatchError(t, errorSignal)
+
+	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
+	}
+	watcher.send(fsnotify.Event{Name: brokenExtraWatchFilePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "fixed external extra watch file rebuild after one-shot recovery")
+	assertNoServeWatchError(t, errorSignal)
 }
 
 func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalInputs(t *testing.T) {
@@ -757,27 +1280,28 @@ func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalIn
 		vaultPath:  vaultPath,
 		outputPath: outputPath,
 	}
-	got := loop.watchDirsForInputs([]serveWatchInput{
+	got, err := loop.watchDirsForInputs([]serveWatchInput{
 		{path: filepath.Join(missingRoot, "templates"), kind: serveWatchInputDir},
-		{path: filepath.Join(missingRoot, "styles", "custom.css"), kind: serveWatchInputFile},
+		{path: filepath.Join(missingRoot, "extra-watch", "explicit-input.txt"), kind: serveWatchInputFile},
 	})
+	if err != nil {
+		t.Fatalf("watchDirsForInputs() error = %v", err)
+	}
 	if len(got) != 0 {
 		t.Fatalf("watchDirsForInputs() = %#v, want no filesystem-root fallback watches for fully missing external inputs", got)
 	}
 }
 
-func TestStartServeWatchLoopRecoversExternalTemplateDirAfterFailedRebuild(t *testing.T) {
+func TestStartServeWatchLoopRebuildsForDeepNestedExternalThemeRootFile(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
+	themeRoot := filepath.Join(t.TempDir(), "themes", "feature")
+	deepDir := filepath.Join(themeRoot, "partials", "cards")
+	deepFile := filepath.Join(deepDir, "badge.html")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
-	oldTemplateDir := filepath.Join(t.TempDir(), "templates-a")
-	oldTemplatePath := filepath.Join(oldTemplateDir, "base.html")
-	brokenTemplateRoot := t.TempDir()
-	brokenTemplateDir := filepath.Join(brokenTemplateRoot, "templates-b")
-	brokenTemplatePath := filepath.Join(brokenTemplateDir, "base.html")
-	for _, filePath := range []string{configPath, oldTemplatePath} {
+	for _, filePath := range []string{configPath, deepFile} {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 		}
@@ -793,7 +1317,68 @@ func TestStartServeWatchLoopRecoversExternalTemplateDirAfterFailedRebuild(t *tes
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	currentExtraWatchInputs := []serveWatchInput{{path: oldTemplateDir, kind: serveWatchInputDir}}
+	rebuildSignal := make(chan struct{}, 4)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: collectServeWatchInputs(themeRoot, "", vaultPath),
+		themeRoots:       []string{themeRoot},
+		debounce:         15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, themeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(themeRoot, "partials"), 1)
+	waitForServeWatchAddCount(t, watcher, deepDir, 1)
+
+	if err := os.WriteFile(deepFile, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", deepFile, err)
+	}
+	watcher.send(fsnotify.Event{Name: deepFile, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "deep external theme root rebuild")
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopRecoversExternalExtraWatchRootAfterFailedRebuild(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	oldThemeRoot := filepath.Join(t.TempDir(), "themes-a", "feature")
+	oldThemeFile := filepath.Join(oldThemeRoot, "base.html")
+	recoveryWatchDir := t.TempDir()
+	brokenThemeParent := filepath.Join(recoveryWatchDir, "themes-b", "nested")
+	brokenThemeRoot := filepath.Join(brokenThemeParent, "feature")
+	brokenThemeFile := filepath.Join(brokenThemeRoot, "base.html")
+	for _, filePath := range []string{configPath, oldThemeFile} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	currentExtraWatchInputs := []serveWatchInput{{path: oldThemeRoot, kind: serveWatchInputDir}}
 	rebuildSignal := make(chan struct{}, 8)
 	errorSignal := make(chan error, 4)
 	rebuildCalls := 0
@@ -810,8 +1395,8 @@ func TestStartServeWatchLoopRecoversExternalTemplateDirAfterFailedRebuild(t *tes
 		rebuild: func() error {
 			rebuildCalls++
 			if rebuildCalls == 1 {
-				currentExtraWatchInputs = []serveWatchInput{{path: brokenTemplateDir, kind: serveWatchInputDir}}
-				return errors.New("missing external template dir")
+				currentExtraWatchInputs = []serveWatchInput{{path: brokenThemeRoot, kind: serveWatchInputDir}}
+				return errors.New("missing external theme root")
 			}
 
 			rebuildSignal <- struct{}{}
@@ -824,34 +1409,41 @@ func TestStartServeWatchLoopRecoversExternalTemplateDirAfterFailedRebuild(t *tes
 		t.Fatalf("startServeWatchLoop() error = %v", err)
 	}
 
-	waitForServeWatchAddCount(t, watcher, oldTemplateDir, 1)
+	waitForServeWatchAddCount(t, watcher, oldThemeRoot, 1)
 
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
-	waitForServeWatchErrorContains(t, errorSignal, "missing external template dir")
-	waitForServeWatchAddCount(t, watcher, brokenTemplateRoot, 1)
-	waitForServeWatchRemoveCount(t, watcher, oldTemplateDir, 1)
+	waitForServeWatchErrorContains(t, errorSignal, "missing external theme root")
+	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+	waitForServeWatchRemoveCount(t, watcher, oldThemeRoot, 1)
 
-	if err := os.MkdirAll(brokenTemplateDir, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", brokenTemplateDir, err)
-	}
-	if err := os.WriteFile(brokenTemplatePath, []byte("content"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenTemplatePath, err)
+	brokenThemeTopDir := filepath.Join(recoveryWatchDir, "themes-b")
+	mkdirServeWatchDir(t, brokenThemeTopDir)
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenThemeTopDir)
+	waitForServeWatchAddCount(t, watcher, brokenThemeTopDir, 1)
+
+	mkdirServeWatchDir(t, brokenThemeParent)
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenThemeParent)
+	waitForServeWatchAddCount(t, watcher, brokenThemeParent, 1)
+
+	mkdirServeWatchDir(t, brokenThemeRoot)
+	if err := os.WriteFile(brokenThemeFile, []byte("content"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenThemeFile, err)
 	}
 
-	watcher.send(fsnotify.Event{Name: brokenTemplateDir, Op: fsnotify.Create})
-	waitForServeWatchAddCount(t, watcher, brokenTemplateDir, 1)
-	waitForServeWatchSignal(t, rebuildSignal, "recreated external template dir rebuild")
+	sendServeWatchCreateFromWatchedParent(t, watcher, brokenThemeRoot)
+	waitForServeWatchAddCount(t, watcher, brokenThemeRoot, 1)
+	waitForServeWatchSignal(t, rebuildSignal, "recreated external theme root rebuild")
 	assertNoServeWatchError(t, errorSignal)
 
-	if err := os.WriteFile(brokenTemplatePath, []byte("updated"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenTemplatePath, err)
+	if err := os.WriteFile(brokenThemeFile, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", brokenThemeFile, err)
 	}
-	watcher.send(fsnotify.Event{Name: brokenTemplatePath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "fixed external template dir rebuild")
+	watcher.send(fsnotify.Event{Name: brokenThemeFile, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "fixed external theme root rebuild")
 	assertNoServeWatchError(t, errorSignal)
 }
 
-func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalTemplateDir(t *testing.T) {
+func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalExtraWatchRoot(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -891,9 +1483,10 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalTemplateDir(t *testing
 			configPath := filepath.Join(vaultPath, defaultConfigFilename)
 			outputPath := filepath.Join(vaultPath, "public")
 			externalRoot := t.TempDir()
-			externalTemplateDir := filepath.Join(externalRoot, "templates")
-			externalTemplatePath := filepath.Join(externalTemplateDir, "base.html")
-			for _, filePath := range []string{configPath, externalTemplatePath} {
+			recoveryParent := filepath.Join(externalRoot, "themes")
+			externalThemeRoot := filepath.Join(externalRoot, "themes", "feature")
+			externalThemeFile := filepath.Join(externalThemeRoot, "base.html")
+			for _, filePath := range []string{configPath, externalThemeFile} {
 				if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 					t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 				}
@@ -916,7 +1509,7 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalTemplateDir(t *testing
 				vaultPath:        vaultPath,
 				outputPath:       outputPath,
 				configPath:       configPath,
-				extraWatchInputs: []serveWatchInput{{path: externalTemplateDir, kind: serveWatchInputDir}},
+				extraWatchInputs: []serveWatchInput{{path: externalThemeRoot, kind: serveWatchInputDir}},
 				debounce:         15 * time.Millisecond,
 				rebuild: func() error {
 					rebuildSignal <- struct{}{}
@@ -929,46 +1522,113 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalTemplateDir(t *testing
 				t.Fatalf("startServeWatchLoop() error = %v", err)
 			}
 
-			waitForServeWatchAddCount(t, watcher, externalTemplateDir, 1)
-			waitForServeWatchAddCount(t, watcher, externalRoot, 1)
+			waitForServeWatchAddCount(t, watcher, externalThemeRoot, 1)
+			waitForServeWatchAddCount(t, watcher, recoveryParent, 1)
 
-			tt.removeWatched(t, externalTemplateDir)
-			watcher.send(fsnotify.Event{Name: externalTemplateDir, Op: tt.op})
-			waitForServeWatchRemoveCount(t, watcher, externalTemplateDir, 1)
-			waitForServeWatchSignal(t, rebuildSignal, "external template dir removal rebuild")
+			tt.removeWatched(t, externalThemeRoot)
+			watcher.send(fsnotify.Event{Name: externalThemeRoot, Op: tt.op})
+			waitForServeWatchRemoveCount(t, watcher, externalThemeRoot, 1)
+			waitForServeWatchSignal(t, rebuildSignal, "external theme root removal rebuild")
 			assertNoServeWatchError(t, errorSignal)
 
-			if err := os.MkdirAll(externalTemplateDir, 0o755); err != nil {
-				t.Fatalf("os.MkdirAll(%q) error = %v", externalTemplateDir, err)
+			if err := os.MkdirAll(externalThemeRoot, 0o755); err != nil {
+				t.Fatalf("os.MkdirAll(%q) error = %v", externalThemeRoot, err)
 			}
-			if err := os.WriteFile(externalTemplatePath, []byte("restored"), 0o644); err != nil {
-				t.Fatalf("os.WriteFile(%q) error = %v", externalTemplatePath, err)
+			if err := os.WriteFile(externalThemeFile, []byte("restored"), 0o644); err != nil {
+				t.Fatalf("os.WriteFile(%q) error = %v", externalThemeFile, err)
 			}
 
-			watcher.send(fsnotify.Event{Name: externalTemplateDir, Op: fsnotify.Create})
-			waitForServeWatchAddCount(t, watcher, externalTemplateDir, 2)
-			waitForServeWatchSignal(t, rebuildSignal, "recreated external template dir rebuild")
+			sendServeWatchCreateFromWatchedParent(t, watcher, externalThemeRoot)
+			waitForServeWatchAddCount(t, watcher, externalThemeRoot, 2)
+			waitForServeWatchSignal(t, rebuildSignal, "recreated external theme root rebuild")
 			assertNoServeWatchError(t, errorSignal)
 
-			if err := os.WriteFile(externalTemplatePath, []byte("updated"), 0o644); err != nil {
-				t.Fatalf("os.WriteFile(%q) error = %v", externalTemplatePath, err)
+			if err := os.WriteFile(externalThemeFile, []byte("updated"), 0o644); err != nil {
+				t.Fatalf("os.WriteFile(%q) error = %v", externalThemeFile, err)
 			}
-			watcher.send(fsnotify.Event{Name: externalTemplatePath, Op: fsnotify.Write})
-			waitForServeWatchSignal(t, rebuildSignal, "recreated external template edit rebuild")
+			watcher.send(fsnotify.Event{Name: externalThemeFile, Op: fsnotify.Write})
+			waitForServeWatchSignal(t, rebuildSignal, "recreated external theme root edit rebuild")
 			assertNoServeWatchError(t, errorSignal)
 		})
 	}
 }
 
-func TestStartServeWatchLoopWatchesConfiguredHiddenInVaultTemplateDir(t *testing.T) {
+func TestStartServeWatchLoopAddsRecursiveWatchesForNewDeepDirectoriesInsideSelectedThemeRoot(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	hiddenTemplateDir := filepath.Join(vaultPath, ".obsidian", "templates")
-	hiddenTemplatePath := filepath.Join(hiddenTemplateDir, "base.html")
+	themeRoot := filepath.Join(t.TempDir(), "themes", "feature")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
-	for _, filePath := range []string{configPath, hiddenTemplatePath} {
+	for _, filePath := range []string{configPath, filepath.Join(themeRoot, "base.html")} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rebuildSignal := make(chan struct{}, 6)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: collectServeWatchInputs(themeRoot, "", vaultPath),
+		themeRoots:       []string{themeRoot},
+		debounce:         15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, themeRoot, 1)
+
+	newDir := filepath.Join(themeRoot, "partials", "cards", "shared")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", newDir, err)
+	}
+	watcher.send(fsnotify.Event{Name: filepath.Join(themeRoot, "partials"), Op: fsnotify.Create})
+	waitForServeWatchAddCount(t, watcher, filepath.Join(themeRoot, "partials"), 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(themeRoot, "partials", "cards"), 1)
+	waitForServeWatchAddCount(t, watcher, newDir, 1)
+	waitForServeWatchSignal(t, rebuildSignal, "new selected theme root directory rebuild")
+	assertNoServeWatchError(t, errorSignal)
+
+	deepFile := filepath.Join(newDir, "badge.html")
+	if err := os.WriteFile(deepFile, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", deepFile, err)
+	}
+	watcher.send(fsnotify.Event{Name: deepFile, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "deep file rebuild after recursive watch add")
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopRebuildsForDeepNestedHiddenInVaultThemeRootFile(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	hiddenThemeRoot := filepath.Join(vaultPath, ".obsidian", "themes", "feature")
+	hiddenThemeDir := filepath.Join(hiddenThemeRoot, "partials", "cards")
+	hiddenThemePath := filepath.Join(hiddenThemeDir, "badge.html")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	for _, filePath := range []string{configPath, hiddenThemePath} {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 		}
@@ -991,7 +1651,8 @@ func TestStartServeWatchLoopWatchesConfiguredHiddenInVaultTemplateDir(t *testing
 		vaultPath:        vaultPath,
 		outputPath:       outputPath,
 		configPath:       configPath,
-		extraWatchInputs: collectServeWatchInputs(hiddenTemplateDir, "", vaultPath),
+		extraWatchInputs: collectServeWatchInputs(hiddenThemeRoot, "", vaultPath),
+		themeRoots:       []string{hiddenThemeRoot},
 		debounce:         15 * time.Millisecond,
 		rebuild: func() error {
 			rebuildSignal <- struct{}{}
@@ -1004,22 +1665,196 @@ func TestStartServeWatchLoopWatchesConfiguredHiddenInVaultTemplateDir(t *testing
 		t.Fatalf("startServeWatchLoop() error = %v", err)
 	}
 
-	waitForServeWatchAddCount(t, watcher, hiddenTemplateDir, 1)
+	waitForServeWatchAddCount(t, watcher, hiddenThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, hiddenThemeDir, 1)
 
-	if err := os.WriteFile(hiddenTemplatePath, []byte("updated"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", hiddenTemplatePath, err)
+	if err := os.WriteFile(hiddenThemePath, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", hiddenThemePath, err)
 	}
-	watcher.send(fsnotify.Event{Name: hiddenTemplatePath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "hidden template override rebuild")
+	watcher.send(fsnotify.Event{Name: hiddenThemePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "hidden in-vault theme root rebuild")
 	assertNoServeWatchError(t, errorSignal)
 }
 
-func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenOverrideIsRemoved(t *testing.T) {
+func TestStartServeWatchLoopIgnoresUnselectedThemeRootChanges(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	selectedThemeRoot := filepath.Join(vaultPath, "themes", "feature")
+	unselectedThemeRoot := filepath.Join(vaultPath, "themes", "serif")
+	selectedThemePath := filepath.Join(selectedThemeRoot, "partials", "cards", "badge.html")
+	unselectedThemePath := filepath.Join(unselectedThemeRoot, "partials", "cards", "badge.html")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	for _, filePath := range []string{configPath, selectedThemePath, unselectedThemePath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rebuildSignal := make(chan struct{}, 4)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: collectServeWatchInputs(selectedThemeRoot, "", vaultPath),
+		themeRoots:       []string{selectedThemeRoot, unselectedThemeRoot},
+		debounce:         15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, filepath.Join(selectedThemeRoot, "partials", "cards"), 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(unselectedThemeRoot, "partials", "cards"), 1)
+
+	if err := os.WriteFile(unselectedThemePath, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", unselectedThemePath, err)
+	}
+	watcher.send(fsnotify.Event{Name: unselectedThemePath, Op: fsnotify.Write})
+	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "unselected theme root write")
+
+	if err := os.WriteFile(selectedThemePath, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", selectedThemePath, err)
+	}
+	watcher.send(fsnotify.Event{Name: selectedThemePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "selected theme root rebuild")
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopIgnoresNestedUnselectedThemeRootInsideSelectedThemeTree(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	selectedThemeRoot := filepath.Join(vaultPath, "themes")
+	unselectedThemeRoot := filepath.Join(selectedThemeRoot, "serif")
+	selectedThemePath := filepath.Join(selectedThemeRoot, "partials", "cards", "badge.html")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	for _, filePath := range []string{configPath, filepath.Join(selectedThemeRoot, "base.html"), selectedThemePath, filepath.Join(unselectedThemeRoot, "base.html")} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rebuildSignal := make(chan struct{}, 6)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: collectServeWatchInputs(selectedThemeRoot, "", vaultPath),
+		themeRoots:       []string{selectedThemeRoot, unselectedThemeRoot},
+		debounce:         15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, selectedThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(selectedThemeRoot, "partials"), 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(selectedThemeRoot, "partials", "cards"), 1)
+	if !watcher.hasActiveWatch(selectedThemeRoot) {
+		t.Fatalf("watcher missing active watch for selected theme root %q", selectedThemeRoot)
+	}
+	if !watcher.hasActiveWatch(filepath.Join(selectedThemeRoot, "partials")) {
+		t.Fatalf("watcher missing active watch for selected theme child dir %q", filepath.Join(selectedThemeRoot, "partials"))
+	}
+	if !watcher.hasActiveWatch(filepath.Join(selectedThemeRoot, "partials", "cards")) {
+		t.Fatalf("watcher missing active watch for selected theme child dir %q", filepath.Join(selectedThemeRoot, "partials", "cards"))
+	}
+	if got := watcher.countAddCalls(unselectedThemeRoot); got != 0 {
+		t.Fatalf("watcher.Add(%q) count = %d, want 0 for nested unselected theme root", unselectedThemeRoot, got)
+	}
+	if watcher.hasActiveWatch(unselectedThemeRoot) {
+		t.Fatalf("watcher unexpectedly has active watch for nested unselected theme root %q", unselectedThemeRoot)
+	}
+
+	if err := os.WriteFile(selectedThemePath, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", selectedThemePath, err)
+	}
+	watcher.send(fsnotify.Event{Name: selectedThemePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "selected theme child directory rebuild")
+	assertNoServeWatchError(t, errorSignal)
+
+	newDir := filepath.Join(unselectedThemeRoot, "partials", "cards", "shared")
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", newDir, err)
+	}
+	watcher.send(fsnotify.Event{Name: filepath.Join(unselectedThemeRoot, "partials"), Op: fsnotify.Create})
+	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "nested unselected theme root directory create")
+	if watcher.hasActiveWatch(filepath.Join(unselectedThemeRoot, "partials")) {
+		t.Fatalf("watcher unexpectedly has active watch for nested unselected theme child dir %q", filepath.Join(unselectedThemeRoot, "partials"))
+	}
+	if watcher.hasActiveWatch(filepath.Join(unselectedThemeRoot, "partials", "cards")) {
+		t.Fatalf("watcher unexpectedly has active watch for nested unselected theme child dir %q", filepath.Join(unselectedThemeRoot, "partials", "cards"))
+	}
+	if watcher.hasActiveWatch(newDir) {
+		t.Fatalf("watcher unexpectedly has active watch for nested unselected theme child dir %q", newDir)
+	}
+	if got := watcher.countAddCalls(filepath.Join(unselectedThemeRoot, "partials")); got != 0 {
+		t.Fatalf("watcher.Add(%q) count = %d, want 0 for nested unselected theme root", filepath.Join(unselectedThemeRoot, "partials"), got)
+	}
+	if got := watcher.countAddCalls(filepath.Join(unselectedThemeRoot, "partials", "cards")); got != 0 {
+		t.Fatalf("watcher.Add(%q) count = %d, want 0 for nested unselected theme root", filepath.Join(unselectedThemeRoot, "partials", "cards"), got)
+	}
+	if got := watcher.countAddCalls(newDir); got != 0 {
+		t.Fatalf("watcher.Add(%q) count = %d, want 0 for nested unselected theme root", newDir, got)
+	}
+
+	deepFile := filepath.Join(newDir, "badge.html")
+	if err := os.WriteFile(deepFile, []byte("updated"), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", deepFile, err)
+	}
+	watcher.send(fsnotify.Event{Name: deepFile, Op: fsnotify.Write})
+	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "nested unselected theme root deep file write")
+	if watcher.hasActiveWatch(newDir) {
+		t.Fatalf("watcher unexpectedly has active watch for nested unselected theme child dir %q after deep file write", newDir)
+	}
+	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenThemeRootIsRemoved(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	rootNotePath := filepath.Join(vaultPath, "root-note.md")
-	hiddenTemplateDir := filepath.Join(vaultPath, ".obsidian", "templates")
+	hiddenThemeRoot := filepath.Join(vaultPath, ".obsidian", "themes", "feature")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
 	for _, filePath := range []string{rootNotePath, configPath} {
@@ -1038,7 +1873,7 @@ func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenOverrideIsRemo
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	currentExtraWatchInputs := collectServeWatchInputs(hiddenTemplateDir, "", vaultPath)
+	currentExtraWatchInputs := collectServeWatchInputs(hiddenThemeRoot, "", vaultPath)
 	rebuildSignal := make(chan struct{}, 4)
 	errorSignal := make(chan error, 4)
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
@@ -1128,19 +1963,17 @@ func TestStartServeWatchLoopReportsWatcherCloseErrors(t *testing.T) {
 	}
 }
 
-func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfterRebuild(t *testing.T) {
+func TestStartServeWatchLoopRefreshesSelectedThemeRootWatchesAfterRebuild(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
-	oldTemplateDir := filepath.Join(t.TempDir(), "templates-a")
-	newTemplateDir := filepath.Join(t.TempDir(), "templates-b")
-	oldTemplatePath := filepath.Join(oldTemplateDir, "base.html")
-	newTemplatePath := filepath.Join(newTemplateDir, "base.html")
-	oldCustomCSSPath := filepath.Join(t.TempDir(), "styles-a", "custom.css")
-	newCustomCSSPath := filepath.Join(t.TempDir(), "styles-b", "custom.css")
-	for _, filePath := range []string{configPath, oldTemplatePath, newTemplatePath, oldCustomCSSPath, newCustomCSSPath} {
+	oldThemeRoot := filepath.Join(t.TempDir(), "themes-a", "feature")
+	newThemeRoot := filepath.Join(t.TempDir(), "themes-b", "feature")
+	oldThemePath := filepath.Join(oldThemeRoot, "partials", "cards", "badge.html")
+	newThemePath := filepath.Join(newThemeRoot, "partials", "cards", "badge.html")
+	for _, filePath := range []string{configPath, oldThemePath, newThemePath} {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 		}
@@ -1156,7 +1989,8 @@ func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfter
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	currentExtraWatchInputs := []serveWatchInput{{path: oldTemplateDir, kind: serveWatchInputDir}, {path: oldCustomCSSPath, kind: serveWatchInputFile}}
+	currentExtraWatchInputs := collectServeWatchInputs(oldThemeRoot, "", vaultPath)
+	currentThemeRoots := normalizeServeWatchPaths([]string{oldThemeRoot, newThemeRoot})
 	rebuildSignal := make(chan struct{}, 8)
 	errorSignal := make(chan error, 4)
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
@@ -1168,9 +2002,13 @@ func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfter
 		currentExtraWatchInputs: func() []serveWatchInput {
 			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
 		},
+		themeRoots: currentThemeRoots,
+		currentThemeRoots: func() []string {
+			return append([]string(nil), currentThemeRoots...)
+		},
 		debounce: 15 * time.Millisecond,
 		rebuild: func() error {
-			currentExtraWatchInputs = []serveWatchInput{{path: newTemplateDir, kind: serveWatchInputDir}, {path: newCustomCSSPath, kind: serveWatchInputFile}}
+			currentExtraWatchInputs = collectServeWatchInputs(newThemeRoot, "", vaultPath)
 			rebuildSignal <- struct{}{}
 			return nil
 		},
@@ -1181,29 +2019,94 @@ func TestStartServeWatchLoopRefreshesExternalTemplateDirAndCustomCSSWatchesAfter
 		t.Fatalf("startServeWatchLoop() error = %v", err)
 	}
 
-	waitForServeWatchAddCount(t, watcher, oldTemplateDir, 1)
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(oldCustomCSSPath), 1)
+	waitForServeWatchAddCount(t, watcher, oldThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(oldThemeRoot, "partials", "cards"), 1)
 
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
-	waitForServeWatchAddCount(t, watcher, newTemplateDir, 1)
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(newCustomCSSPath), 1)
-	waitForServeWatchRemoveCount(t, watcher, oldTemplateDir, 1)
-	waitForServeWatchRemoveCount(t, watcher, filepath.Dir(oldCustomCSSPath), 1)
+	waitForServeWatchAddCount(t, watcher, newThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(newThemeRoot, "partials", "cards"), 1)
 	assertNoServeWatchError(t, errorSignal)
 
-	watcher.send(fsnotify.Event{Name: oldTemplatePath, Op: fsnotify.Write})
-	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "stale template override")
+	watcher.send(fsnotify.Event{Name: oldThemePath, Op: fsnotify.Write})
+	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "stale selected theme root")
 
-	watcher.send(fsnotify.Event{Name: oldCustomCSSPath, Op: fsnotify.Write})
-	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "stale custom css")
+	watcher.send(fsnotify.Event{Name: newThemePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "refreshed selected theme root rebuild")
+	assertNoServeWatchError(t, errorSignal)
+}
 
-	watcher.send(fsnotify.Event{Name: newTemplatePath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "refreshed template override rebuild")
+func TestStartServeWatchLoopIgnoresStaleInVaultThemeRootAfterRefresh(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	oldThemeRoot := filepath.Join(vaultPath, "themes", "alpha")
+	newThemeRoot := filepath.Join(vaultPath, ".hidden-alpha")
+	oldThemePath := filepath.Join(oldThemeRoot, "partials", "cards", "badge.html")
+	newThemePath := filepath.Join(newThemeRoot, "partials", "cards", "badge.html")
+	for _, filePath := range []string{configPath, oldThemePath, newThemePath} {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+	if err := os.MkdirAll(outputPath, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	currentExtraWatchInputs := collectServeWatchInputs(oldThemeRoot, "", vaultPath)
+	currentThemeRoots := normalizeServeWatchPaths([]string{oldThemeRoot, newThemeRoot})
+	rebuildSignal := make(chan struct{}, 8)
+	errorSignal := make(chan error, 4)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:          watcher,
+		vaultPath:        vaultPath,
+		outputPath:       outputPath,
+		configPath:       configPath,
+		extraWatchInputs: currentExtraWatchInputs,
+		currentExtraWatchInputs: func() []serveWatchInput {
+			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
+		},
+		themeRoots: currentThemeRoots,
+		currentThemeRoots: func() []string {
+			return append([]string(nil), currentThemeRoots...)
+		},
+		debounce: 15 * time.Millisecond,
+		rebuild: func() error {
+			currentExtraWatchInputs = collectServeWatchInputs(newThemeRoot, "", vaultPath)
+			currentThemeRoots = normalizeServeWatchPaths([]string{newThemeRoot})
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+		onError: func(err error) {
+			errorSignal <- err
+		},
+	}); err != nil {
+		t.Fatalf("startServeWatchLoop() error = %v", err)
+	}
+
+	waitForServeWatchAddCount(t, watcher, oldThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(oldThemeRoot, "partials", "cards"), 1)
+
+	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
+	waitForServeWatchAddCount(t, watcher, newThemeRoot, 1)
+	waitForServeWatchAddCount(t, watcher, filepath.Join(newThemeRoot, "partials", "cards"), 1)
 	assertNoServeWatchError(t, errorSignal)
 
-	watcher.send(fsnotify.Event{Name: newCustomCSSPath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "refreshed custom css rebuild")
+	watcher.send(fsnotify.Event{Name: oldThemePath, Op: fsnotify.Write})
+	assertNoServeWatchSignal(t, rebuildSignal, errorSignal, "stale in-vault selected theme root")
+
+	watcher.send(fsnotify.Event{Name: newThemePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "refreshed in-vault selected theme root rebuild")
 	assertNoServeWatchError(t, errorSignal)
 }
 
@@ -1377,6 +2280,14 @@ func (w *fakeFileWatcher) isWatchingPath(path string) bool {
 	return false
 }
 
+func (w *fakeFileWatcher) hasActiveWatch(path string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	_, ok := w.active[filepath.Clean(path)]
+	return ok
+}
+
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -1396,8 +2307,13 @@ func (b *lockedBuffer) String() string {
 
 func waitForLockedBufferContains(t *testing.T, buffer *lockedBuffer, want string) {
 	t.Helper()
+	waitForLockedBufferContainsWithin(t, buffer, want, 250*time.Millisecond)
+}
 
-	deadline := time.After(250 * time.Millisecond)
+func waitForLockedBufferContainsWithin(t *testing.T, buffer *lockedBuffer, want string, timeout time.Duration) {
+	t.Helper()
+
+	deadline := time.After(timeout)
 	ticker := time.NewTicker(5 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -1414,12 +2330,63 @@ func waitForLockedBufferContains(t *testing.T, buffer *lockedBuffer, want string
 	}
 }
 
+func mkdirServeWatchDir(t *testing.T, path string) {
+	t.Helper()
+
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("os.Mkdir(%q) error = %v", path, err)
+	}
+}
+
+func sendServeWatchCreateFromWatchedParent(t *testing.T, watcher *fakeFileWatcher, path string) {
+	t.Helper()
+
+	if !watcher.sendIfWatched(fsnotify.Event{Name: path, Op: fsnotify.Create}) {
+		t.Fatalf("create event for %q is not covered by any active watch", path)
+	}
+}
+
+func writeServeWatchThemeConfig(t *testing.T, configPath string, themeRoot string) {
+	t.Helper()
+
+	content := strings.Join([]string{
+		"title: Garden",
+		"baseURL: https://example.com",
+		"themes:",
+		"  feature:",
+		fmt.Sprintf("    root: %q", themeRoot),
+		"defaultTheme: feature",
+	}, "\n") + "\n"
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
+	}
+}
+
+func writeServeWatchThemeTemplates(t *testing.T, root string) {
+	t.Helper()
+
+	for _, name := range internalrender.RequiredHTMLTemplateNames {
+		filePath := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
+		}
+	}
+}
+
 func waitForServeWatchSignal(t *testing.T, signal <-chan struct{}, label string) {
+	t.Helper()
+	waitForServeWatchSignalWithin(t, signal, label, 250*time.Millisecond)
+}
+
+func waitForServeWatchSignalWithin(t *testing.T, signal <-chan struct{}, label string, timeout time.Duration) {
 	t.Helper()
 
 	select {
 	case <-signal:
-	case <-time.After(250 * time.Millisecond):
+	case <-time.After(timeout):
 		t.Fatalf("timed out waiting for %s", label)
 	}
 }

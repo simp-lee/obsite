@@ -34,6 +34,17 @@ func mustNewCollectorWithHook(t *testing.T, vaultRoot string, indexed map[string
 	return collector
 }
 
+func mustNewCollectorWithResourceFiles(t *testing.T, vaultRoot string, indexed map[string]*model.Asset, resourceFiles []string) *AssetCollector {
+	t.Helper()
+
+	collector, err := NewCollectorWithResourceFiles(vaultRoot, indexed, nil, resourceFiles)
+	if err != nil {
+		t.Fatalf("NewCollectorWithResourceFiles() error = %v", err)
+	}
+
+	return collector
+}
+
 func mergeAssetsForTest(vaultRoot string, indexed map[string]*model.Asset, collector *AssetCollector) map[string]*model.Asset {
 	return mergeAssetsForTestWithReservedPaths(vaultRoot, indexed, collector, nil)
 }
@@ -530,14 +541,14 @@ func TestAssetCollectorRegisterKeepsIndexedCollisionStable(t *testing.T) {
 	}
 }
 
-func TestAssetCollectorPlanDestinationsUsesVisibleUnreferencedCollisionInventory(t *testing.T) {
+func TestAssetCollectorPlanDestinationsIgnoresUnreferencedCollisionPeerWhenInventoryIsEmitScoped(t *testing.T) {
 	t.Parallel()
 
 	vaultRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "attachments/photo.png", "attachment")
 	writeAssetFile(t, vaultRoot, "images/photo.png", "unreferenced-collision")
 
-	collector := mustNewCollector(t, vaultRoot, nil)
+	collector := mustNewCollectorWithResourceFiles(t, vaultRoot, nil, nil)
 	planned := collector.PlanDestinations(map[string]*model.Asset{
 		"attachments/photo.png": {SrcPath: "attachments/photo.png", RefCount: 1},
 	})
@@ -546,11 +557,8 @@ func TestAssetCollectorPlanDestinationsUsesVisibleUnreferencedCollisionInventory
 	}
 
 	dstPath := planned["attachments/photo.png"]
-	if dstPath == "assets/photo.png" {
-		t.Fatalf("PlanDestinations()[attachments/photo.png] = %q, want hashed path when visible unreferenced collision exists", dstPath)
-	}
-	if !strings.HasPrefix(dstPath, "assets/photo.") || !strings.HasSuffix(dstPath, ".png") {
-		t.Fatalf("PlanDestinations()[attachments/photo.png] = %q, want assets/photo.<hash>.png", dstPath)
+	if dstPath != "assets/photo.png" {
+		t.Fatalf("PlanDestinations()[attachments/photo.png] = %q, want %q when only an unreferenced peer exists", dstPath, "assets/photo.png")
 	}
 
 	if got := collector.Register("attachments/photo.png"); got != dstPath {

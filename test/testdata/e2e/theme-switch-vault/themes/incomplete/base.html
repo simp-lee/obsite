@@ -1,0 +1,31 @@
+{{define "base"}}
+<!doctype html>
+<html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}">
+<head>
+  <meta charset="utf-8">
+  <title>{{if .Title}}{{.Title}}{{else if .Site.Title}}{{.Site.Title}}{{else}}Untitled{{end}}</title>
+  {{if eq .Kind "404"}}<base href="{{siteBasePath .Site.BaseURL}}">{{end}}
+  <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
+  {{if .HasSearch}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.css" data-obsite-search-ui="true">{{end}}
+  {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
+</head>
+<body class="kind-{{.Kind}}" data-theme-shell="incomplete-shell">
+  <header data-theme-shell-copy="incomplete-shell-copy">incomplete shell marker</header>
+  {{template "content" .}}
+  {{if .HasSearch}}
+  <div id="obsite-search-root" data-obsite-search-ui="true"></div>
+  <script src="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>
+  <script data-obsite-search-ui="true">new PagefindUI({ element: "#obsite-search-root" });</script>
+  {{end}}
+</body>
+</html>
+{{end}}
+
+{{define "content"}}
+  {{if eq .Kind "note"}}{{template "content-note" .}}{{end}}
+  {{if eq .Kind "index"}}{{template "content-index" .}}{{end}}
+  {{if eq .Kind "tag"}}{{template "content-tag" .}}{{end}}
+  {{if eq .Kind "folder"}}{{template "content-folder" .}}{{end}}
+  {{if eq .Kind "timeline"}}{{template "content-timeline" .}}{{end}}
+  {{if eq .Kind "404"}}{{template "content-404" .}}{{end}}
+{{end}}
