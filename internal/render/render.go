@@ -1165,100 +1165,6 @@ func renderPage(page model.PageData, note *model.Note) (RenderedPage, error) {
 	return RenderedPage{Page: page, HTML: html, Diagnostics: pageDiagnostics}, errors.Join(seoErr, renderErr)
 }
 
-func stripRenderedBaseElement(body []byte) []byte {
-	baseStart, baseEnd, ok := renderedBaseElementRange(body)
-	if !ok {
-		return body
-	}
-
-	stripped := make([]byte, 0, len(body)-(baseEnd-baseStart))
-	stripped = append(stripped, body[:baseStart]...)
-	stripped = append(stripped, body[baseEnd:]...)
-	return stripped
-}
-
-func renderedBaseElementRange(body []byte) (baseStart int, baseEnd int, ok bool) {
-	if len(body) == 0 {
-		return 0, 0, false
-	}
-
-	tokenizer := xhtml.NewTokenizer(bytes.NewReader(body))
-	offset := 0
-	inHead := false
-	implicitHead := false
-	templateDepth := 0
-
-	for {
-		tokenType := tokenizer.Next()
-		raw := tokenizer.Raw()
-		start := offset
-		end := start + len(raw)
-		offset = end
-
-		switch tokenType {
-		case xhtml.ErrorToken:
-			return 0, 0, false
-		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			token := tokenizer.Token()
-			if token.DataAtom == atom.Html || strings.EqualFold(token.Data, "html") {
-				if !inHead {
-					implicitHead = true
-				}
-				continue
-			}
-			if token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head") {
-				if tokenType == xhtml.SelfClosingTagToken {
-					return 0, 0, false
-				}
-				inHead = true
-				implicitHead = false
-				continue
-			}
-			if !inHead && !implicitHead {
-				continue
-			}
-			if implicitHead && templateDepth == 0 && (token.DataAtom == atom.Body || strings.EqualFold(token.Data, "body")) {
-				return 0, 0, false
-			}
-			if implicitHead && templateDepth == 0 && !isImplicitHeadElementToken(token) {
-				return 0, 0, false
-			}
-			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
-				if tokenType != xhtml.SelfClosingTagToken {
-					templateDepth++
-				}
-				continue
-			}
-			if templateDepth > 0 {
-				continue
-			}
-			if token.DataAtom == atom.Base || strings.EqualFold(token.Data, "base") {
-				return start, end, true
-			}
-		case xhtml.EndTagToken:
-			token := tokenizer.Token()
-			if token.DataAtom == atom.Template || strings.EqualFold(token.Data, "template") {
-				if templateDepth > 0 {
-					templateDepth--
-				}
-				continue
-			}
-			if token.DataAtom == atom.Head || strings.EqualFold(token.Data, "head") || token.DataAtom == atom.Body || strings.EqualFold(token.Data, "body") {
-				return 0, 0, false
-			}
-		}
-	}
-}
-
-func isImplicitHeadElementToken(token xhtml.Token) bool {
-	switch strings.ToLower(strings.TrimSpace(token.Data)) {
-	case "base", "basefont", "bgsound", "link", "meta", "noframes", "noscript", "script", "style", "template", "title":
-		return true
-	default:
-		return false
-	}
-}
-
 func nonFatalSEODiagnostics(note *model.Note, err error) ([]diag.Diagnostic, bool) {
 	var articleErr *seo.ArticleJSONLDError
 	if !errors.As(err, &articleErr) {
@@ -1503,22 +1409,6 @@ func listThemeTemplateFileStatesInRoot(themeRoot string) ([]themeTemplateFileSta
 	})
 
 	return files, nil
-}
-
-func missingRequiredThemeTemplateNames(files []themeTemplateFileState) []string {
-	present := make(map[string]struct{}, len(files))
-	for _, file := range files {
-		present[file.name] = struct{}{}
-	}
-
-	missing := make([]string, 0)
-	for _, name := range RequiredHTMLTemplateNames {
-		if _, ok := present[name]; !ok {
-			missing = append(missing, name)
-		}
-	}
-
-	return missing
 }
 
 func scanThemeTemplateSnapshotFromState(state themeTemplateState) (themeTemplateSnapshot, error) {

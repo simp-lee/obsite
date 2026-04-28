@@ -411,10 +411,6 @@ func (r *wikilinkHTMLRenderer) consumeEmbed(rawTarget string) *model.EmbedRef {
 	return nil
 }
 
-func (r *wikilinkHTMLRenderer) resolveImageAssetPath(target string) string {
-	return resolveImageAssetPath(r.currentNote, r.index, target)
-}
-
 func (r *wikilinkHTMLRenderer) lookupImageAssetPath(target string) model.PathLookupResult {
 	return lookupImageAssetPath(r.currentNote, r.index, target)
 }

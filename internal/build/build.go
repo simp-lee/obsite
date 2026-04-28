@@ -3053,8 +3053,7 @@ func buildRelatedRecommendationIndex(idx *model.VaultIndex, renderedByPath map[s
 		return idx
 	}
 
-	clonedIndex := *idx
-	clonedIndex.Notes = make(map[string]*model.Note, len(idx.Notes))
+	clonedIndex := &model.VaultIndex{Notes: make(map[string]*model.Note, len(idx.Notes))}
 	for relPath, note := range idx.Notes {
 		cloned := cloneNote(note)
 		if renderedText := renderedVisibleText(renderedByPath[relPath]); renderedText != "" && cloned != nil {
@@ -3063,7 +3062,7 @@ func buildRelatedRecommendationIndex(idx *model.VaultIndex, renderedByPath map[s
 		clonedIndex.Notes[relPath] = cloned
 	}
 
-	return &clonedIndex
+	return clonedIndex
 }
 
 func renderedVisibleText(rendered *renderedNote) string {
