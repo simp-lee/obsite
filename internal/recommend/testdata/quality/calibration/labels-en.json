@@ -484,6 +484,13 @@
           ]
         },
         {
+          "candidateId": "cal-en-06",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
           "candidateId": "cal-en-09",
           "grade": 0,
           "discovery": [
@@ -681,6 +688,13 @@
         },
         {
           "candidateId": "cal-en-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-en-04",
           "grade": 0,
           "discovery": [
             "production-top10"

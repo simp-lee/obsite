@@ -9,9 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/link"
+	internalmarkdown "github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/slug"
+	"github.com/yuin/goldmark/text"
 	"gopkg.in/yaml.v3"
 )
 
@@ -84,6 +87,7 @@ func loadQualityRankingCorpus(manifest qualityManifest, split string) (qualityRa
 		SourceByID: make(map[string]qualitySource),
 	}
 
+	parser := internalmarkdown.NewParser(diag.NewCollector())
 	for _, source := range manifest.Sources {
 		if source.Split != split {
 			continue
@@ -101,7 +105,9 @@ func loadQualityRankingCorpus(manifest qualityManifest, split string) (qualityRa
 			return qualityRankingCorpus{}, fmt.Errorf("parse quality source %s: %w", source.ID, err)
 		}
 		relPath := strings.TrimPrefix(source.Path, split+"/")
-		headings, bodyText := qualityMarkdownFields(body)
+		sourceBytes := []byte(body)
+		root := parser.Parser().Parse(text.NewReader(sourceBytes))
+		headings, bodyText := internalmarkdown.RelatedSemanticText(root, sourceBytes)
 		corpus.Semantics = append(corpus.Semantics, model.RelatedSemanticDocument{
 			RelPath:  relPath,
 			Title:    source.Title,
@@ -267,23 +273,6 @@ func parseQualityMarkdown(data []byte) (qualityMarkdownFrontmatter, string, erro
 		return qualityMarkdownFrontmatter{}, "", err
 	}
 	return frontmatter, rest[separator+len("\n---\n"):], nil
-}
-
-func qualityMarkdownFields(body string) ([]string, string) {
-	var headings []string
-	var bodyLines []string
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
-			heading := strings.TrimSpace(strings.TrimLeft(trimmed, "#"))
-			if heading != "" {
-				headings = append(headings, heading)
-			}
-			continue
-		}
-		bodyLines = append(bodyLines, line)
-	}
-	return headings, strings.Join(bodyLines, "\n")
 }
 
 func qualitySourceLinks(body string) []model.LinkRef {

@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "selectionRule": "maximize macro nDCG@5, normalized Precision@5, Top-5 relevant-query coverage, then known-relevant Top-5 hit rate; exact ties choose the lexicographically smallest tuple",
+  "winning": {
+    "maxFeatures": 64,
+    "maxTermDFRatio": 0.4,
+    "minContentCosine": 0.05,
+    "maxSingleTermDFRatio": 0.05
+  },
+  "metrics": {
+    "macroNDCGAt5": 0.7643696346983507,
+    "macroNormalizedPrecisionAt5": 0.5558333333333333,
+    "top5RelevantQueryCoverage": 1,
+    "knownRelevantTop5HitRate": 1,
+    "sourceCount": 40
+  },
+  "calibrationSourceSha256": "769142f69b10775ed7ca80ae2644c84360e8528172235b88f36806ebb79fdf09",
+  "calibrationAssetSha256": "6771f2e02a750b6d8836d64170f2affd0c070e1d496355c755650279ba566207"
+}
