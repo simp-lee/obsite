@@ -2,7 +2,9 @@ package link
 
 import (
 	"sort"
+	"strings"
 
+	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -58,6 +60,83 @@ func BuildGraph(idx *model.VaultIndex, resolvedOutLinks map[string][]model.LinkR
 	}
 
 	return graph
+}
+
+// BuildSourceGraph resolves only links and note embeds declared directly in
+// each public note's source AST. It is independent from render-expanded links.
+func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
+	graph := &model.LinkGraph{
+		Forward:  map[string][]string{},
+		Backward: map[string][]string{},
+	}
+	if idx == nil || len(idx.Notes) == 0 {
+		return graph
+	}
+
+	publicPaths := sortedPublicPaths(idx.Notes)
+	backwardSets := make(map[string]map[string]struct{}, len(publicPaths))
+	for _, relPath := range publicPaths {
+		graph.Forward[relPath] = []string{}
+		graph.Backward[relPath] = []string{}
+		backwardSets[relPath] = make(map[string]struct{})
+	}
+
+	for _, sourcePath := range publicPaths {
+		source := idx.Notes[sourcePath]
+		outgoing := make(map[string]struct{})
+		if source != nil {
+			for _, ref := range source.OutLinks {
+				target, fragment := sourceLinkTarget(ref.RawTarget, ref.Fragment)
+				addResolvedSourceTarget(outgoing, idx, source, target, fragment)
+			}
+			for _, embed := range source.Embeds {
+				if embed.IsImage {
+					continue
+				}
+				addResolvedSourceTarget(outgoing, idx, source, embed.Target, embed.Fragment)
+			}
+		}
+
+		delete(outgoing, sourcePath)
+		graph.Forward[sourcePath] = sortedMembers(outgoing)
+		for targetPath := range outgoing {
+			backwardSets[targetPath][sourcePath] = struct{}{}
+		}
+	}
+
+	for _, targetPath := range publicPaths {
+		graph.Backward[targetPath] = sortedMembers(backwardSets[targetPath])
+	}
+	return graph
+}
+
+func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex, source *model.Note, target string, fragment string) {
+	if targets == nil || idx == nil || source == nil {
+		return
+	}
+	lookup := internalwikilink.LookupTarget(idx, source, strings.TrimSpace(target), strings.TrimSpace(fragment))
+	if lookup.Note == nil || lookup.Unpublished || lookup.MissingFragment {
+		return
+	}
+	if idx.Notes[lookup.Note.RelPath] == nil {
+		return
+	}
+	targets[lookup.Note.RelPath] = struct{}{}
+}
+
+func sourceLinkTarget(rawTarget string, fragment string) (string, string) {
+	rawTarget = strings.TrimSpace(rawTarget)
+	fragment = strings.TrimSpace(fragment)
+	if fragment != "" {
+		if target, ok := strings.CutSuffix(rawTarget, "#"+fragment); ok {
+			return strings.TrimSpace(target), fragment
+		}
+		return rawTarget, fragment
+	}
+	if target, parsedFragment, ok := strings.Cut(rawTarget, "#"); ok {
+		return strings.TrimSpace(target), strings.TrimSpace(parsedFragment)
+	}
+	return rawTarget, ""
 }
 
 func sortedPublicPaths(notes map[string]*model.Note) []string {

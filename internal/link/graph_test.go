@@ -12,6 +12,44 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func TestSourceGraphUsesOnlyDirectPublicSourceDeclarations(t *testing.T) {
+	t.Parallel()
+
+	host := testNote("notes/host.md", "notes/host")
+	target := testNote("notes/target.md", "notes/target", withHeadings(model.Heading{Level: 2, Text: "Good", ID: "good"}))
+	embedded := testNote("notes/embedded.md", "notes/embedded")
+	internal := testNote("notes/internal.md", "notes/internal")
+	private := testNote("private/secret.md", "private/secret", withAliases("Private"))
+
+	host.OutLinks = []model.LinkRef{
+		{RawTarget: "Target#Good", Fragment: "Good"},
+		{RawTarget: "Target#Good", Fragment: "Good"},
+		{RawTarget: "Internal#Missing", Fragment: "Missing"},
+		{RawTarget: "Private"},
+		{RawTarget: "Missing"},
+		{RawTarget: "Host"},
+	}
+	host.Embeds = []model.EmbedRef{
+		{Target: "Embedded"},
+		{Target: "Target", IsImage: true},
+	}
+	embedded.OutLinks = []model.LinkRef{{RawTarget: "Internal"}}
+
+	graph := BuildSourceGraph(buildIndex([]*model.Note{host, target, embedded, internal}, []*model.Note{private}))
+	if got, want := graph.Forward[host.RelPath], []string{embedded.RelPath, target.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source graph host forward = %#v, want direct link/embed targets %#v", got, want)
+	}
+	if got, want := graph.Forward[embedded.RelPath], []string{internal.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source graph embedded forward = %#v, want its own source edge %#v", got, want)
+	}
+	if got, want := graph.Backward[internal.RelPath], []string{embedded.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("source graph internal backward = %#v, want only embedded note as source %#v", got, want)
+	}
+	if _, ok := graph.Forward[private.RelPath]; ok {
+		t.Fatalf("source graph unexpectedly contains unpublished path %q", private.RelPath)
+	}
+}
+
 func TestBuildGraphBuildsForwardAndBackwardMaps(t *testing.T) {
 	t.Parallel()
 
