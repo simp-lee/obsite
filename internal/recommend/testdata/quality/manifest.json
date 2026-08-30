@@ -217,6 +217,220 @@
       }
     },
     {
+      "id": "cal-mixed-00",
+      "title": "Go pipeline 的取消邊界",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/00-go-pipeline.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "a61164a793cb98ea2c9431b479f95b86324e99c0b3454a3d632d80ce66b967f0",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Natural code-switching on cancellation, goroutine lifecycle, and channel ownership."
+      }
+    },
+    {
+      "id": "cal-mixed-01",
+      "title": "Backpressure 不等於增加 buffer",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/01-backpressure.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "934938ee95db34d55ed0a140606d172bb601c6585530e1209c2ca6e8659c33bc",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Distinct overload-contract and queue behavior article paired with pipeline lifecycle."
+      }
+    },
+    {
+      "id": "cal-mixed-02",
+      "title": "Kubernetes rollout runbook 要寫觀察點",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/02-rollout-runbook.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "1df4fcf07672f013cce8c8d91da1670c8f958e54cdcc18f131bef3695954cf66",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Substantive bilingual rollout observations and stop conditions."
+      }
+    },
+    {
+      "id": "cal-mixed-03",
+      "title": "SLO window 如何影響發布判斷",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/03-slo-window.md",
+      "buckets": [
+        "engineering",
+        "multi-topic"
+      ],
+      "sha256": "39e2f2e633a385c7736597a6b9cb54c8efbb4606d8b54a2fb014cd2ccf531a3f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Clear short/long window decisions meaningfully paired with rollout."
+      }
+    },
+    {
+      "id": "cal-mixed-04",
+      "title": "中英工程詞彙導航圖",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/04-bilingual-moc.md",
+      "buckets": [
+        "moc",
+        "multi-topic"
+      ],
+      "sha256": "33a4cb4ea70be57eab4c58e39295801335013ca894a80adc40c7489cd337dc72",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Substantive bilingual engineering MOC organized by reader context."
+      }
+    },
+    {
+      "id": "cal-mixed-05",
+      "title": "術語表要記錄 disagreement",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/05-terms-review.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "8df154927c36f5b5fea9963f52e179bbfc6e8569c6e0ca584556786d35d12622",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Corrected terminology-governance article using a genuine durability wording dispute."
+      }
+    },
+    {
+      "id": "cal-mixed-06",
+      "title": "用 brew ratio 排查手沖咖啡",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/06-coffee-ratio.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "66e50782c2c2c9e1fb963f88c699c4526c2dae3c013ed8d47c1f70438cb72296",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Detailed long-form brewing experiment with natural technical code-switching."
+      }
+    },
+    {
+      "id": "cal-mixed-07",
+      "title": "Cupping notes 如何避免品牌暗示",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/07-cupping-notes.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "195dba4326a03d774ae647d463d82f143c65a21457db1495fbef9f13d4c384ac",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Distinct blind sensory-evaluation companion to brewing controls."
+      }
+    },
+    {
+      "id": "cal-mixed-08",
+      "title": "Transit API 和站牌現場要一起驗證",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/08-transit-api.md",
+      "buckets": [
+        "no-link"
+      ],
+      "sha256": "2e405d9e8235003967712d4736099def46e40093446972b7a1273e49736b35e7",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Self-contained API-to-field journey validation with a natural printable workflow."
+      }
+    },
+    {
+      "id": "cal-mixed-09",
+      "title": "雙語地圖 label 的閱讀順序",
+      "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/mixed/09-map-labels.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "902dbdec752bae46101b27d1eac58ac14c3744f8b3541a22602bc084e4684c27",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Bilingual wayfinding hierarchy linked by subject, not duplicated prose."
+      }
+    },
+    {
       "id": "cal-zh-hans-00",
       "title": "从仲裁写入到故障恢复",
       "split": "calibration",
@@ -860,6 +1074,222 @@
         "reviewed": true,
         "reviewer": "pi-independent-reviewer-en",
         "notes": "Distinct acoustic-zoning article meaningfully paired with wayfinding."
+      }
+    },
+    {
+      "id": "hold-mixed-00",
+      "title": "Protobuf schema evolution 要看 wire compatibility",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/00-protobuf-evolution.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "4105520bbbf3bb298a140d441cc5326e11ed1afe2cbd3e8bb2d0e01a3ea5c156",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Natural wire-level schema evolution article with a version matrix."
+      }
+    },
+    {
+      "id": "hold-mixed-01",
+      "title": "Consumer contract 不只驗 schema",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/01-consumer-contract.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "12c9156c4220382552c6c7a3d42c2b0007f34555dfd406bdfa2cf944efde4f32",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Distinct behavioral compatibility article."
+      }
+    },
+    {
+      "id": "hold-mixed-02",
+      "title": "Edge cache purge incident 復盤",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/02-edge-cache-incident.md",
+      "buckets": [
+        "long-form",
+        "engineering"
+      ],
+      "sha256": "000f629cc940e381d3ae1a83e93ede5160b16bbfb88ccc573b118e84c9041ad5",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Long-form bilingual incident timeline with root causes and recovery drill."
+      }
+    },
+    {
+      "id": "hold-mixed-03",
+      "title": "Circuit breaker recovery 需要 probe budget",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/03-breaker-probes.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "36325c05e399442f4cee1b5f719d986364c55f1147b4ab8f448fd954ed101d2b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Controlled breaker recovery companion with substantive code-switching."
+      }
+    },
+    {
+      "id": "hold-mixed-04",
+      "title": "Cross-language documentation map",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/04-cross-language-moc.md",
+      "buckets": [
+        "moc",
+        "multi-topic"
+      ],
+      "sha256": "dea343fa511efa6fbba4b3dc4177189aff6ada1dd9f9d49ec5586b83ffb51e9f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Corrected cross-language MOC with accurate wire-format terminology."
+      }
+    },
+    {
+      "id": "hold-mixed-05",
+      "title": "翻譯 review 要看 semantic diff",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/05-translation-diff.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "e22cd47f92f26c7853483a2e0a15902b0fca67417a21b67efd3b26b75e9f6ec0",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Focused semantic translation review article with risk-based checks."
+      }
+    },
+    {
+      "id": "hold-mixed-06",
+      "title": "用 heart-rate zone 安排 easy run",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/06-heart-rate-run.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "ca863d94373db80eb5f23db8ac8212d106af1219bbf1035b06c82453864e71c3",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Natural mixed-language training guidance using effort and baseline evidence."
+      }
+    },
+    {
+      "id": "hold-mixed-07",
+      "title": "Recovery meal 不需要完美配方",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/07-recovery-meal.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "58229a6b6b440b033e9ee22e5ce2eae8530724ffa00ed766658bdada22b63a6b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Distinct recovery nutrition companion matched to training load."
+      }
+    },
+    {
+      "id": "hold-mixed-08",
+      "title": "Coworking space 的雙語標示測試",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/08-cowork-signs.md",
+      "buckets": [
+        "no-link",
+        "no-tag"
+      ],
+      "sha256": "a46e74d841ff24e6216c2f15a78de0afaa61a126a0848091d0cf0da03c5f9378",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Self-contained signage test with clarified QR live-booking wording."
+      }
+    },
+    {
+      "id": "hold-mixed-09",
+      "title": "Accessibility interview 要從具體任務開始",
+      "split": "holdout",
+      "language": "mixed",
+      "path": "holdout/mixed/09-access-interview.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "32dd1d2c43f718095dceef2ca7e813e4c818274a78686e0a45bb3ee8aaf41300",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-mixed",
+        "notes": "Task-based accessibility interview article paired with route observations."
       }
     },
     {
