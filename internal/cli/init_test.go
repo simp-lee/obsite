@@ -63,6 +63,7 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 		"pagefindVersion: 1.5.2",
 		"pagination:",
 		"pageSize: 20",
+		"# related uses build-time dynamic TF-IDF cosine plus direct link/tag signals. count must be 1..20.",
 		"related:",
 		"count: 5",
 		"rss:",
@@ -122,6 +123,28 @@ func TestInitCommandWritesCommentedConfigTemplate(t *testing.T) {
 	}
 	if cfg.Timeline.Enabled || cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
 		t.Fatalf("cfg.Timeline = %#v, want disabled timeline defaults", cfg.Timeline)
+	}
+}
+
+func TestRelatedDocumentationContract(t *testing.T) {
+	t.Parallel()
+
+	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []string{string(readme), initConfigTemplate} {
+		if !strings.Contains(content, "dynamic TF-IDF") || !strings.Contains(content, "link") || !strings.Contains(content, "tag") {
+			t.Fatalf("related documentation is missing TF-IDF/link/tag contract")
+		}
+		if !strings.Contains(content, "1..20") {
+			t.Fatalf("related documentation is missing count range")
+		}
+		for _, forbidden := range []string{"BM25", "online service", "artificial intelligence"} {
+			if strings.Contains(content, forbidden) {
+				t.Fatalf("related documentation unexpectedly contains %q", forbidden)
+			}
+		}
 	}
 }
 

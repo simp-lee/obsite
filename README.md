@@ -8,7 +8,7 @@ Obsite is a static site generator that turns an [Obsidian](https://obsidian.md/)
 - **Incremental builds** — content-hash cache rebuilds only changed pages
 - **Full-text search** — optional [Pagefind](https://pagefind.app/) integration
 - **SEO** — canonical URLs, Open Graph, Twitter Cards, JSON-LD, sitemap, robots.txt, RSS
-- **Related articles** — BM25 text similarity with tag and wikilink boosting
+- **Related articles** — build-time dynamic TF-IDF cosine similarity with direct link and tag signals
 - **Live preview** — local server with file watching and live reload
 - **Sidebar navigation** — collapsible file-tree sidebar
 - **Link popovers** — async internal-link previews
@@ -148,7 +148,7 @@ popover:
 # Related articles
 related:
   enabled: false
-  count: 5                # Recommendations per page
+  count: 5                # Recommendations per page (1..20)
 
 # RSS feed
 rss:
@@ -166,6 +166,8 @@ themes:
     root: themes/feature  # Relative to obsite.yaml unless absolute
 defaultTheme: feature     # Optional fallback when --theme is omitted
 ```
+
+When enabled, related articles are ranked during the build with site-dynamic TF-IDF cosine similarity plus direct source-link and normalized-tag signals. `related.count` must be between `1` and `20`; omitting it uses `5`. The generated site remains fully static.
 
 Place an optional global override stylesheet at `<vault>/custom.css` to load it after the generated site stylesheet. That vault-root file is the only auto-detected `custom.css` location.
 
@@ -234,10 +236,10 @@ Obsite processes a vault through these phases:
 
 1. **Scan** — Walk the vault, discover Markdown files and attachments
 2. **Frontmatter** — Parse YAML frontmatter, partition public/unpublished notes
-3. **Index** — Build the vault index with slugs, aliases, and tags
-4. **Render (Pass 1)** — Convert Markdown to HTML, resolve wikilinks, discover assets
-5. **Link Graph & Related** — Build backlinks graph, compute BM25-based recommendations
-6. **Render (Pass 2)** — Apply templates with HTML minification, write popover payloads
+3. **Source index** — Build slugs, aliases, tags, direct links, and optional related-article semantic fields
+4. **Related ranking** — Before HTML rendering, compute dynamic TF-IDF cosine features and combine qualified content with source-only link and tag signals
+5. **Markdown render** — Convert Markdown to HTML, expand embeds, resolve render-time links, and discover assets
+6. **Pages & graph** — Build the render-expanded backlinks graph and apply templates with related cards
 7. **Assets** — Emit CSS and runtime assets, copy vault resources with hash-based deduplication
 8. **SEO** — Generate `robots.txt`, `sitemap.xml`, `index.xml`, JSON-LD
 9. **Search** — Run Pagefind indexing (when enabled)

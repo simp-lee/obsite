@@ -50,7 +50,7 @@ const initConfigTemplate = "" +
 	"popover:\n" +
 	"  enabled: false\n" +
 	"\n" +
-	"# related enables related-article blocks on note pages.\n" +
+	"# related uses build-time dynamic TF-IDF cosine plus direct link/tag signals. count must be 1..20.\n" +
 	"related:\n" +
 	"  enabled: false\n" +
 	"  count: 5\n" +

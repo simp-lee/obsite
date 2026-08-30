@@ -151,6 +151,35 @@ func TestRelatedSummaryLimit(t *testing.T) {
 	}
 }
 
+func TestQualityFixturesAreNotPublished(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/public.md", "---\ntitle: Public\n---\n# Public\n\nOrdinary published note.\n")
+	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range [][]byte{[]byte("testdata/quality"), []byte("Rebuilding State from an Event Log"), []byte("cal-zh-hans-00")} {
+		err := filepath.Walk(outputPath, func(currentPath string, info os.FileInfo, walkErr error) error {
+			if walkErr != nil || info.IsDir() {
+				return walkErr
+			}
+			data, err := os.ReadFile(currentPath)
+			if err != nil {
+				return err
+			}
+			if bytes.Contains(data, marker) {
+				return fmt.Errorf("quality marker %q published in %s", marker, currentPath)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestRelatedFullAndIncrementalIdentity(t *testing.T) {
 	t.Parallel()
 
