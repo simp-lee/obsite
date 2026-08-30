@@ -1751,6 +1751,12 @@
       "language": "zh-hans",
       "path": "holdout/labels-zh-hans.json",
       "sha256": "673af30500a24e79faf563cfea5c8c9b6b7e967256366720e0d76b02b7c9b44c"
+    },
+    {
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/labels-zh-hant.json",
+      "sha256": "9a348098dcb841c6b1e5d45a9694c3f83cda154a73d21818b23d74dcddef5a8e"
     }
   ]
 }
