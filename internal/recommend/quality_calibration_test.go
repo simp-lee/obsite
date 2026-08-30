@@ -66,10 +66,19 @@ func TestCalibrationJudgments(t *testing.T) {
 	}
 	if calibrationSets == 4 {
 		t.Run("complete", func(t *testing.T) {
+			totalJudgments := 0
 			for _, reference := range manifest.LabelSets {
-				if reference.Split == "holdout" {
-					t.Fatalf("holdout label set %s was opened before calibration freeze", reference.Language)
+				if reference.Split != "calibration" {
+					continue
 				}
+				set, err := loadQualityJudgmentSet(reference)
+				if err != nil {
+					t.Fatal(err)
+				}
+				totalJudgments += len(set.Sources)
+			}
+			if totalJudgments != 40 {
+				t.Fatalf("complete calibration judgments = %d, want 40", totalJudgments)
 			}
 		})
 	}

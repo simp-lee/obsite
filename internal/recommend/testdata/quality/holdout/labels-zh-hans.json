@@ -1,0 +1,779 @@
+{
+  "split": "holdout",
+  "language": "zh-hans",
+  "poolKind": "holdout-active",
+  "sources": [
+    {
+      "sourceId": "hold-zh-hans-00",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-01"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-01",
+        "hold-zh-hans-02",
+        "hold-zh-hans-03",
+        "hold-zh-hans-09",
+        "hold-zh-hant-00",
+        "hold-zh-hant-02"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-00",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-01",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-00",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-01",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-00"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-00",
+        "hold-zh-hans-02",
+        "hold-zh-hans-03"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-00",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-00",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-02",
+          "grade": 1,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-02",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-02",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-03"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-03",
+        "hold-zh-hans-01",
+        "hold-zh-hans-00",
+        "hold-zh-hans-04",
+        "hold-en-02",
+        "hold-mixed-02"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-02",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-05",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-02",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-01",
+          "grade": 1,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-03",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-04",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-02",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-03",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-02"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-02",
+        "hold-zh-hans-01",
+        "hold-zh-hans-00",
+        "hold-zh-hans-09",
+        "hold-zh-hant-01"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-02",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-05",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-02",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-02",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-03",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-04",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-05"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-05",
+        "hold-zh-hans-02",
+        "hold-en-04",
+        "hold-mixed-04",
+        "hold-zh-hant-04"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-05",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-05",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-04"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-04",
+        "hold-zh-hans-07"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-04",
+          "grade": 2,
+          "discovery": [
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "search",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-04",
+          "grade": 1,
+          "discovery": [
+            "search",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-05",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-06",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-07"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-07",
+        "hold-mixed-06"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-mixed-06",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-07",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-07",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-06"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-06",
+        "hold-zh-hans-05",
+        "hold-zh-hans-09",
+        "hold-zh-hant-02"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-06",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-05",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-06",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-08",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-09"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-09"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-08",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-09",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-08",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-09",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-09",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-09",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "hold-zh-hans-09",
+      "none": false,
+      "knownRelevant": [
+        "hold-zh-hans-08"
+      ],
+      "productionTop10": [
+        "hold-zh-hans-08",
+        "hold-zh-hans-03",
+        "hold-zh-hans-07",
+        "hold-zh-hans-00"
+      ],
+      "candidates": [
+        {
+          "candidateId": "hold-en-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-en-09",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-mixed-09",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hans-08",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "hold-zh-hant-09",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        }
+      ]
+    }
+  ]
+}
