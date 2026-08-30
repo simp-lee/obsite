@@ -7,10 +7,10 @@ require gopkg.in/yaml.v3 v3.0.1
 require (
 	github.com/dop251/goja v0.0.0-20260311135729-065cd970411c
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/go-ego/gse v1.0.2
 	github.com/mangoumbrella/goldmark-figure v1.4.0
 	github.com/spf13/cobra v1.10.2
 	github.com/tdewolff/minify/v2 v2.24.12
+	github.com/vcaesar/cedar v0.30.0
 	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
 	go.abhg.dev/goldmark/hashtag v0.4.0
@@ -30,6 +30,5 @@ require (
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/tdewolff/parse/v2 v2.8.12 // indirect
-	github.com/vcaesar/cedar v0.30.0 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )

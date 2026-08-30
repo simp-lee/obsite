@@ -6,17 +6,12 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"sync"
 	"testing"
 
-	"github.com/go-ego/gse"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-const (
-	trimpathTokenizerChildEnv = "OBSITE_TRIMPATH_TOKENIZER_CHILD"
-	lazyTokenizerChildEnv     = "OBSITE_LAZY_TOKENIZER_CHILD"
-)
+const trimpathTokenizerChildEnv = "OBSITE_TRIMPATH_TOKENIZER_CHILD"
 
 func TestTokenizeSupportsEnglishCJKAndMixedText(t *testing.T) {
 	t.Parallel()
@@ -49,8 +44,16 @@ func TestTokenizeSupportsEnglishCJKAndMixedText(t *testing.T) {
 	if !containsToken(mixed, "static") || !containsToken(mixed, "generator") {
 		t.Fatalf("Tokenize(mixed) = %#v, want Latin whitespace tokens preserved", mixed)
 	}
-	if !containsCJKToken(mixed) {
+	if !containsHanToken(mixed) {
 		t.Fatalf("Tokenize(mixed) = %#v, want at least one CJK token", mixed)
+	}
+
+	nonHan, err := Tokenize("かな カナ 한글")
+	if err != nil {
+		t.Fatalf("Tokenize(non-Han scripts) error = %v", err)
+	}
+	if want := []string{"かな", "カナ", "한글"}; !reflect.DeepEqual(nonHan, want) {
+		t.Fatalf("Tokenize(non-Han scripts) = %#v, want non-Han tokens %#v", nonHan, want)
 	}
 }
 
@@ -74,7 +77,7 @@ func TestTokenizeSupportsEmbeddedDictionaryUnderTrimpath(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Tokenize(cjk) error = %v", err)
 		}
-		if !containsCJKToken(cjk) {
+		if !containsHanToken(cjk) {
 			t.Fatalf("Tokenize(cjk) = %#v, want at least one CJK token", cjk)
 		}
 		return
@@ -92,66 +95,6 @@ func TestTokenizeSupportsEmbeddedDictionaryUnderTrimpath(t *testing.T) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("go test -trimpath tokenizer regression failed: %v\n%s", err, output)
-	}
-}
-
-func TestTokenizeDefersDictionaryLoadingForLatinOnlyInput(t *testing.T) {
-	if os.Getenv(lazyTokenizerChildEnv) == "1" {
-		defaultSegmenterOnce = sync.Once{}
-		defaultSegmenter = gse.Segmenter{}
-		defaultSegmenterErr = nil
-
-		originalLoader := loadEmbeddedSegmenter
-		defer func() {
-			loadEmbeddedSegmenter = originalLoader
-		}()
-
-		loadCalls := 0
-		loadEmbeddedSegmenter = func(segmenter *gse.Segmenter) error {
-			loadCalls++
-			segmenter.SkipLog = true
-			return segmenter.LoadDictEmbed()
-		}
-
-		latin, err := Tokenize("Static site generator release pipeline")
-		if err != nil {
-			t.Fatalf("Tokenize(latin) error = %v", err)
-		}
-		if !reflect.DeepEqual(latin, []string{"static", "site", "generator", "release", "pipeline"}) {
-			t.Fatalf("Tokenize(latin) = %#v, want Latin tokens without gse dependency", latin)
-		}
-		if loadCalls != 0 {
-			t.Fatalf("loadEmbeddedSegmenter calls after Latin-only Tokenize = %d, want %d", loadCalls, 0)
-		}
-
-		if _, err := Tokenize("你好世界"); err != nil {
-			t.Fatalf("Tokenize(cjk) error = %v", err)
-		}
-		if loadCalls != 1 {
-			t.Fatalf("loadEmbeddedSegmenter calls after first CJK Tokenize = %d, want %d", loadCalls, 1)
-		}
-
-		if _, err := Tokenize("静态站点 生成器"); err != nil {
-			t.Fatalf("Tokenize(second cjk) error = %v", err)
-		}
-		if loadCalls != 1 {
-			t.Fatalf("loadEmbeddedSegmenter calls after repeated CJK Tokenize = %d, want %d", loadCalls, 1)
-		}
-		return
-	}
-
-	workingDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("os.Getwd() error = %v", err)
-	}
-
-	cmd := exec.Command("go", "test", ".", "-run", "^TestTokenizeDefersDictionaryLoadingForLatinOnlyInput$", "-count=1")
-	cmd.Dir = workingDir
-	cmd.Env = append(os.Environ(), lazyTokenizerChildEnv+"=1")
-
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("go test tokenizer lazy-load regression failed: %v\n%s", err, output)
 	}
 }
 
@@ -710,10 +653,10 @@ func relatedByPathRelPaths(rankedByPath map[string][]RankedNote) map[string][]st
 	return paths
 }
 
-func containsCJKToken(tokens []string) bool {
+func containsHanToken(tokens []string) bool {
 	for _, token := range tokens {
 		for _, r := range token {
-			if !isCJKRune(r) {
+			if !isHanRune(r) {
 				continue
 			}
 			return true

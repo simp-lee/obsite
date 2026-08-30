@@ -1,27 +1,15 @@
 package recommend
 
 import (
-	"fmt"
 	"strings"
-	"sync"
 	"unicode"
 
-	"github.com/go-ego/gse"
-)
-
-var (
-	defaultSegmenterOnce  sync.Once
-	defaultSegmenter      gse.Segmenter
-	defaultSegmenterErr   error
-	loadEmbeddedSegmenter = func(segmenter *gse.Segmenter) error {
-		segmenter.SkipLog = true
-		return segmenter.LoadDictEmbed()
-	}
+	"github.com/simp-lee/obsite/internal/recommend/chinese"
 )
 
 // Tokenize splits mixed-language note content into normalized terms.
-// CJK spans are segmented with gse, while non-CJK spans are split only on
-// whitespace so engineering terms like node.js or path/to/file stay intact.
+// Han spans are segmented with the embedded Chinese segmenter, while non-Han
+// spans are split only on whitespace so engineering terms stay intact.
 func Tokenize(text string) ([]string, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, nil
@@ -29,27 +17,27 @@ func Tokenize(text string) ([]string, error) {
 
 	tokens := make([]string, 0, 32)
 	var latin strings.Builder
-	var cjk strings.Builder
-	var segmenter *gse.Segmenter
+	var han strings.Builder
+	var segmenter *chinese.Segmenter
 
 	flushLatin := func() {
 		appendNormalizedToken(&tokens, latin.String())
 		latin.Reset()
 	}
-	ensureSegmenter := func() (*gse.Segmenter, error) {
+	ensureSegmenter := func() (*chinese.Segmenter, error) {
 		if segmenter != nil {
 			return segmenter, nil
 		}
 
-		loaded, err := defaultTokenizerSegmenter()
+		loaded, err := chinese.Default()
 		if err != nil {
 			return nil, err
 		}
 		segmenter = loaded
 		return segmenter, nil
 	}
-	flushCJK := func() error {
-		if cjk.Len() == 0 {
+	flushHan := func() error {
+		if han.Len() == 0 {
 			return nil
 		}
 
@@ -57,48 +45,37 @@ func Tokenize(text string) ([]string, error) {
 		if err != nil {
 			return err
 		}
-		for _, token := range loaded.Cut(cjk.String(), true) {
+		for _, token := range loaded.Cut(han.String(), true) {
 			appendNormalizedToken(&tokens, token)
 		}
-		cjk.Reset()
+		han.Reset()
 		return nil
 	}
 
 	for _, r := range text {
 		switch {
-		case isCJKRune(r):
+		case isHanRune(r):
 			flushLatin()
-			cjk.WriteRune(r)
+			han.WriteRune(r)
 		case unicode.IsSpace(r):
-			if err := flushCJK(); err != nil {
+			if err := flushHan(); err != nil {
 				return nil, err
 			}
 			flushLatin()
 		default:
-			if err := flushCJK(); err != nil {
+			if err := flushHan(); err != nil {
 				return nil, err
 			}
 			latin.WriteRune(unicode.ToLower(r))
 		}
 	}
 
-	if err := flushCJK(); err != nil {
+	if err := flushHan(); err != nil {
 		return nil, err
 	}
 	flushLatin()
 
 	return tokens, nil
-}
-
-func defaultTokenizerSegmenter() (*gse.Segmenter, error) {
-	defaultSegmenterOnce.Do(func() {
-		defaultSegmenterErr = loadEmbeddedSegmenter(&defaultSegmenter)
-	})
-	if defaultSegmenterErr != nil {
-		return nil, fmt.Errorf("load gse dictionary: %w", defaultSegmenterErr)
-	}
-
-	return &defaultSegmenter, nil
 }
 
 func appendNormalizedToken(dst *[]string, token string) {
@@ -108,7 +85,7 @@ func appendNormalizedToken(dst *[]string, token string) {
 	}
 
 	for _, r := range trimmed {
-		if isWordRune(r) || isCJKRune(r) {
+		if isWordRune(r) || isHanRune(r) {
 			*dst = append(*dst, trimmed)
 			return
 		}
@@ -116,18 +93,13 @@ func appendNormalizedToken(dst *[]string, token string) {
 }
 
 func isWordRune(r rune) bool {
-	if isCJKRune(r) {
+	if isHanRune(r) {
 		return false
 	}
 
 	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
-func isCJKRune(r rune) bool {
-	return unicode.In(r,
-		unicode.Han,
-		unicode.Hiragana,
-		unicode.Katakana,
-		unicode.Hangul,
-	)
+func isHanRune(r rune) bool {
+	return unicode.Is(unicode.Han, r)
 }
