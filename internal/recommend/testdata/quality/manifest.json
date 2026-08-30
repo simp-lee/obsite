@@ -2,6 +2,221 @@
   "schemaVersion": 1,
   "sources": [
     {
+      "id": "cal-en-00",
+      "title": "Rebuilding State from an Event Log",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/00-event-log.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "3b1fb144cce11f44314ecada53d554939083df0b015c916a7b08e5460a4e4b56",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Focused and natural treatment of replay boundaries, projection recovery, and reconciliation."
+      }
+    },
+    {
+      "id": "cal-en-01",
+      "title": "A Transactional Outbox Has a Cleanup Cost",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/01-outbox.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "2f0ea887260a2dce3025a639f93b04abe9df1eb0ba174654f89e8e0b3c77f006",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Distinct outbox article covering identity, duplicate delivery, and retention."
+      }
+    },
+    {
+      "id": "cal-en-02",
+      "title": "Load Tests Need a Traffic Shape",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/02-load-shape.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "d7c0d7a67f57e47dbab79821353cda753e85db52307b0d7d19f7acd84f160cbc",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Practical traffic-modeling article with explicit failure criteria."
+      }
+    },
+    {
+      "id": "cal-en-03",
+      "title": "Preventing a Cache Miss from Becoming a Stampede",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/03-cache-collapse.md",
+      "buckets": [
+        "engineering",
+        "multi-topic"
+      ],
+      "sha256": "213e08f1fd879f9bb05eeee9ee73aff2952037beaddcb466cd9f2fb094adfe96",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Coherent cache-stampede analysis paired with load-test design."
+      }
+    },
+    {
+      "id": "cal-en-04",
+      "title": "Engineering Reliability Map",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/04-engineering-moc.md",
+      "buckets": [
+        "moc",
+        "multi-topic"
+      ],
+      "sha256": "bff09335c5f42e9b74802bf9dab91422a703872a3ed173ea105e1800e8fc8617",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Functional explanatory MOC rather than a mechanical link list."
+      }
+    },
+    {
+      "id": "cal-en-05",
+      "title": "Decision Records Should Capture Rejected Options",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/05-decision-records.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "1805dceb3c94f385dec5c81f41d11c21b2434f65f7ee24c4dc8b45b3be881122",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Clear decision-history article that complements navigation governance."
+      }
+    },
+    {
+      "id": "cal-en-06",
+      "title": "Reading Soil Moisture Before Watering",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/06-soil-watering.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "764fda50f04136bacee82546348bd24a7eab4218509a3ac14994313f39cb1ef5",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Natural long-form gardening guidance built around observation and diagnosis."
+      }
+    },
+    {
+      "id": "cal-en-07",
+      "title": "Seedlings Lean for More Than One Reason",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/07-seedling-light.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "9d8dc429502ae705576b39e2cc97979744824cd43375b1574ed6308a9fccfe88",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Concise differential diagnosis distinct from watering advice."
+      }
+    },
+    {
+      "id": "cal-en-08",
+      "title": "Planning an Accessible Museum Visit",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/08-museum-route.md",
+      "buckets": [
+        "no-link",
+        "no-tag"
+      ],
+      "sha256": "ce9f836ac05d444334ea11b5b1ba8b3617f8d0e12fecbe5e72c2b8cafa6da32b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Self-contained accessible route planning article with no fixture commentary."
+      }
+    },
+    {
+      "id": "cal-en-09",
+      "title": "Taking an Audio Walk Without Losing the Street",
+      "split": "calibration",
+      "language": "en",
+      "path": "calibration/en/09-audio-walk.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "e0a566a8c571b888267a5826d8a9a1469bb9d5525d8c431972831e4c4af64805",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Distinct public-space sound observation method."
+      }
+    },
+    {
       "id": "cal-zh-hans-00",
       "title": "从仲裁写入到故障恢复",
       "split": "calibration",
@@ -430,6 +645,221 @@
         "reviewed": true,
         "reviewer": "pi-independent-reviewer-zh-hant",
         "notes": "Field-weather article meaningfully related to, not duplicating, the cycling plan."
+      }
+    },
+    {
+      "id": "hold-en-00",
+      "title": "An Idempotency Ledger Needs an Outcome",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/00-idempotency-ledger.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "ace1f07a279a79e9edffd90e71e6d19d8545e87d80ab4562b833ae7a19558983",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Focused operation-identity article with outcome and reconciliation boundaries."
+      }
+    },
+    {
+      "id": "hold-en-01",
+      "title": "Ordering Events per Aggregate",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/01-message-order.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "07f70f0f361cd5403a339720dc744b73dd819b64e661bbfaa77adbc0d4ee9cdf",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Distinct aggregate-version and bounded-gap treatment."
+      }
+    },
+    {
+      "id": "hold-en-02",
+      "title": "A Queue Can Hide Saturation Until It Is Too Late",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/02-queue-saturation.md",
+      "buckets": [
+        "long-form",
+        "engineering"
+      ],
+      "sha256": "9f9b8714e7360877534923cac8f926bb845f0ee4a4ff967685c951167b91cbc0",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Effective long-form incident narrative with overload and recovery evidence."
+      }
+    },
+    {
+      "id": "hold-en-03",
+      "title": "Concurrency Limits Should Follow Service Time",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/03-adaptive-concurrency.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "0aa6e1568ab66afa0d904ae8838f32393e1f5add1339b73f0aefc84cace3a5be",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Controller-oriented companion to the saturation incident."
+      }
+    },
+    {
+      "id": "hold-en-04",
+      "title": "Documentation Deprecation Map",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/04-deprecation-moc.md",
+      "buckets": [
+        "moc"
+      ],
+      "sha256": "d1bc667bb0e58b5d3ce0da8c4f1086f891432b17c2b6bfa5de96267bd2a40ac2",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Purposeful transition-stage MOC with concrete retirement guidance."
+      }
+    },
+    {
+      "id": "hold-en-05",
+      "title": "Runbooks Need an Executable Owner",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/05-runbook-owner.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "56acc9dcb3a5ae57f0ad6d6f4ced0620ec7158dafed3c5db8dfce82413e9d4cb",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Operational ownership article grounded in executable review."
+      }
+    },
+    {
+      "id": "hold-en-06",
+      "title": "Balancing Moisture in a Small Compost Bin",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/06-compost-moisture.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "e2c8b8708628035be9ac4330c25648bb3f843e7474d170a33e03ffc1bcb47cb6",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Natural long-form troubleshooting process across layers, inputs, and harvesting."
+      }
+    },
+    {
+      "id": "hold-en-07",
+      "title": "Herbs Share a Balcony, Not a Watering Schedule",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/07-balcony-herbs.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "75b14889283520e1e0b85c80890254218b549fe6726c3577a6fe19532c5ba89b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Container-specific herb guidance distinct from compost diagnosis."
+      }
+    },
+    {
+      "id": "hold-en-08",
+      "title": "Testing Wayfinding in a Public Library",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/08-library-wayfinding.md",
+      "buckets": [
+        "no-link",
+        "no-tag"
+      ],
+      "sha256": "ff1a1cdf7e87f6818824ec5aad5d01c760b72cf8b3ce4b63cb4a520ba634ae70",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Focused self-contained observational method for navigation decisions."
+      }
+    },
+    {
+      "id": "hold-en-09",
+      "title": "Quiet Spaces Need Audible Boundaries",
+      "split": "holdout",
+      "language": "en",
+      "path": "holdout/en/09-quiet-library.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "01c5dba159b59856daf59bad300326415d2ae892b27e2b9cef9c7dec5e84aa69",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-en",
+        "notes": "Distinct acoustic-zoning article meaningfully paired with wayfinding."
       }
     },
     {
