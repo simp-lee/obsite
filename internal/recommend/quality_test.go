@@ -145,6 +145,39 @@ func TestQualityAssetSchema(t *testing.T) {
 	}
 }
 
+func TestQualityCorpus(t *testing.T) {
+	manifest, err := loadQualityManifest(qualityAssetRoot)
+	if err != nil {
+		t.Fatalf("loadQualityManifest() error = %v", err)
+	}
+	if err := validateQualityManifest(qualityAssetRoot, manifest); err != nil {
+		t.Fatalf("validateQualityManifest() error = %v", err)
+	}
+
+	languageCounts := make(map[string]int)
+	for _, source := range manifest.Sources {
+		languageCounts[source.Language]++
+	}
+	for _, language := range []string{"zh-hans", "zh-hant", "en", "mixed"} {
+		if languageCounts[language] == 0 {
+			continue
+		}
+		language := language
+		t.Run(language, func(t *testing.T) {
+			validateQualityCorpusLanguage(t, manifest, language)
+		})
+	}
+	if len(manifest.Sources) >= 80 {
+		t.Run("complete", func(t *testing.T) {
+			for _, language := range []string{"zh-hans", "zh-hant", "en", "mixed"} {
+				if languageCounts[language] < 20 {
+					t.Fatalf("language %s has %d sources, want at least 20", language, languageCounts[language])
+				}
+			}
+		})
+	}
+}
+
 func TestQualityMetricFormulas(t *testing.T) {
 	judgment := qualitySourceJudgment{
 		SourceID:      "source",
@@ -175,6 +208,63 @@ func TestQualityMetricFormulas(t *testing.T) {
 		Candidates: []qualityCandidateJudgment{{CandidateID: "b", Grade: 0, Discovery: []string{"search"}}},
 	}); err == nil {
 		t.Fatal("computeQualityMetrics(zero relevant denominator) error = nil")
+	}
+}
+
+func validateQualityCorpusLanguage(t *testing.T, manifest qualityManifest, language string) {
+	t.Helper()
+
+	splitCounts := map[string]int{"calibration": 0, "holdout": 0}
+	bucketsBySplit := map[string]map[string]bool{
+		"calibration": {},
+		"holdout":     {},
+	}
+	hashes := make(map[string]string)
+	for _, source := range manifest.Sources {
+		if source.Language != language {
+			continue
+		}
+		splitCounts[source.Split]++
+		for _, bucket := range source.Buckets {
+			bucketsBySplit[source.Split][bucket] = true
+		}
+		if previousID, duplicate := hashes[source.SHA256]; duplicate {
+			t.Errorf("sources %s and %s have identical content hash %s", previousID, source.ID, source.SHA256)
+		}
+		hashes[source.SHA256] = source.ID
+
+		assetPath, err := qualityAssetPath(qualityAssetRoot, source.Path)
+		if err != nil {
+			t.Errorf("qualityAssetPath(%s) error = %v", source.ID, err)
+			continue
+		}
+		data, err := os.ReadFile(assetPath)
+		if err != nil {
+			t.Errorf("ReadFile(%s) error = %v", source.ID, err)
+			continue
+		}
+		content := string(data)
+		if len(data) < 300 || !strings.Contains(content, "# "+source.Title) || !strings.Contains(content, "\n## ") {
+			t.Errorf("source %s lacks natural Markdown article structure", source.ID)
+		}
+		if containsString(source.Buckets, "no-tag") && strings.Contains(content, "\ntags:") {
+			t.Errorf("source %s is marked no-tag but contains tags frontmatter", source.ID)
+		}
+		if containsString(source.Buckets, "no-link") && strings.Contains(content, "[[") {
+			t.Errorf("source %s is marked no-link but contains a wikilink", source.ID)
+		}
+	}
+
+	requiredBuckets := []string{"long-form", "multi-topic", "no-tag", "no-link", "moc", "engineering"}
+	for split, count := range splitCounts {
+		if count < 10 {
+			t.Errorf("%s/%s source count = %d, want at least 10", split, language, count)
+		}
+		for _, bucket := range requiredBuckets {
+			if !bucketsBySplit[split][bucket] {
+				t.Errorf("%s/%s lacks required %s source", split, language, bucket)
+			}
+		}
 	}
 }
 

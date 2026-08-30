@@ -1,5 +1,438 @@
 {
   "schemaVersion": 1,
-  "sources": [],
+  "sources": [
+    {
+      "id": "cal-zh-hans-00",
+      "title": "从仲裁写入到故障恢复",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/00-quorum.md",
+      "buckets": [
+        "long-form",
+        "engineering"
+      ],
+      "sha256": "396f409217203657b923d24f4d4e200f68ef3ed442557aef62c3b2f8e4b1a27d",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Clear distributed-storage analysis with concrete failure scenarios."
+      }
+    },
+    {
+      "id": "cal-zh-hans-01",
+      "title": "多租户数据库的模式边界",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/01-schema.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "faab10762769951c7c58741916573baa13917a534b23c1935c83fefaaa95f92c",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Distinct schema and migration article with explicit isolation trade-offs."
+      }
+    },
+    {
+      "id": "cal-zh-hans-02",
+      "title": "重试预算不是重试次数",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/02-retry.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "afb8178c3537749ee3eff91ebe44a787a4d5d02ab945c5ce3cee26a48d2f5e00",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Natural reliability guidance on deadlines, idempotency, and load amplification."
+      }
+    },
+    {
+      "id": "cal-zh-hans-03",
+      "title": "从告警到可行动的观测",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/03-observability.md",
+      "buckets": [
+        "multi-topic",
+        "engineering"
+      ],
+      "sha256": "84268ce302c6206d0266f6ca910d712168f0e7e1a0150feaeb6bef4da20f2669",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Actionable observability discussion that complements retry control without duplication."
+      }
+    },
+    {
+      "id": "cal-zh-hans-04",
+      "title": "工程知识花园导航",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/04-garden-moc.md",
+      "buckets": [
+        "moc",
+        "multi-topic"
+      ],
+      "sha256": "2ac7de1acf08d7ae2a1fe0690fd9810d0ea99953f33059df5a85c3a88f6c369f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Genuine explanatory MOC with grouped navigation paths."
+      }
+    },
+    {
+      "id": "cal-zh-hans-05",
+      "title": "静态站点中的来源链接",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/05-static-links.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "e531878910a7fefaaf9b34637638f8ed2add4ecb7fbb5934ee14473d1d78035b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Coherent source-versus-render relationship article with auditable ownership."
+      }
+    },
+    {
+      "id": "cal-zh-hans-06",
+      "title": "用气味与时间照看天然酵种",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/06-fermentation.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "5923cc1aa516046ca223b601e4779d39f2951643a28f0c9738f20db5423ca2ca",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Natural long-form fermentation article spanning observation, safety, and planning."
+      }
+    },
+    {
+      "id": "cal-zh-hans-07",
+      "title": "小厨房的批次备餐",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/07-kitchen.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "afc252b5018911e02cec212fd895bf452a481d187b14bc20ece306142b3becab",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Focused batch-cooking article with practical equipment and storage constraints."
+      }
+    },
+    {
+      "id": "cal-zh-hans-08",
+      "title": "用十分钟观察一条街",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/08-street.md",
+      "buckets": [
+        "no-link"
+      ],
+      "sha256": "04371da984fa6aa9eee75d9d54ae3076cd44e3440489ae1c72ce1583973dcbc4",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Concrete link-free urban observation method that avoids unsupported causal claims."
+      }
+    },
+    {
+      "id": "cal-zh-hans-09",
+      "title": "雨天步行路线的细节",
+      "split": "calibration",
+      "language": "zh-hans",
+      "path": "calibration/zh-hans/09-rainwalk.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "83d1b53d5b99ad01c9495ea0cddb2a902656699c3c1ae406850c063b2686bc3c",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Distinct weather-route article with a useful relationship to street observation."
+      }
+    },
+    {
+      "id": "hold-zh-hans-00",
+      "title": "复制延迟如何改变产品语义",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/00-replication-lag.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "b305cf4dac9c22c4b0bfbdd6d227dfcbcbe0c24b8f2236423e86a4e1e618f7c8",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Clearly separates product consistency semantics from raw replication measurements."
+      }
+    },
+    {
+      "id": "hold-zh-hans-01",
+      "title": "一致性故障的证据链",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/01-consistency-debug.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "ec7d6400e376d79deb9c3bd57fd1d6e421406c8c656854e120e24213989dfbeb",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Evidence-driven diagnosis article distinct from the replication-lag mechanism."
+      }
+    },
+    {
+      "id": "hold-zh-hans-02",
+      "title": "值班交接要传递决策状态",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/02-incident-handoff.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "e4812d11f235b747a999e0d373f1fe419bcacd78ffde85c83e95ce344bda4a3f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Specific incident handoff practices with clear decision-state boundaries."
+      }
+    },
+    {
+      "id": "hold-zh-hans-03",
+      "title": "告警疲劳不是个人意志问题",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/03-alert-fatigue.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "fd78fabf49dec0a2cd0fa25d77e30e7973ec0a38a4056155e1c4e8dde995173f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Natural signal-design article related to, but not duplicating, incident handoff."
+      }
+    },
+    {
+      "id": "hold-zh-hans-04",
+      "title": "导航页也需要编辑预算",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/04-moc-maintenance.md",
+      "buckets": [
+        "moc"
+      ],
+      "sha256": "49237321ac717128bd6214eed5f3b8284e4f3f470c166b1bc14070154bb93af7",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Editorial MOC-maintenance guidance with a coherent alias-audit transition."
+      }
+    },
+    {
+      "id": "hold-zh-hans-05",
+      "title": "笔记改名后的别名与断链治理",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/05-source-links.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "63526c76e01b63a53b8c1656344ca3719a1fd5dc1fbb7a275dc5f7e42c146859",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Rewritten alias and broken-link governance article, distinct from calibration source graphs."
+      }
+    },
+    {
+      "id": "hold-zh-hans-06",
+      "title": "用面团温度安排季节性发酵",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/06-starter-season.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "1f75c004d8c36395d217f498e3b38c84e7979c3554897e80c5ec065d38fc327b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Rewritten seasonal dough-temperature schedule with varied structure and scope."
+      }
+    },
+    {
+      "id": "hold-zh-hans-07",
+      "title": "用一周废弃物审计修正采购",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/07-no-waste.md",
+      "buckets": [
+        "long-form",
+        "multi-topic"
+      ],
+      "sha256": "18fbe8eca7b867a0e0a7746eb10a93b1c263f657ee30e0fd4d236f0f2ec3dc0b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Rewritten purchasing and waste-audit article distinct from batch meal preparation."
+      }
+    },
+    {
+      "id": "hold-zh-hans-08",
+      "title": "公交换乘里的步行体验",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/08-bus-walk.md",
+      "buckets": [
+        "no-link"
+      ],
+      "sha256": "7bf64ef4c524dc29a1829a8bdc7f9313b48add1870bd438a307f8511b9e3acf7",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Natural link-free transit walking article with a subject-matter bridge to night routes."
+      }
+    },
+    {
+      "id": "hold-zh-hans-09",
+      "title": "夜间路线的安全记录",
+      "split": "holdout",
+      "language": "zh-hans",
+      "path": "holdout/zh-hans/09-night-route.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "8e9802b9c536c00fe616ff9d8aa17d5bfac5797caaa8efdcbc852d5ceb2d8202",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hans",
+        "notes": "Nuanced night-route safety observation without simplistic neighborhood labels."
+      }
+    }
+  ],
   "labelSets": []
 }
