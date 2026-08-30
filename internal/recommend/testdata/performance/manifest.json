@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "seed": 20260406,
+  "cases": [
+    {
+      "name": "mixed",
+      "minimumTokens": 200,
+      "topics": 5,
+      "languages": 4,
+      "sharedTerms": 2
+    },
+    {
+      "name": "sparse-posting",
+      "minimumTokens": 2000,
+      "topics": 1,
+      "languages": 1,
+      "sharedTerms": 2
+    },
+    {
+      "name": "term-49%-coverage",
+      "minimumTokens": 200,
+      "topics": 1,
+      "languages": 1,
+      "sharedTerms": 8,
+      "coveragePercent": 49
+    },
+    {
+      "name": "tag-49%-coverage",
+      "minimumTokens": 200,
+      "topics": 5,
+      "languages": 1,
+      "sharedTerms": 2,
+      "coveragePercent": 49
+    },
+    {
+      "name": "rejected-content",
+      "minimumTokens": 200,
+      "topics": 1,
+      "languages": 1,
+      "sharedTerms": 1
+    }
+  ],
+  "sha256": "b4fdbf6086028a924047ccea08549f6e9ac65600a2fbce97056f6f7091e5854d",
+  "samples": [
+    {
+      "name": "mixed",
+      "count": 20,
+      "sha256": "1247a2cac179100b17a184a92aff64a77abd6b69932351dd4f175f70e93c1393"
+    },
+    {
+      "name": "sparse-posting",
+      "count": 10,
+      "sha256": "9423a3e8406f3e45402d674ed53e2825b0be5f4be736e06c9fc86484ecb058cb"
+    },
+    {
+      "name": "term-49%-coverage",
+      "count": 100,
+      "sha256": "ffd6db4a125100997f2741a40ff31a7fb1a8167e9bd582b9b70712c45d1bdbb4"
+    },
+    {
+      "name": "tag-49%-coverage",
+      "count": 100,
+      "sha256": "0eccbd90262a0014bdb61695d766bfa8ba9174de0f1cdc43e8827b79ba6a764d"
+    },
+    {
+      "name": "rejected-content",
+      "count": 100,
+      "sha256": "838f0ef42c48eb5928640f338dc6a60bd5ce39760c3da28b21d3def663fb3040"
+    }
+  ]
+}
