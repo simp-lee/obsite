@@ -1,4 +1,5 @@
 .agents-work/
+.pi-work/
 /memories/
 /tools/pagefind_extended
 /test/testdata/e2e/feature-vault/tools/pagefind_extended
