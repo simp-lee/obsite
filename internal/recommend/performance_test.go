@@ -174,45 +174,76 @@ func TestMemoryProfileCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	semantics := fixture.Semantics
-	features, err := BuildFeatureIndex(semantics, ProductionEngineParameters(5, 1).Features)
-	if err != nil {
-		t.Fatal(err)
-	}
-	semantics = nil
-	fixture.Semantics = nil
-	runtime.GC()
-	writeRelatedHeapProfile(t, profileDir, "post-tokenization.pprof")
-
-	tags := BuildTagSignalIndex(features.Documents, fixture.Index)
-	profiledDuringScoring := false
+	profileCount := 0
 	profiledScorer := func(index *FeatureIndex, tagIndex *TagSignalIndex, graph *model.LinkGraph, sourceDocID int, candidateDocID int, parameters ContentParameters) (PairScore, error) {
-		if !profiledDuringScoring {
-			profiledDuringScoring = true
+		switch profileCount {
+		case 0:
+			runtime.GC()
+			writeRelatedHeapProfile(t, profileDir, "post-tokenization.pprof")
+		case 1:
 			runtime.GC()
 			writeRelatedHeapProfile(t, profileDir, "during-scoring.pprof")
 		}
+		profileCount++
 		return ScorePair(index, tagIndex, graph, sourceDocID, candidateDocID, parameters)
 	}
-	ranking, err := rankFeatureIndex(features, tags, fixture.Index, fixture.Graph, ProductionEngineParameters(5, 1), profiledScorer)
+	ranking, err := buildEngineFromSemanticOwner(&fixture.Semantics, fixture.Index, fixture.Graph, ProductionEngineParameters(5, 1), profiledScorer)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !profiledDuringScoring {
-		t.Fatal("scoring profile callback was not reached")
+	if profileCount < 2 {
+		t.Fatalf("scoring profile callbacks = %d, want at least 2", profileCount)
 	}
 
-	features = nil
-	tags = nil
 	runtime.GC()
 	writeRelatedHeapProfile(t, profileDir, "page-output.pprof")
 	runtime.KeepAlive(ranking)
-	for _, name := range []string{"post-tokenization.pprof", "during-scoring.pprof", "page-output.pprof"} {
+	writeRetainedOwnerControlProfile(t, profileDir)
+	for _, name := range []string{"post-tokenization.pprof", "during-scoring.pprof", "page-output.pprof", "retained-owner-control.pprof"} {
 		info, err := os.Stat(filepath.Join(profileDir, name))
 		if err != nil || info.Size() == 0 {
 			t.Fatalf("profile %s missing/empty: %v", name, err)
 		}
 	}
+}
+
+func buildEngineFromSemanticOwner(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, scorer pairScorer) (*EngineResult, error) {
+	var semantics []model.RelatedSemanticDocument
+	if owner != nil {
+		semantics = *owner
+		*owner = nil
+	}
+	return buildEngine(semantics, idx, graph, parameters, scorer)
+}
+
+func writeRetainedOwnerControlProfile(t *testing.T, profileDir string) {
+	t.Helper()
+	fixture, err := relatedfixture.Generate(relatedfixture.CaseMixed, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counts := newDocumentTermCountOwner(64)
+	for index := range counts {
+		counts[index].terms = newTermFieldCountOwner()
+		counts[index].terms[fmt.Sprintf("retained-%d", index)] = termFieldCounts{body: 1}
+	}
+	documentFrequency := newDocumentFrequencyOwner()
+	documentFrequency["retained"] = len(counts)
+	termIDs := newTermIDOwner(64)
+	termIDs["retained"] = 0
+	selected := newSelectedFeatureOwner(64)
+	selected[0] = []weightedTerm{{term: "retained", weight: 1}}
+	selectedDF := newSelectedDFOwner(64)
+	selectedDF[0] = 2
+
+	runtime.GC()
+	writeRelatedHeapProfile(t, profileDir, "retained-owner-control.pprof")
+	runtime.KeepAlive(fixture.Semantics)
+	runtime.KeepAlive(counts)
+	runtime.KeepAlive(documentFrequency)
+	runtime.KeepAlive(termIDs)
+	runtime.KeepAlive(selected)
+	runtime.KeepAlive(selectedDF)
 }
 
 func parseRelatedFixtureSpecification(value string) (string, int, error) {

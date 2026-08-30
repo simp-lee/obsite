@@ -18,6 +18,7 @@ func TestEmbedLinksDoNotPropagateToRecommendations(t *testing.T) {
 	host := testNote("notes/host.md", "notes/host")
 	target := testNote("notes/target.md", "notes/target", withHeadings(model.Heading{Level: 2, Text: "Good", ID: "good"}))
 	embedded := testNote("notes/embedded.md", "notes/embedded")
+	blockTarget := testNote("notes/block-target.md", "notes/block-target")
 	internal := testNote("notes/internal.md", "notes/internal")
 	private := testNote("private/secret.md", "private/secret", withAliases("Private"))
 
@@ -31,12 +32,14 @@ func TestEmbedLinksDoNotPropagateToRecommendations(t *testing.T) {
 	}
 	host.Embeds = []model.EmbedRef{
 		{Target: "Embedded"},
+		{Target: "block-target", Fragment: "^block-ref"},
+		{Target: "Private", Fragment: "^block-ref"},
 		{Target: "Target", IsImage: true},
 	}
 	embedded.OutLinks = []model.LinkRef{{RawTarget: "Internal"}}
 
-	graph := BuildSourceGraph(buildIndex([]*model.Note{host, target, embedded, internal}, []*model.Note{private}))
-	if got, want := graph.Forward[host.RelPath], []string{embedded.RelPath, target.RelPath}; !reflect.DeepEqual(got, want) {
+	graph := BuildSourceGraph(buildIndex([]*model.Note{host, target, embedded, blockTarget, internal}, []*model.Note{private}))
+	if got, want := graph.Forward[host.RelPath], []string{blockTarget.RelPath, embedded.RelPath, target.RelPath}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("source graph host forward = %#v, want direct link/embed targets %#v", got, want)
 	}
 	if got, want := graph.Forward[embedded.RelPath], []string{internal.RelPath}; !reflect.DeepEqual(got, want) {

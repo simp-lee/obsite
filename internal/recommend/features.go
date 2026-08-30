@@ -121,8 +121,8 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 		return ordered[left].RelPath < ordered[right].RelPath
 	})
 
-	counts := make([]documentTermCounts, len(ordered))
-	documentFrequency := make(map[string]int)
+	counts := newDocumentTermCountOwner(len(ordered))
+	documentFrequency := newDocumentFrequencyOwner()
 	for docID, document := range ordered {
 		normalizedPath := normalizeFeatureRelPath(document.RelPath)
 		terms, err := tokenizeDocumentFields(document)
@@ -140,15 +140,15 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 	}
 
 	terms := eligibleTerms(documentFrequency, len(ordered), parameters.MaxDFRatio)
-	termIDs := make(map[string]int, len(terms))
+	termIDs := newTermIDOwner(len(terms))
 	corpusDF := make([]int, len(terms))
 	for termID, term := range terms {
 		termIDs[term] = termID
 		corpusDF[termID] = documentFrequency[term]
 	}
 
-	selected := make([][]weightedTerm, len(counts))
-	selectedDF := make([]int, len(terms))
+	selected := newSelectedFeatureOwner(len(counts))
+	selectedDF := newSelectedDFOwner(len(terms))
 	for docID, document := range counts {
 		winners := make(weightedTermHeap, 0, parameters.MaxFeatures)
 		for term, fieldCounts := range document.terms {
@@ -225,6 +225,39 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 	return index, nil
 }
 
+// These noinline allocation boundaries make the temporary index owners
+// observable in heap profiles without retaining them after BuildFeatureIndex.
+//
+//go:noinline
+func newDocumentTermCountOwner(count int) []documentTermCounts {
+	return make([]documentTermCounts, count)
+}
+
+//go:noinline
+func newDocumentFrequencyOwner() map[string]int {
+	return make(map[string]int)
+}
+
+//go:noinline
+func newTermIDOwner(capacity int) map[string]int {
+	return make(map[string]int, capacity)
+}
+
+//go:noinline
+func newSelectedFeatureOwner(count int) [][]weightedTerm {
+	return make([][]weightedTerm, count)
+}
+
+//go:noinline
+func newSelectedDFOwner(count int) []int {
+	return make([]int, count)
+}
+
+//go:noinline
+func newTermFieldCountOwner() map[string]termFieldCounts {
+	return make(map[string]termFieldCounts)
+}
+
 func weightedTermIsBetter(left weightedTerm, right weightedTerm) bool {
 	if left.weight != right.weight {
 		return left.weight > right.weight
@@ -247,7 +280,7 @@ func validateFeatureParameters(parameters FeatureParameters) error {
 }
 
 func tokenizeDocumentFields(document model.RelatedSemanticDocument) (map[string]termFieldCounts, error) {
-	counts := make(map[string]termFieldCounts)
+	counts := newTermFieldCountOwner()
 	if err := addFieldTokens(counts, document.Title, fieldTitle); err != nil {
 		return nil, err
 	}

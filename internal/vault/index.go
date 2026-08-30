@@ -88,7 +88,7 @@ func buildIndexResultWithOptions(scanResult ScanResult, frontmatterResult Frontm
 	indexedNotes := indexPublicNotes(frontmatterResult.PublicNotes, scanResult, parser, diagCollector, options)
 	var relatedSemantic []model.RelatedSemanticDocument
 	if options.collectRelatedSemantic && len(indexedNotes) > 0 {
-		relatedSemantic = make([]model.RelatedSemanticDocument, 0, len(indexedNotes))
+		relatedSemantic = newRelatedSemanticOwner(len(indexedNotes))
 	}
 	for _, indexed := range indexedNotes {
 		note := indexed.note
@@ -208,6 +208,11 @@ func buildIndexedNoteResult(
 	}
 
 	return indexedNoteResult{note: note, assets: assets, relatedSemantic: relatedSemantic}
+}
+
+//go:noinline
+func newRelatedSemanticOwner(capacity int) []model.RelatedSemanticDocument {
+	return make([]model.RelatedSemanticDocument, 0, capacity)
 }
 
 func relatedSemanticTitle(note *model.Note) string {

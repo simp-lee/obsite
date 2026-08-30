@@ -25,7 +25,7 @@ aliases:
   - Field Manual
 publish: true
 ---
-# Main #heading-tag [[Target|Visible Label]]
+# Main <https://example.com> <span hidden>[[Hidden Target]]</span> #heading-tag [[Target|Visible Label]]
 
 Lead paragraph with [ordinary link](https://example.com) and [[Target|Wiki Label]].
 
@@ -88,7 +88,7 @@ raw_block_secret
 	if !reflect.DeepEqual(guide.Aliases, []string{"Field Manual"}) {
 		t.Fatalf("guide.Aliases = %#v, want independent aliases field", guide.Aliases)
 	}
-	if !reflect.DeepEqual(guide.Headings, []string{"Main Visible Label"}) {
+	if !reflect.DeepEqual(guide.Headings, []string{"Main https://example.com Visible Label"}) {
 		t.Fatalf("guide.Headings = %#v, want source heading text without hashtag", guide.Headings)
 	}
 
@@ -101,7 +101,7 @@ raw_block_secret
 		}
 	}
 	for _, excluded := range []string{
-		"Main", "heading-tag", "body-tag", "formula_secret", "embed label",
+		"Main", "Hidden Target", "heading-tag", "body-tag", "formula_secret", "embed label",
 		"fenced_secret", "raw_block_secret", "hidden inline", "hidden script",
 	} {
 		if strings.Contains(guide.Body, excluded) {

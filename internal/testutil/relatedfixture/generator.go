@@ -139,7 +139,7 @@ func Generate(name string, documentCount int) (Fixture, error) {
 		return Fixture{}, fmt.Errorf("unknown related fixture case %q", name)
 	}
 	fixture := Fixture{
-		Semantics: make([]model.RelatedSemanticDocument, documentCount),
+		Semantics: newRelatedSemanticFixtureOwner(documentCount),
 		Index:     &model.VaultIndex{Notes: make(map[string]*model.Note, documentCount)},
 		Graph: &model.LinkGraph{
 			Forward:  make(map[string][]string, documentCount),
@@ -170,6 +170,11 @@ func Generate(name string, documentCount int) (Fixture, error) {
 		fixture.Graph.Backward[relPath] = []string{}
 	}
 	return fixture, nil
+}
+
+//go:noinline
+func newRelatedSemanticFixtureOwner(count int) []model.RelatedSemanticDocument {
+	return make([]model.RelatedSemanticDocument, count)
 }
 
 func generateDocument(spec CaseSpec, docID int, coverage int) (string, []string, error) {

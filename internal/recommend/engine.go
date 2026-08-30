@@ -42,6 +42,10 @@ type pairScorer func(*FeatureIndex, *TagSignalIndex, *model.LinkGraph, int, int,
 
 // BuildEngine builds and scores the deterministic bounded recommendation index.
 func BuildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters) (*EngineResult, error) {
+	return buildEngine(semantics, idx, graph, parameters, ScorePair)
+}
+
+func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, scorer pairScorer) (*EngineResult, error) {
 	if len(semantics) < 2 {
 		return &EngineResult{}, nil
 	}
@@ -53,8 +57,9 @@ func BuildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultInde
 	if err != nil {
 		return nil, err
 	}
+	semantics = nil
 	tags := BuildTagSignalIndex(features.Documents, idx)
-	return rankFeatureIndex(features, tags, idx, graph, parameters, ScorePair)
+	return rankFeatureIndex(features, tags, idx, graph, parameters, scorer)
 }
 
 func validateEngineParameters(parameters EngineParameters) error {

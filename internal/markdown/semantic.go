@@ -62,10 +62,12 @@ func appendRelatedHeadingText(collector *headingTextCollector, node gast.Node, s
 		}
 	case *gast.CodeSpan:
 		collector.appendCodeSpanText(current, source)
+	case *gast.AutoLink:
+		collector.appendSourceText(string(current.Label(source)))
 	case *gmhashtag.Node:
 		return
 	case *gmwikilink.Node:
-		if current.Embed {
+		if current.Embed || collector.inInvisibleRawHTML() {
 			return
 		}
 		collector.appendText(relatedWikilinkText(current, source, true))

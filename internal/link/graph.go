@@ -93,7 +93,11 @@ func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
 				if embed.IsImage {
 					continue
 				}
-				addResolvedSourceTarget(outgoing, idx, source, embed.Target, embed.Fragment)
+				fragment := embed.Fragment
+				if strings.HasPrefix(strings.TrimSpace(fragment), "^") {
+					fragment = ""
+				}
+				addResolvedSourceTarget(outgoing, idx, source, embed.Target, fragment)
 			}
 		}
 
