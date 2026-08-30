@@ -18,6 +18,33 @@ import (
 
 const relatedRSSHelperEnv = "OBSITE_RELATED_RSS_HELPER"
 
+func TestRelatedPerformanceBudgets(t *testing.T) {
+	if os.Getenv("OBSITE_RELATED_PERF") != "1" {
+		t.Skip("set OBSITE_RELATED_PERF=1 on the fixed acceptance host")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{"core", "adversarial"} {
+		command := exec.Command(filepath.Join(root, "test", "verify-related-benchmarks.sh"), mode)
+		command.Dir = root
+		command.Env = os.Environ()
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s performance verification error = %v\n%s", mode, err, output)
+		}
+		t.Logf("%s", output)
+	}
+}
+
+func TestRelatedMemoryLifetimes(t *testing.T) {
+	if os.Getenv("OBSITE_RELATED_PROFILE_DIR") == "" {
+		t.Skip("set OBSITE_RELATED_PROFILE_DIR to an external profile directory")
+	}
+	TestMemoryProfileCheckpoints(t)
+}
+
 func BenchmarkRelatedBuildWarm(b *testing.B) {
 	cases := []struct {
 		name  string
