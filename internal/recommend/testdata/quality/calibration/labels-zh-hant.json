@@ -1,0 +1,848 @@
+{
+  "split": "calibration",
+  "language": "zh-hant",
+  "poolKind": "calibration-grid",
+  "gridTupleCount": 81,
+  "sources": [
+    {
+      "sourceId": "cal-zh-hant-00",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-01"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-01",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-en-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-01",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-06",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-01",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-00"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-08",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-00",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-01",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-00",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-05",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-06",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-02",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-03"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-02",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-03",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-02",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-03",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-01",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-03",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-03",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-02"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-02",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-03",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-02",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-03",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-02",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-03",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-02",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-05",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-04",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-05"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "moc",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-05",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-05",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-04"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-04",
+          "grade": 1,
+          "discovery": [
+            "search",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "cal-en-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-04",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-04",
+          "grade": 1,
+          "discovery": [
+            "search",
+            "moc"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-05",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-04",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-06",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-07"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-mixed-06",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-07",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-06",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-07",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-00",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-07",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-09",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-07",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-06"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-mixed-06",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-07",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-06",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-07",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-01",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-04",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-06",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-08",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-09"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-09",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-08",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-09",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-09",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-09",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        }
+      ]
+    },
+    {
+      "sourceId": "cal-zh-hant-09",
+      "none": false,
+      "knownRelevant": [
+        "cal-zh-hant-08"
+      ],
+      "candidates": [
+        {
+          "candidateId": "cal-en-08",
+          "grade": 1,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-en-09",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-03",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-05",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-08",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-mixed-09",
+          "grade": 0,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-07",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-08",
+          "grade": 1,
+          "discovery": [
+            "production-top10",
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hans-09",
+          "grade": 2,
+          "discovery": [
+            "search"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-02",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-05",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-06",
+          "grade": 0,
+          "discovery": [
+            "production-top10"
+          ]
+        },
+        {
+          "candidateId": "cal-zh-hant-08",
+          "grade": 2,
+          "discovery": [
+            "production-top10",
+            "theme"
+          ]
+        }
+      ]
+    }
+  ]
+}
