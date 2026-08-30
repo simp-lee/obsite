@@ -31,7 +31,6 @@ func TestHoldoutJudgments(t *testing.T) {
 	}
 
 	holdoutSets := 0
-	totalRelevantSources := 0
 	for _, language := range []string{"zh-hans", "zh-hant", "en", "mixed"} {
 		reference, ok := qualityLabelReference(manifest, "holdout", language)
 		if !ok {
@@ -44,17 +43,33 @@ func TestHoldoutJudgments(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			relevant, err := validateHoldoutJudgmentCoverage(set, corpus, production, language)
-			if err != nil {
+			if _, err := validateHoldoutJudgmentCoverage(set, corpus, production, language); err != nil {
 				t.Fatal(err)
 			}
-			totalRelevantSources += relevant
 		})
 	}
 	if holdoutSets == 4 {
 		t.Run("complete", func(t *testing.T) {
-			if totalRelevantSources < 30 {
-				t.Fatalf("holdout relevant source count = %d, want at least 30", totalRelevantSources)
+			completeRelevantSources := 0
+			for _, reference := range manifest.LabelSets {
+				if reference.Split != "holdout" {
+					continue
+				}
+				set, err := loadQualityJudgmentSet(reference)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, judgment := range set.Sources {
+					for _, candidate := range judgment.Candidates {
+						if candidate.Grade >= 1 {
+							completeRelevantSources++
+							break
+						}
+					}
+				}
+			}
+			if completeRelevantSources < 30 {
+				t.Fatalf("holdout relevant source count = %d, want at least 30", completeRelevantSources)
 			}
 		})
 	}
