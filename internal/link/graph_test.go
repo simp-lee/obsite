@@ -12,7 +12,7 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestSourceGraphUsesOnlyDirectPublicSourceDeclarations(t *testing.T) {
+func TestEmbedLinksDoNotPropagateToRecommendations(t *testing.T) {
 	t.Parallel()
 
 	host := testNote("notes/host.md", "notes/host")

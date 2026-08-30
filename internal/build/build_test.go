@@ -151,6 +151,81 @@ func TestRelatedSummaryLimit(t *testing.T) {
 	}
 }
 
+func TestRelatedFullAndIncrementalIdentity(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "---\ntitle: Alpha\ndate: 2026-04-06\ntags: [go]\n---\n# Alpha\n\nDatabase consistency protocol and recovery workflow.\n")
+	writeBuildTestFile(t, vaultPath, "notes/beta.md", "---\ntitle: Beta\ndate: 2026-04-05\ntags: [go]\n---\n# Beta\n\nDatabase consistency protocol and replication workflow.\n")
+	writeBuildTestFile(t, vaultPath, "notes/gamma.md", "---\ntitle: Gamma\ndate: 2026-04-04\n---\n# Gamma\n\nKitchen fermentation schedule and bread starter.\n")
+
+	cfg := testBuildSiteConfig()
+	cfg.Related.Enabled = true
+	cfg.Related.Count = 2
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{force: true, diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatalf("full build error = %v", err)
+	}
+	paths := []string{"alpha/index.html", "beta/index.html", "gamma/index.html", cacheManifestRelPath}
+	full := make(map[string][]byte, len(paths))
+	for _, relPath := range paths {
+		full[relPath] = append([]byte(nil), readBuildOutputFile(t, outputPath, relPath)...)
+	}
+
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	if err != nil {
+		t.Fatalf("incremental build error = %v", err)
+	}
+	if result.NotePages != 0 {
+		t.Fatalf("incremental no-op NotePages = %d, want 0", result.NotePages)
+	}
+	for _, relPath := range paths {
+		if got := readBuildOutputFile(t, outputPath, relPath); !bytes.Equal(got, full[relPath]) {
+			t.Fatalf("incremental output %s differs from full build", relPath)
+		}
+	}
+}
+
+func TestBacklinks(t *testing.T) {
+	t.Parallel()
+
+	alpha := &model.Note{RelPath: "alpha.md", Slug: "alpha", Frontmatter: model.Frontmatter{Title: "Alpha"}}
+	beta := &model.Note{RelPath: "beta.md", Slug: "beta", Frontmatter: model.Frontmatter{Title: "Beta"}}
+	idx := &model.VaultIndex{Notes: map[string]*model.Note{"alpha.md": alpha, "beta.md": beta}}
+	graph := &model.LinkGraph{Backward: map[string][]string{"alpha.md": {"beta.md"}}}
+	if got, want := buildBacklinks("alpha/index.html", idx, graph, "alpha.md"), []model.BacklinkEntry{{Title: "Beta", URL: "../beta/"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("buildBacklinks() = %#v, want %#v", got, want)
+	}
+}
+
+func TestNonRelatedPages(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "---\ntitle: Alpha\ndate: 2026-04-06\ntags: [go]\n---\n# Alpha\n\nDatabase consistency protocol.\n")
+	writeBuildTestFile(t, vaultPath, "notes/beta.md", "---\ntitle: Beta\ndate: 2026-04-05\ntags: [go]\n---\n# Beta\n\nDatabase consistency protocol.\n")
+
+	disabledOutput := filepath.Join(t.TempDir(), "disabled")
+	enabledOutput := filepath.Join(t.TempDir(), "enabled")
+	disabled := testBuildSiteConfig()
+	disabled.Related.Enabled = false
+	enabled := disabled
+	enabled.Related.Enabled = true
+	if _, err := buildWithOptions(disabled, vaultPath, disabledOutput, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatalf("disabled build error = %v", err)
+	}
+	if _, err := buildWithOptions(enabled, vaultPath, enabledOutput, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatalf("enabled build error = %v", err)
+	}
+	for _, relPath := range []string{"index.html", "tags/go/index.html"} {
+		disabledPage := readBuildOutputFile(t, disabledOutput, relPath)
+		enabledPage := readBuildOutputFile(t, enabledOutput, relPath)
+		if !bytes.Equal(enabledPage, disabledPage) {
+			t.Fatalf("non-related page %s changed when recommendations were enabled", relPath)
+		}
+	}
+}
+
 func lockBuildTestRenderHooks(t *testing.T) {
 	if t == nil {
 		return
