@@ -43,11 +43,13 @@ func TestCalibrationJudgments(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	calibrationSets := 0
 	for _, language := range []string{"zh-hans", "zh-hant", "en", "mixed"} {
 		reference, ok := qualityLabelReference(manifest, "calibration", language)
 		if !ok {
 			continue
 		}
+		calibrationSets++
 		language := language
 		t.Run(language, func(t *testing.T) {
 			set, err := loadQualityJudgmentSet(reference)
@@ -56,6 +58,15 @@ func TestCalibrationJudgments(t *testing.T) {
 			}
 			if err := validateCalibrationJudgmentCoverage(set, corpus, unions, language); err != nil {
 				t.Fatal(err)
+			}
+		})
+	}
+	if calibrationSets == 4 {
+		t.Run("complete", func(t *testing.T) {
+			for _, reference := range manifest.LabelSets {
+				if reference.Split == "holdout" {
+					t.Fatalf("holdout label set %s was opened before calibration freeze", reference.Language)
+				}
 			}
 		})
 	}

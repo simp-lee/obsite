@@ -1730,6 +1730,12 @@
     },
     {
       "split": "calibration",
+      "language": "mixed",
+      "path": "calibration/labels-mixed.json",
+      "sha256": "f8a4cec5637f4aaca405757581d278d19bec960af85ea70d8486ec202ff521bc"
+    },
+    {
+      "split": "calibration",
       "language": "zh-hans",
       "path": "calibration/labels-zh-hans.json",
       "sha256": "f5599a19e8dee55f1c0797f15721a0f5dc4d57a820588902f0f8e483c189a64e"
