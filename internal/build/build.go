@@ -269,8 +269,8 @@ func normalizeNoteAssetPath(value string) string {
 	return cleaned
 }
 
-var buildVaultIndex = func(scanResult vault.ScanResult, frontmatterResult vault.FrontmatterResult, diagCollector *diag.Collector, concurrency int) (*model.VaultIndex, error) {
-	return vault.BuildIndexWithConcurrency(scanResult, frontmatterResult, diagCollector, concurrency)
+var buildVaultIndex = func(scanResult vault.ScanResult, frontmatterResult vault.FrontmatterResult, diagCollector *diag.Collector, options vault.BuildIndexOptions) (vault.IndexResult, error) {
+	return vault.BuildIndex(scanResult, frontmatterResult, diagCollector, options)
 }
 
 func (e diagnosticBuildError) Error() string {
@@ -394,7 +394,11 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("parse frontmatter: %w", err)
 	}
 
-	idx, err := buildVaultIndex(scanResult, frontmatterResult, diagnostics, options.concurrency)
+	indexResult, err := buildVaultIndex(scanResult, frontmatterResult, diagnostics, vault.BuildIndexOptions{
+		Concurrency:            options.concurrency,
+		CollectRelatedSemantic: cfg.Related.Enabled,
+	})
+	idx := indexResult.Index
 	result.Index = idx
 	if err != nil {
 		return result, fmt.Errorf("build index: %w", err)

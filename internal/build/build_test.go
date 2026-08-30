@@ -7877,9 +7877,9 @@ Body.
 
 	originalBuildVaultIndex := buildVaultIndex
 	seenConcurrency := 0
-	buildVaultIndex = func(scanResult vault.ScanResult, frontmatterResult vault.FrontmatterResult, diagCollector *diag.Collector, concurrency int) (*model.VaultIndex, error) {
-		seenConcurrency = concurrency
-		return originalBuildVaultIndex(scanResult, frontmatterResult, diagCollector, concurrency)
+	buildVaultIndex = func(scanResult vault.ScanResult, frontmatterResult vault.FrontmatterResult, diagCollector *diag.Collector, options vault.BuildIndexOptions) (vault.IndexResult, error) {
+		seenConcurrency = options.Concurrency
+		return originalBuildVaultIndex(scanResult, frontmatterResult, diagCollector, options)
 	}
 	defer func() {
 		buildVaultIndex = originalBuildVaultIndex

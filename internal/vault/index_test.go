@@ -15,6 +15,131 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func TestRelatedSemanticExtractsSourceASTFields(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/guide.md", `---
+title: Semantic Guide
+aliases:
+  - Field Manual
+publish: true
+---
+# Main #heading-tag [[Target|Visible Label]]
+
+Lead paragraph with [ordinary link](https://example.com) and [[Target|Wiki Label]].
+
+- List item
+
+| Column |
+| --- |
+| Table value |
+
+> Quoted text
+
+Inline `+"`inline code`"+` and ![Diagram alt](../images/diagram.png).
+Inline <span>HTML child</span> remains.
+Inline <span hidden>hidden inline</span> omitted.
+Inline <script>hidden script</script> omitted.
+Body #body-tag remains around the tag.
+Formula $formula_secret$ omitted.
+![[Target|embed label]]
+
+`+"```"+`go
+fenced_secret()
+`+"```"+`
+
+<div>
+raw_block_secret
+</div>
+`)
+	writeVaultFile(t, vaultPath, "notes/target.md", "# Target Heading\n\nTarget body.\n")
+	writeVaultFile(t, vaultPath, "notes/odd.md", "[malformed but parseable\n\n")
+	writeVaultFile(t, vaultPath, "notes/private.md", "---\npublish: false\n---\nprivate_secret\n")
+	writeVaultFile(t, vaultPath, "images/diagram.png", "png")
+
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+	result, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector(), BuildIndexOptions{
+		Concurrency:            2,
+		CollectRelatedSemantic: true,
+	})
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+	if result.Index == nil {
+		t.Fatal("BuildIndex().Index = nil, want index")
+	}
+	if len(result.RelatedSemantic) != 3 {
+		t.Fatalf("len(BuildIndex().RelatedSemantic) = %d, want 3 public documents", len(result.RelatedSemantic))
+	}
+
+	byPath := make(map[string]model.RelatedSemanticDocument, len(result.RelatedSemantic))
+	for _, document := range result.RelatedSemantic {
+		byPath[document.RelPath] = document
+	}
+	if _, ok := byPath["notes/private.md"]; ok {
+		t.Fatal("related semantic sidecar contains unpublished note")
+	}
+
+	guide := byPath["notes/guide.md"]
+	if guide.Title != "Semantic Guide" {
+		t.Fatalf("guide.Title = %q, want frontmatter title", guide.Title)
+	}
+	if !reflect.DeepEqual(guide.Aliases, []string{"Field Manual"}) {
+		t.Fatalf("guide.Aliases = %#v, want independent aliases field", guide.Aliases)
+	}
+	if !reflect.DeepEqual(guide.Headings, []string{"Main Visible Label"}) {
+		t.Fatalf("guide.Headings = %#v, want source heading text without hashtag", guide.Headings)
+	}
+
+	for _, visible := range []string{
+		"Lead paragraph", "ordinary link", "Wiki Label", "List item", "Table value",
+		"Quoted text", "inline code", "Diagram alt", "HTML child", "remains around the tag",
+	} {
+		if !strings.Contains(guide.Body, visible) {
+			t.Errorf("guide.Body = %q, want visible %q", guide.Body, visible)
+		}
+	}
+	for _, excluded := range []string{
+		"Main", "heading-tag", "body-tag", "formula_secret", "embed label",
+		"fenced_secret", "raw_block_secret", "hidden inline", "hidden script",
+	} {
+		if strings.Contains(guide.Body, excluded) {
+			t.Errorf("guide.Body = %q, unexpectedly contains %q", guide.Body, excluded)
+		}
+	}
+
+	target := byPath["notes/target.md"]
+	if target.Title != "target" {
+		t.Fatalf("target.Title = %q, want display-title filename fallback", target.Title)
+	}
+	if !reflect.DeepEqual(target.Headings, []string{"Target Heading"}) || target.Body != "Target body." {
+		t.Fatalf("target semantic = %#v, want independent heading/body fields", target)
+	}
+	if odd := byPath["notes/odd.md"]; odd.Body == "" {
+		t.Fatalf("odd semantic = %#v, want malformed-but-parseable visible text", odd)
+	}
+}
+
+func TestIndexSkipsRelatedSemanticWhenDisabled(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nBody.\n")
+	scanResult, frontmatterResult := prepareIndexInputs(t, vaultPath)
+
+	result, err := BuildIndex(scanResult, frontmatterResult, diag.NewCollector(), BuildIndexOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatalf("BuildIndex() error = %v", err)
+	}
+	if result.Index == nil || len(result.Index.Notes) != 1 {
+		t.Fatalf("BuildIndex().Index = %#v, want normal public index", result.Index)
+	}
+	if result.RelatedSemantic != nil {
+		t.Fatalf("BuildIndex().RelatedSemantic = %#v, want nil when collection is disabled", result.RelatedSemantic)
+	}
+}
+
 func TestBuildIndexRejectsSlugConflicts(t *testing.T) {
 	t.Parallel()
 

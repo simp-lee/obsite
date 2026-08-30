@@ -2,6 +2,7 @@ package vault
 
 import (
 	"fmt"
+	"path"
 	"runtime"
 	"sort"
 	"strconv"
@@ -22,24 +23,52 @@ import (
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
 )
 
+// BuildIndexOptions controls optional pass-1 outputs and bounded concurrency.
+type BuildIndexOptions struct {
+	Concurrency            int
+	CollectRelatedSemantic bool
+}
+
+// IndexResult owns the immutable index and any optional build-only sidecars.
+type IndexResult struct {
+	Index           *model.VaultIndex
+	RelatedSemantic []model.RelatedSemanticDocument
+}
+
 type indexBuildOptions struct {
-	concurrency int
-	onNoteStart func(*model.Note)
-	onNoteDone  func(*model.Note)
+	concurrency            int
+	collectRelatedSemantic bool
+	onNoteStart            func(*model.Note)
+	onNoteDone             func(*model.Note)
 }
 
 type indexedNoteResult struct {
-	note   *model.Note
-	assets map[string]*model.Asset
+	note            *model.Note
+	assets          map[string]*model.Asset
+	relatedSemantic *model.RelatedSemanticDocument
+}
+
+// BuildIndex applies the requested pass-1 options and returns build-owned outputs.
+func BuildIndex(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options BuildIndexOptions) (IndexResult, error) {
+	return buildIndexResultWithOptions(scanResult, frontmatterResult, diagCollector, indexBuildOptions{
+		concurrency:            options.Concurrency,
+		collectRelatedSemantic: options.CollectRelatedSemantic,
+	})
 }
 
 // BuildIndexWithConcurrency applies bounded per-note concurrency during pass 1
-// while preserving the shared parser and immutable VaultIndex handoff.
+// while preserving the legacy index-only handoff.
 func BuildIndexWithConcurrency(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, concurrency int) (*model.VaultIndex, error) {
-	return buildIndexWithOptions(scanResult, frontmatterResult, diagCollector, indexBuildOptions{concurrency: concurrency})
+	result, err := BuildIndex(scanResult, frontmatterResult, diagCollector, BuildIndexOptions{Concurrency: concurrency})
+	return result.Index, err
 }
 
 func buildIndexWithOptions(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options indexBuildOptions) (*model.VaultIndex, error) {
+	result, err := buildIndexResultWithOptions(scanResult, frontmatterResult, diagCollector, options)
+	return result.Index, err
+}
+
+func buildIndexResultWithOptions(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options indexBuildOptions) (IndexResult, error) {
 	idx := &model.VaultIndex{
 		AttachmentFolderPath: scanResult.AttachmentFolderPath,
 		Notes:                make(map[string]*model.Note, len(frontmatterResult.PublicNotes)),
@@ -52,11 +81,15 @@ func buildIndexWithOptions(scanResult ScanResult, frontmatterResult FrontmatterR
 	}
 
 	if err := assignSlugs(frontmatterResult.PublicNotes, diagCollector); err != nil {
-		return nil, err
+		return IndexResult{}, err
 	}
 
 	parser := markdown.NewParser(diagCollector)
 	indexedNotes := indexPublicNotes(frontmatterResult.PublicNotes, scanResult, parser, diagCollector, options)
+	var relatedSemantic []model.RelatedSemanticDocument
+	if options.collectRelatedSemantic && len(indexedNotes) > 0 {
+		relatedSemantic = make([]model.RelatedSemanticDocument, 0, len(indexedNotes))
+	}
 	for _, indexed := range indexedNotes {
 		note := indexed.note
 		if note == nil {
@@ -74,13 +107,16 @@ func buildIndexWithOptions(scanResult ScanResult, frontmatterResult FrontmatterR
 			appendUnpublishedLookup(idx.AliasByName, lookup, note)
 		}
 		mergeIndexedAssets(idx.Assets, indexed.assets)
+		if indexed.relatedSemantic != nil {
+			relatedSemantic = append(relatedSemantic, *indexed.relatedSemantic)
+		}
 	}
 
 	idx.SetAssets(idx.Assets)
 	idx.SetResources(scanResult.ResourceFiles)
 	idx.Tags = buildTagIndex(frontmatterResult.PublicNotes)
 
-	return idx, nil
+	return IndexResult{Index: idx, RelatedSemantic: relatedSemantic}, nil
 }
 
 func indexPublicNotes(
@@ -159,7 +195,34 @@ func buildIndexedNoteResult(
 	inlineTags := extractNoteMetadata(note, scanResult, assets, diagCollector, root, note.RawContent, lineStarts)
 	note.Tags = mergeNoteTags(note.Tags, inlineTags)
 
-	return indexedNoteResult{note: note, assets: assets}
+	var relatedSemantic *model.RelatedSemanticDocument
+	if options.collectRelatedSemantic {
+		headings, body := markdown.RelatedSemanticText(root, note.RawContent)
+		relatedSemantic = &model.RelatedSemanticDocument{
+			RelPath:  note.RelPath,
+			Title:    relatedSemanticTitle(note),
+			Aliases:  append([]string(nil), note.Aliases...),
+			Headings: headings,
+			Body:     body,
+		}
+	}
+
+	return indexedNoteResult{note: note, assets: assets, relatedSemantic: relatedSemantic}
+}
+
+func relatedSemanticTitle(note *model.Note) string {
+	if note == nil {
+		return ""
+	}
+	if title := strings.TrimSpace(note.Frontmatter.Title); title != "" {
+		return title
+	}
+
+	base := path.Base(strings.ReplaceAll(note.RelPath, `\\`, "/"))
+	if base == "." || base == "" || base == "/" {
+		return ""
+	}
+	return strings.TrimSuffix(base, path.Ext(base))
 }
 
 func normalizeIndexConcurrency(concurrency int, total int) int {
