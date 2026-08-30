@@ -21,7 +21,7 @@
       "candidates": [
         {
           "candidateId": "hold-en-00",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]
@@ -35,7 +35,7 @@
         },
         {
           "candidateId": "hold-mixed-00",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]
@@ -78,7 +78,7 @@
         },
         {
           "candidateId": "hold-zh-hant-01",
-          "grade": 2,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "theme"
@@ -86,7 +86,7 @@
         },
         {
           "candidateId": "hold-zh-hant-02",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "production-top10",
             "search"
@@ -179,7 +179,7 @@
         },
         {
           "candidateId": "hold-zh-hant-00",
-          "grade": 2,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "theme"
@@ -239,7 +239,7 @@
         },
         {
           "candidateId": "hold-mixed-00",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "production-top10",
             "search"
@@ -275,7 +275,7 @@
         },
         {
           "candidateId": "hold-zh-hans-02",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]
@@ -296,7 +296,7 @@
         },
         {
           "candidateId": "hold-zh-hant-00",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "production-top10",
             "search"
@@ -311,7 +311,7 @@
         },
         {
           "candidateId": "hold-zh-hant-03",
-          "grade": 2,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "theme"
@@ -378,7 +378,7 @@
         },
         {
           "candidateId": "hold-mixed-03",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -413,7 +413,7 @@
         },
         {
           "candidateId": "hold-zh-hant-02",
-          "grade": 2,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "theme"
@@ -459,11 +459,11 @@
       "candidates": [
         {
           "candidateId": "hold-en-04",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "production-top10",
-            "search",
-            "moc"
+            "moc",
+            "search"
           ]
         },
         {
@@ -499,7 +499,7 @@
         },
         {
           "candidateId": "hold-zh-hans-04",
-          "grade": 2,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "moc",
@@ -558,10 +558,10 @@
         },
         {
           "candidateId": "hold-mixed-04",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
-            "search",
-            "moc"
+            "moc",
+            "search"
           ]
         },
         {
@@ -715,7 +715,7 @@
         },
         {
           "candidateId": "hold-zh-hans-08",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]
@@ -780,7 +780,7 @@
         },
         {
           "candidateId": "hold-zh-hans-08",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]

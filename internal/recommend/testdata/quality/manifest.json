@@ -1750,25 +1750,25 @@
       "split": "holdout",
       "language": "en",
       "path": "holdout/labels-en.json",
-      "sha256": "7c0d60fa0539700e1bac7bac795db0c371cef2a6d2cf34d2d201b94f15228c14"
+      "sha256": "2ff490ec8eeb7f72ede4f6584ce3ebe0b03e5d9ee2d8dbca11a3879bbdb4c23a"
     },
     {
       "split": "holdout",
       "language": "mixed",
       "path": "holdout/labels-mixed.json",
-      "sha256": "25edb556609b7344ad5edc186593f682f18e7ac9de28a4971bd0bada0018b1b2"
+      "sha256": "cbc90cccd95f27f6618d678adde7fe5ee2fbf9d6688e3b2ebca32fc14be07378"
     },
     {
       "split": "holdout",
       "language": "zh-hans",
       "path": "holdout/labels-zh-hans.json",
-      "sha256": "673af30500a24e79faf563cfea5c8c9b6b7e967256366720e0d76b02b7c9b44c"
+      "sha256": "c1f789f227d89e3b499275f6a31e3cd260775cbc39cfa3bb78e639934eb71c26"
     },
     {
       "split": "holdout",
       "language": "zh-hant",
       "path": "holdout/labels-zh-hant.json",
-      "sha256": "9a348098dcb841c6b1e5d45a9694c3f83cda154a73d21818b23d74dcddef5a8e"
+      "sha256": "81c44952bfed26a194c68519deb5742f4e9b36c0ed813eeb1bbd8a8fba786606"
     }
   ]
 }
