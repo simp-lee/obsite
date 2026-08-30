@@ -316,8 +316,8 @@ func validateParsedFileConfig(parsed fileConfig) error {
 	if parsed.Pagination.PageSize != nil && *parsed.Pagination.PageSize <= 0 {
 		return fmt.Errorf("pagination.pageSize must be greater than 0")
 	}
-	if parsed.Related.Count != nil && *parsed.Related.Count <= 0 {
-		return fmt.Errorf("related.count must be greater than 0")
+	if parsed.Related.Count != nil && (*parsed.Related.Count < 1 || *parsed.Related.Count > 20) {
+		return fmt.Errorf("related.count must be between 1 and 20")
 	}
 	for name, theme := range parsed.Themes {
 		trimmedName := strings.TrimSpace(name)
@@ -478,8 +478,8 @@ func validate(cfg *model.SiteConfig) error {
 	if cfg.Pagination.PageSize < 0 {
 		return fmt.Errorf("pagination.pageSize must be greater than 0")
 	}
-	if cfg.Related.Count < 0 {
-		return fmt.Errorf("related.count must be greater than 0")
+	if cfg.Related.Count < 1 || cfg.Related.Count > 20 {
+		return fmt.Errorf("related.count must be between 1 and 20")
 	}
 
 	timelinePath, err := normalizeTimelinePath(cfg.Timeline.Path)

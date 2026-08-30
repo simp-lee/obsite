@@ -3037,13 +3037,13 @@ func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, gra
 			if candidate.Note == nil || strings.TrimSpace(candidate.Note.Slug) == "" {
 				continue
 			}
-			articles = append(articles, model.RelatedArticle{
-				Title:   noteDisplayTitle(candidate.Note),
-				URL:     relativePageURL(currentRelPath, candidate.Note.Slug, true),
-				Summary: noteSummary(candidate.Note, summaryByPath),
-				Score:   candidate.Score,
-				Tags:    buildTagLinks(currentRelPath, idx, candidate.Note.Tags),
-			})
+			articles = append(articles, materializeRelatedArticle(
+				currentRelPath,
+				idx,
+				candidate.Note,
+				noteSummary(candidate.Note, summaryByPath),
+				candidate.Score,
+			))
 		}
 		articlesByPath[note.RelPath] = articles
 		signatures[note.RelPath] = buildRelatedDerivedSignature(articles)

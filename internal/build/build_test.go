@@ -23,8 +23,10 @@ import (
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/link"
 	internalmarkdown "github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/recommend"
 	internalrender "github.com/simp-lee/obsite/internal/render"
 	"github.com/simp-lee/obsite/internal/vault"
 )
@@ -34,6 +36,90 @@ var (
 	buildTestOutputHookMu     sync.Mutex
 	buildTestOutputHookScopes sync.Map
 )
+
+func TestPreRenderRelatedRanking(t *testing.T) {
+	t.Parallel()
+
+	semantics := []model.RelatedSemanticDocument{
+		{RelPath: "a.md", Body: "database protocol"},
+		{RelPath: "b.md", Body: "database protocol"},
+	}
+	idx := &model.VaultIndex{Notes: map[string]*model.Note{
+		"a.md": {RelPath: "a.md", Slug: "a"},
+		"b.md": {RelPath: "b.md", Slug: "b"},
+	}}
+	sourceGraph := link.BuildSourceGraph(idx)
+	result, err := preparePreRenderRelatedRanking(&semantics, idx, sourceGraph, recommend.EngineParameters{
+		Features:    recommend.FeatureParameters{MaxFeatures: 32, MaxDFRatio: 0.40},
+		Content:     recommend.ContentParameters{MinCosine: 0.05, MaxSingleTermRatio: 0.10},
+		Count:       1,
+		WorkerCount: 1,
+	})
+	if err != nil {
+		t.Fatalf("preparePreRenderRelatedRanking() error = %v", err)
+	}
+	if result == nil || len(result.Documents) != 2 {
+		t.Fatalf("preparePreRenderRelatedRanking() = %#v, want two compact documents", result)
+	}
+	if len(result.Documents[0].Related) != 1 || result.Documents[result.Documents[0].Related[0].DocID].RelPath != "b.md" {
+		t.Fatalf("a.md related ranking = %#v, want b.md", result.Documents[0].Related)
+	}
+	if semantics != nil {
+		t.Fatalf("semantic owner after successful ranking = %#v, want released", semantics)
+	}
+
+	errorOwner := []model.RelatedSemanticDocument{{RelPath: "a.md"}, {RelPath: "b.md"}}
+	if _, err := preparePreRenderRelatedRanking(&errorOwner, idx, sourceGraph, recommend.EngineParameters{}); err == nil {
+		t.Fatal("preparePreRenderRelatedRanking(invalid parameters) error = nil")
+	}
+	if errorOwner != nil {
+		t.Fatalf("semantic owner after ranking error = %#v, want released", errorOwner)
+	}
+
+	singletonOwner := []model.RelatedSemanticDocument{{RelPath: "a.md", Body: "database"}}
+	singleton, err := preparePreRenderRelatedRanking(&singletonOwner, idx, sourceGraph, recommend.EngineParameters{})
+	if err != nil || singleton == nil || len(singleton.Documents) != 0 {
+		t.Fatalf("preparePreRenderRelatedRanking(singleton) = %#v, %v; want empty result", singleton, err)
+	}
+	if singletonOwner != nil {
+		t.Fatalf("semantic owner after singleton ranking = %#v, want released", singletonOwner)
+	}
+}
+
+func TestRelatedTagLimit(t *testing.T) {
+	t.Parallel()
+
+	candidate := &model.Note{RelPath: "candidate.md", Slug: "candidate"}
+	idx := &model.VaultIndex{Tags: make(map[string]*model.Tag)}
+	for index := 0; index < 10; index++ {
+		name := fmt.Sprintf("tag-%02d", index)
+		candidate.Tags = append(candidate.Tags, name)
+		idx.Tags[name] = &model.Tag{Name: name, Slug: "tags/" + name}
+	}
+	article := materializeRelatedArticle("source/index.html", idx, candidate, "summary", 0.5)
+	if len(article.Tags) != 8 {
+		t.Fatalf("len(article.Tags) = %d, want 8", len(article.Tags))
+	}
+	for index, tag := range article.Tags {
+		if want := fmt.Sprintf("tag-%02d", index); tag.Name != want {
+			t.Fatalf("article.Tags[%d].Name = %q, want stable %q", index, tag.Name, want)
+		}
+	}
+	if len(candidate.Tags) != 10 {
+		t.Fatalf("candidate scoring tags were truncated to %d, want all 10 retained", len(candidate.Tags))
+	}
+}
+
+func TestRelatedSummaryLimit(t *testing.T) {
+	t.Parallel()
+
+	summary := strings.Repeat("summary ", 40)
+	candidate := &model.Note{RelPath: "candidate.md", Slug: "candidate"}
+	article := materializeRelatedArticle("source/index.html", &model.VaultIndex{}, candidate, summary, 0.5)
+	if article.Summary != summary {
+		t.Fatalf("materialized summary changed existing summary contract: got %q, want %q", article.Summary, summary)
+	}
+}
 
 func lockBuildTestRenderHooks(t *testing.T) {
 	if t == nil {

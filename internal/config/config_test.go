@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +121,77 @@ func TestLoadParsesExtendedYAML(t *testing.T) {
 	}
 	if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage || cfg.Timeline.Path != "timeline" {
 		t.Fatalf("Timeline = %#v, want enabled homepage timeline path", cfg.Timeline)
+	}
+}
+
+func TestRelatedCountBoundaries(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		countLine string
+		wantCount int
+		wantError bool
+	}{
+		{name: "omitted", wantCount: 5},
+		{name: "minimum", countLine: "  count: 1\n", wantCount: 1},
+		{name: "maximum", countLine: "  count: 20\n", wantCount: 20},
+		{name: "explicit zero", countLine: "  count: 0\n", wantError: true},
+		{name: "negative", countLine: "  count: -1\n", wantError: true},
+		{name: "above maximum", countLine: "  count: 21\n", wantError: true},
+	} {
+		test := test
+		t.Run("yaml/"+test.name, func(t *testing.T) {
+			t.Parallel()
+			configPath := writeConfigFile(t, "title: Notes\nbaseURL: https://example.com\nrelated:\n  enabled: true\n"+test.countLine)
+			loaded, err := LoadForBuild(configPath, Overrides{})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "related.count must be between 1 and 20") {
+					t.Fatalf("LoadForBuild() error = %v, want related count range error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("LoadForBuild() error = %v", err)
+			}
+			if loaded.Config.Related.Count != test.wantCount {
+				t.Fatalf("Related.Count = %d, want %d", loaded.Config.Related.Count, test.wantCount)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		count     int
+		wantCount int
+		wantError bool
+	}{
+		{count: 0, wantCount: 5},
+		{count: 1, wantCount: 1},
+		{count: 20, wantCount: 20},
+		{count: -1, wantError: true},
+		{count: 21, wantError: true},
+	} {
+		test := test
+		t.Run("programmatic/"+fmt.Sprint(test.count), func(t *testing.T) {
+			t.Parallel()
+			cfg, err := NormalizeSiteConfig(model.SiteConfig{
+				Title:   "Notes",
+				BaseURL: "https://example.com",
+				Related: model.RelatedConfig{Count: test.count},
+			})
+			if test.wantError {
+				if err == nil || !strings.Contains(err.Error(), "related.count must be between 1 and 20") {
+					t.Fatalf("NormalizeSiteConfig() error = %v, want related count range error", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("NormalizeSiteConfig() error = %v", err)
+			}
+			if cfg.Related.Count != test.wantCount {
+				t.Fatalf("Related.Count = %d, want %d", cfg.Related.Count, test.wantCount)
+			}
+		})
 	}
 }
 
@@ -376,7 +448,7 @@ baseURL: https://example.com
 related:
   count: -1
 `,
-			wantErr: "related.count must be greater than 0",
+			wantErr: "related.count must be between 1 and 20",
 		},
 	}
 
