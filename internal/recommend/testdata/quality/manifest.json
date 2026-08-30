@@ -219,6 +219,220 @@
       }
     },
     {
+      "id": "cal-zh-hant-00",
+      "title": "查詢計畫改變時先看估算誤差",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/00-query-plan.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "1f5cbbbb3301ff1f1a158e50285129a51009c136f9d861073af36364bcaad268",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Clear query-estimation analysis with concrete plan-diagnosis steps."
+      }
+    },
+    {
+      "id": "cal-zh-hant-01",
+      "title": "索引成本不只在磁碟空間",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/01-index-cost.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "0e20a528bb308afcdd73df3e8457fb940bd8505d3df9813c44a9b9fc52caf611",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Idiomatic index lifecycle article balancing read gains and maintenance cost."
+      }
+    },
+    {
+      "id": "cal-zh-hant-02",
+      "title": "小流量發布要有停止條件",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/02-canary.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "d085544b567a56d9649412dbd9aa09ca807d10f1786e6a73e31cfecf3d5c8a94",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Natural canary-decision article with explicit controls and rollback risk."
+      }
+    },
+    {
+      "id": "cal-zh-hant-03",
+      "title": "功能旗標的退場計畫",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/03-feature-flags.md",
+      "buckets": [
+        "multi-topic",
+        "engineering"
+      ],
+      "sha256": "57d544235d134904ac876100e30d8a194c2ba933d32ba9a614205099c4f7a904",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Distinct flag-lifecycle guidance that complements canary rollout."
+      }
+    },
+    {
+      "id": "cal-zh-hant-04",
+      "title": "研究筆記入口圖",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/04-notes-moc.md",
+      "buckets": [
+        "moc",
+        "multi-topic"
+      ],
+      "sha256": "248052d812cc432cc28563c733dad63dbc16b493b20daf380d06d8740bfcd87f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Genuine research MOC organized by activity and maintenance cadence."
+      }
+    },
+    {
+      "id": "cal-zh-hant-05",
+      "title": "把收件匣變成可處理的問題",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/05-inbox.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "641da760f68fcaf917dd91608223c546c34a248b8c5036739befe7b3485541ec",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Focused knowledge-inbox workflow with an original decision framework."
+      }
+    },
+    {
+      "id": "cal-zh-hant-06",
+      "title": "用水溫與注水節奏讀懂烏龍茶",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/06-tea-water.md",
+      "buckets": [
+        "long-form"
+      ],
+      "sha256": "e7a9ed9aa2faba6b0309993fbfc7c5c3cf80b4df92cc2cfd072c6c2483e5d698",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Expanded long-form controlled brewing comparison with table, troubleshooting, and synthesis."
+      }
+    },
+    {
+      "id": "cal-zh-hant-07",
+      "title": "烘焙程度與茶湯風味描述",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/07-roasting.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "9c709732b0412644ce0adbf6bdcb19defc03fba38b44e5f9d1a5f66c10d88329",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Natural sensory-description article distinct from brewing controls."
+      }
+    },
+    {
+      "id": "cal-zh-hant-08",
+      "title": "海岸單車路線先看側風",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/08-coastal-bike.md",
+      "buckets": [
+        "no-link"
+      ],
+      "sha256": "52958d67b9f9aae67e51fb99210f0c78e7f73a39d96f3954816296e64cc508b5",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Idiomatic link-free coastal cycling checklist with clear safety scope."
+      }
+    },
+    {
+      "id": "cal-zh-hant-09",
+      "title": "山海交界的天氣轉折",
+      "split": "calibration",
+      "language": "zh-hant",
+      "path": "calibration/zh-hant/09-weather-turn.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "fefc00038a5e2f340f900efbb9075d3a39bff6c8f90a6fe814e820e8544489b8",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Field-weather article meaningfully related to, not duplicating, the cycling plan."
+      }
+    },
+    {
       "id": "hold-zh-hans-00",
       "title": "复制延迟如何改变产品语义",
       "split": "holdout",
@@ -431,6 +645,219 @@
         "reviewed": true,
         "reviewer": "pi-independent-reviewer-zh-hans",
         "notes": "Nuanced night-route safety observation without simplistic neighborhood labels."
+      }
+    },
+    {
+      "id": "hold-zh-hant-00",
+      "title": "線上建立索引前先估鎖定窗口",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/00-online-index.md",
+      "buckets": [
+        "engineering"
+      ],
+      "sha256": "4df88f3f4328614fe7651449c86b2dde8c0c89fcda4c156289ba83116b476d10",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Concrete online-index operations article centered on lock windows and abort cleanup."
+      }
+    },
+    {
+      "id": "hold-zh-hant-01",
+      "title": "一次雜湊連接傾斜的排查紀錄",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/01-cardinality-skew.md",
+      "buckets": [
+        "long-form",
+        "engineering"
+      ],
+      "sha256": "969d5dc84ee8771d1c8cb880b5101174c34e89ab36841126921600c932333f1b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Rewritten long-form worked incident on hash-join skew, distinct from calibration estimation."
+      }
+    },
+    {
+      "id": "hold-zh-hant-02",
+      "title": "回填出錯後如何對帳與補償",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/02-rollback-data.md",
+      "buckets": [
+        "long-form",
+        "multi-topic",
+        "engineering"
+      ],
+      "sha256": "df25604d46025e9d906a7edbfe5deb19b5885806a5a7a8a62385be345ac6493b",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Rewritten reconciliation and external-compensation playbook with independent scope."
+      }
+    },
+    {
+      "id": "hold-zh-hant-03",
+      "title": "環境設定漂移如何破壞發布判斷",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/03-config-drift.md",
+      "buckets": [
+        "engineering",
+        "no-tag"
+      ],
+      "sha256": "c21354d6b93ea34def1332d1285de50a76c7c404f11ebd0f27f5df64a072288f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Natural configuration-drift article paired with recovery decisions."
+      }
+    },
+    {
+      "id": "hold-zh-hant-04",
+      "title": "證據與論點導航圖",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/04-citation-moc.md",
+      "buckets": [
+        "moc"
+      ],
+      "sha256": "fa66c8e5d2c3401547e553f7633251da82c1bdde2c0b51f97ee7e5ccdea5b605",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Genuine evidence MOC organized around claims, counterexamples, and limits."
+      }
+    },
+    {
+      "id": "hold-zh-hant-05",
+      "title": "舊筆記何時該封存",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/05-note-retirement.md",
+      "buckets": [
+        "no-tag"
+      ],
+      "sha256": "67926c8406cae2556e4c700ffdb4499970fca28968f366184020b4e6c541411a",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Focused note-retirement policy that preserves citation history."
+      }
+    },
+    {
+      "id": "hold-zh-hant-06",
+      "title": "潮濕季節的茶葉保存",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/06-tea-storage.md",
+      "buckets": [],
+      "sha256": "e801b77b18f1ee85388b0c191f7d2cbf43ab32de23d09a27c416ffb861303b07",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Distinct storage article with practical humidity and condensation reasoning."
+      }
+    },
+    {
+      "id": "hold-zh-hant-07",
+      "title": "用小型盲飲降低標籤暗示",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/07-blind-tasting.md",
+      "buckets": [
+        "multi-topic",
+        "no-tag"
+      ],
+      "sha256": "d697c1516bdfdd7700de5b6ce1994c294e4f9d03826e78a5a591a7bb2ca7051e",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Natural blind-tasting design related to storage assessment."
+      }
+    },
+    {
+      "id": "hold-zh-hant-08",
+      "title": "海岸步道要把潮汐寫進行程",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/08-tide-walk.md",
+      "buckets": [
+        "no-link"
+      ],
+      "sha256": "535117e6c0e0698eb36f4a2313959ae51d93f3356275ef3c0dc47d09feda466f",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Idiomatic link-free tide-window safety plan suitable for offline use."
+      }
+    },
+    {
+      "id": "hold-zh-hant-09",
+      "title": "海岸微氣候日誌怎麼寫",
+      "split": "holdout",
+      "language": "zh-hant",
+      "path": "holdout/zh-hant/09-micro-weather.md",
+      "buckets": [
+        "multi-topic"
+      ],
+      "sha256": "7a09cf14c1fb9bcc8f3360f9ae2b506cdfa37ad04ad7493be28b6b7b7f3ad24c",
+      "author": "pi-root-author",
+      "provenance": {
+        "source": "original",
+        "license": "project-license"
+      },
+      "review": {
+        "reviewed": true,
+        "reviewer": "pi-independent-reviewer-zh-hant",
+        "notes": "Field journal article connecting observations to later route decisions."
       }
     }
   ],
