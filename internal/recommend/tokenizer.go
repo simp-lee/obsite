@@ -5,99 +5,120 @@ import (
 	"unicode"
 
 	"github.com/simp-lee/obsite/internal/recommend/chinese"
+	"golang.org/x/text/unicode/norm"
 )
 
-// Tokenize splits mixed-language note content into normalized terms.
-// Han spans are segmented with the embedded Chinese segmenter, while non-Han
-// spans are split only on whitespace so engineering terms stay intact.
+// Tokenize normalizes and tokenizes mixed-language recommendation text.
 func Tokenize(text string) ([]string, error) {
-	if strings.TrimSpace(text) == "" {
+	return tokenize(text, chinese.Default)
+}
+
+func tokenize(text string, loadChinese func() (*chinese.Segmenter, error)) ([]string, error) {
+	normalized := strings.ToLower(norm.NFKC.String(text))
+	if strings.TrimSpace(normalized) == "" {
 		return nil, nil
 	}
 
+	runes := []rune(normalized)
 	tokens := make([]string, 0, 32)
-	var latin strings.Builder
-	var han strings.Builder
 	var segmenter *chinese.Segmenter
-
-	flushLatin := func() {
-		appendNormalizedToken(&tokens, latin.String())
-		latin.Reset()
-	}
-	ensureSegmenter := func() (*chinese.Segmenter, error) {
-		if segmenter != nil {
-			return segmenter, nil
-		}
-
-		loaded, err := chinese.Default()
-		if err != nil {
-			return nil, err
-		}
-		segmenter = loaded
-		return segmenter, nil
-	}
-	flushHan := func() error {
-		if han.Len() == 0 {
-			return nil
-		}
-
-		loaded, err := ensureSegmenter()
-		if err != nil {
-			return err
-		}
-		for _, token := range loaded.Cut(han.String(), true) {
-			appendNormalizedToken(&tokens, token)
-		}
-		han.Reset()
-		return nil
-	}
-
-	for _, r := range text {
-		switch {
-		case isHanRune(r):
-			flushLatin()
-			han.WriteRune(r)
-		case unicode.IsSpace(r):
-			if err := flushHan(); err != nil {
-				return nil, err
+	for start := 0; start < len(runes); {
+		if isHanRune(runes[start]) {
+			end := start + 1
+			for end < len(runes) && isHanRune(runes[end]) {
+				end++
 			}
-			flushLatin()
-		default:
-			if err := flushHan(); err != nil {
-				return nil, err
-			}
-			latin.WriteRune(unicode.ToLower(r))
-		}
-	}
 
-	if err := flushHan(); err != nil {
-		return nil, err
+			if segmenter == nil {
+				loaded, err := loadChinese()
+				if err != nil {
+					return nil, err
+				}
+				segmenter = loaded
+			}
+			for _, token := range segmenter.Cut(string(runes[start:end]), true) {
+				appendFilteredToken(&tokens, token, segmenter)
+			}
+			start = end
+			continue
+		}
+
+		if !isNonHanAlphaNumeric(runes[start]) {
+			start++
+			continue
+		}
+
+		token, end := scanNonHanToken(runes, start)
+		appendFilteredToken(&tokens, token, nil)
+		start = end
 	}
-	flushLatin()
 
 	return tokens, nil
 }
 
-func appendNormalizedToken(dst *[]string, token string) {
-	trimmed := strings.TrimSpace(strings.ToLower(token))
-	if trimmed == "" {
-		return
-	}
-
-	for _, r := range trimmed {
-		if isWordRune(r) || isHanRune(r) {
-			*dst = append(*dst, trimmed)
-			return
+func scanNonHanToken(runes []rune, start int) (string, int) {
+	var token strings.Builder
+	token.WriteRune(runes[start])
+	end := start + 1
+	for end < len(runes) {
+		current := runes[end]
+		if isNonHanAlphaNumeric(current) {
+			token.WriteRune(current)
+			end++
+			continue
 		}
+
+		if isNonHanConnector(current) &&
+			end+1 < len(runes) &&
+			isNonHanAlphaNumeric(runes[end-1]) &&
+			isNonHanAlphaNumeric(runes[end+1]) {
+			token.WriteRune(current)
+			end++
+			continue
+		}
+
+		if current == '+' && isNonHanAlphaNumeric(runes[end-1]) {
+			for end < len(runes) && runes[end] == '+' {
+				token.WriteRune('+')
+				end++
+			}
+			break
+		}
+		if current == '#' && isNonHanAlphaNumeric(runes[end-1]) {
+			token.WriteRune('#')
+			end++
+		}
+		break
 	}
+	return token.String(), end
 }
 
-func isWordRune(r rune) bool {
-	if isHanRune(r) {
+func appendFilteredToken(dst *[]string, token string, segmenter *chinese.Segmenter) {
+	if dst == nil || token == "" || isSingleHanToken(token) || isObsiteStopword(token) {
+		return
+	}
+	if segmenter != nil && segmenter.IsStopword(token) {
+		return
+	}
+	*dst = append(*dst, token)
+}
+
+func isSingleHanToken(token string) bool {
+	runes := []rune(token)
+	return len(runes) == 1 && isHanRune(runes[0])
+}
+
+func isNonHanAlphaNumeric(r rune) bool {
+	return !isHanRune(r) && (unicode.IsLetter(r) || unicode.IsNumber(r))
+}
+
+func isNonHanConnector(r rune) bool {
+	switch r {
+	case '.', '_', '-', '/', ':':
+		return true
+	default:
 		return false
 	}
-
-	return unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
 func isHanRune(r rune) bool {
