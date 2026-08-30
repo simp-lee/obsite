@@ -68,14 +68,6 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 		t.Fatalf("semantic owner after successful ranking = %#v, want released", semantics)
 	}
 
-	errorOwner := []model.RelatedSemanticDocument{{RelPath: "a.md"}, {RelPath: "b.md"}}
-	if _, err := preparePreRenderRelatedRanking(&errorOwner, idx, sourceGraph, recommend.EngineParameters{}); err == nil {
-		t.Fatal("preparePreRenderRelatedRanking(invalid parameters) error = nil")
-	}
-	if errorOwner != nil {
-		t.Fatalf("semantic owner after ranking error = %#v, want released", errorOwner)
-	}
-
 	singletonOwner := []model.RelatedSemanticDocument{{RelPath: "a.md", Body: "database"}}
 	singleton, err := preparePreRenderRelatedRanking(&singletonOwner, idx, sourceGraph, recommend.EngineParameters{})
 	if err != nil || singleton == nil || len(singleton.Documents) != 0 {
@@ -83,6 +75,44 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 	}
 	if singletonOwner != nil {
 		t.Fatalf("semantic owner after singleton ranking = %#v, want released", singletonOwner)
+	}
+}
+
+func TestNoRecommendationFallback(t *testing.T) {
+	t.Parallel()
+
+	semanticOwner := []model.RelatedSemanticDocument{{RelPath: "a.md"}, {RelPath: "b.md"}}
+	if result, err := preparePreRenderRelatedRanking(&semanticOwner, nil, nil, recommend.EngineParameters{}); err == nil || result != nil {
+		t.Fatalf("preparePreRenderRelatedRanking(invalid engine) = %#v, %v; want hard error without fallback", result, err)
+	}
+	if semanticOwner != nil {
+		t.Fatalf("semantic owner after ranking error = %#v, want released", semanticOwner)
+	}
+}
+
+func TestRelatedDisabled(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\n数据库一致性协议。\n")
+
+	originalBuildVaultIndex := buildVaultIndex
+	var collected bool
+	buildVaultIndex = func(scanResult vault.ScanResult, frontmatterResult vault.FrontmatterResult, collector *diag.Collector, options vault.BuildIndexOptions) (vault.IndexResult, error) {
+		collected = options.CollectRelatedSemantic
+		return originalBuildVaultIndex(scanResult, frontmatterResult, collector, options)
+	}
+	defer func() { buildVaultIndex = originalBuildVaultIndex }()
+
+	cfg := testBuildSiteConfig()
+	cfg.Related.Enabled = false
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
+	}
+	if collected {
+		t.Fatal("disabled related build collected semantic sidecar")
+	}
+	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); bytes.Contains(html, []byte("Related Articles")) {
+		t.Fatalf("disabled related build rendered recommendations\n%s", html)
 	}
 }
 
@@ -7036,7 +7066,7 @@ Shared term cluster [[Beta]].
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
-	want := []string{"notes/alpha.md", "notes/beta.md"}
+	want := []string{"notes/aaron.md", "notes/alpha.md", "notes/beta.md"}
 	if result.NotePages != len(want) {
 		t.Fatalf("result.NotePages = %d, want %d", result.NotePages, len(want))
 	}
@@ -7108,7 +7138,7 @@ aliases:
 	}
 }
 
-func TestBuildRendersRelatedArticlesSectionWhenNonEmpty(t *testing.T) {
+func TestRelatedProductionCutoverRendersRelatedArticles(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 
@@ -7899,7 +7929,7 @@ Body.
 	if err != nil {
 		t.Fatalf("third buildWithOptions() error = %v", err)
 	}
-	wantNotePaths := []string{"alpha/one.md", "beta/two.md"}
+	wantNotePaths := []string{"alpha/one.md"}
 	if result.NotePages != len(wantNotePaths) {
 		t.Fatalf("result.NotePages = %d, want %d", result.NotePages, len(wantNotePaths))
 	}

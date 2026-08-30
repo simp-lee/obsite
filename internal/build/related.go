@@ -1,6 +1,8 @@
 package build
 
 import (
+	"strings"
+
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/recommend"
 )
@@ -21,6 +23,41 @@ func preparePreRenderRelatedRanking(
 		*semanticOwner = nil
 	}
 	return recommend.BuildEngine(semantics, idx, sourceGraph, parameters)
+}
+
+func materializeRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, ranking *recommend.EngineResult, summaryByPath map[string]string) (map[string][]model.RelatedArticle, map[string]string) {
+	if !cfg.Related.Enabled || idx == nil {
+		return map[string][]model.RelatedArticle{}, map[string]string{}
+	}
+
+	rankedByPath := make(map[string][]recommend.RankedDocument)
+	if ranking != nil {
+		for _, document := range ranking.Documents {
+			rankedByPath[document.RelPath] = document.Related
+		}
+	}
+	articlesByPath := make(map[string][]model.RelatedArticle, len(idx.Notes))
+	signatures := make(map[string]string, len(idx.Notes))
+	for _, note := range allPublicNotes(idx) {
+		if note == nil || strings.TrimSpace(note.RelPath) == "" {
+			continue
+		}
+		currentRelPath := notePageRelPath(note)
+		articles := make([]model.RelatedArticle, 0, len(rankedByPath[note.RelPath]))
+		for _, ranked := range rankedByPath[note.RelPath] {
+			if ranking == nil || ranked.DocID < 0 || ranked.DocID >= len(ranking.Documents) {
+				continue
+			}
+			candidate := idx.Notes[ranking.Documents[ranked.DocID].RelPath]
+			if candidate == nil || candidate.RelPath == note.RelPath || strings.TrimSpace(candidate.Slug) == "" {
+				continue
+			}
+			articles = append(articles, materializeRelatedArticle(currentRelPath, idx, candidate, noteSummary(candidate, summaryByPath), ranked.Score))
+		}
+		articlesByPath[note.RelPath] = articles
+		signatures[note.RelPath] = buildRelatedDerivedSignature(articles)
+	}
+	return articlesByPath, signatures
 }
 
 func materializeRelatedArticle(

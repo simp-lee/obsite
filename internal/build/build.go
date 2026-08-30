@@ -404,6 +404,20 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("build index: %w", err)
 	}
 
+	var relatedRanking *recommend.EngineResult
+	if cfg.Related.Enabled {
+		sourceGraph := link.BuildSourceGraph(idx)
+		relatedRanking, err = preparePreRenderRelatedRanking(
+			&indexResult.RelatedSemantic,
+			idx,
+			sourceGraph,
+			recommend.ProductionEngineParameters(cfg.Related.Count, options.concurrency),
+		)
+		if err != nil {
+			return result, fmt.Errorf("rank related articles: %w", err)
+		}
+	}
+
 	folderPages := buildFolderPageSpecs(idx)
 	sidebarTree := buildSidebarTree(idx)
 	if err := detectFolderPageConflicts(idx, folderPages, diagnostics); err != nil {
@@ -482,10 +496,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	result.Graph = link.BuildGraph(idx, resolvedOutLinks)
 	backlinkSignatures := buildBacklinkDerivedSignatures(idx, result.Graph)
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyBacklinks, backlinkSignatures)
-	relatedArticlesByPath, relatedSignatures, err := buildRelatedArticlesByPath(cfg, idx, result.Graph, summaryByPath, renderedByPath)
-	if err != nil {
-		return result, fmt.Errorf("build related articles: %w", err)
-	}
+	relatedArticlesByPath, relatedSignatures := materializeRelatedArticlesByPath(cfg, idx, relatedRanking, summaryByPath)
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyRelated, relatedSignatures)
 	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, noteDerivedSignatures, fullDirty)
 	for relPath := range assetDestinationDirtyPaths {
@@ -3011,90 +3022,6 @@ func buildBacklinkDerivedSignatures(idx *model.VaultIndex, graph *model.LinkGrap
 	}
 
 	return signatures
-}
-
-func buildRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, graph *model.LinkGraph, summaryByPath map[string]string, renderedByPath map[string]*renderedNote) (map[string][]model.RelatedArticle, map[string]string, error) {
-	if !cfg.Related.Enabled || cfg.Related.Count <= 0 || idx == nil {
-		return map[string][]model.RelatedArticle{}, map[string]string{}, nil
-	}
-
-	recommendationIndex := buildRelatedRecommendationIndex(idx, renderedByPath)
-	rankedByPath, err := recommend.Build(recommendationIndex, graph, cfg.Related.Count)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	articlesByPath := make(map[string][]model.RelatedArticle, len(idx.Notes))
-	signatures := make(map[string]string, len(idx.Notes))
-	for _, note := range allPublicNotes(idx) {
-		if note == nil || strings.TrimSpace(note.RelPath) == "" {
-			continue
-		}
-
-		currentRelPath := notePageRelPath(note)
-		articles := make([]model.RelatedArticle, 0, len(rankedByPath[note.RelPath]))
-		for _, candidate := range rankedByPath[note.RelPath] {
-			if candidate.Note == nil || strings.TrimSpace(candidate.Note.Slug) == "" {
-				continue
-			}
-			articles = append(articles, materializeRelatedArticle(
-				currentRelPath,
-				idx,
-				candidate.Note,
-				noteSummary(candidate.Note, summaryByPath),
-				candidate.Score,
-			))
-		}
-		articlesByPath[note.RelPath] = articles
-		signatures[note.RelPath] = buildRelatedDerivedSignature(articles)
-	}
-
-	return articlesByPath, signatures, nil
-}
-
-func buildRelatedRecommendationIndex(idx *model.VaultIndex, renderedByPath map[string]*renderedNote) *model.VaultIndex {
-	if idx == nil || len(renderedByPath) == 0 {
-		return idx
-	}
-
-	clonedIndex := &model.VaultIndex{Notes: make(map[string]*model.Note, len(idx.Notes))}
-	for relPath, note := range idx.Notes {
-		cloned := cloneNote(note)
-		if renderedText := renderedVisibleText(renderedByPath[relPath]); renderedText != "" && cloned != nil {
-			cloned.RawContent = []byte(strings.TrimSpace(string(cloned.RawContent) + "\n\n" + renderedText))
-		}
-		clonedIndex.Notes[relPath] = cloned
-	}
-
-	return clonedIndex
-}
-
-func renderedVisibleText(rendered *renderedNote) string {
-	if rendered == nil || rendered.rendered == nil || len(rendered.rendered.HTMLContent) == 0 {
-		return ""
-	}
-
-	root, err := xhtml.Parse(strings.NewReader(rendered.rendered.HTMLContent))
-	if err != nil {
-		return strings.Join(strings.Fields(string(rendered.rendered.HTMLContent)), " ")
-	}
-
-	var fields []string
-	var walk func(*xhtml.Node)
-	walk = func(node *xhtml.Node) {
-		if node == nil {
-			return
-		}
-		if node.Type == xhtml.TextNode {
-			fields = append(fields, strings.Fields(node.Data)...)
-		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			walk(child)
-		}
-	}
-	walk(root)
-
-	return strings.Join(fields, " ")
 }
 
 func mergeDerivedSignatures(current map[string]map[string]string, states map[string]*noteBuildState, key string, values map[string]string) {
