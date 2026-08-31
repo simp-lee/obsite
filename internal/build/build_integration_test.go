@@ -451,19 +451,15 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		t.Fatalf("os.ReadFile(%q) error = %v", configPath, err)
 	}
 	content := string(data)
-	expectedPagefindPath := filepath.Join(vaultPath, "tools", "pagefind_extended")
 	for _, want := range []string{
 		"# Obsite site configuration.",
-		"# baseURL must be the public site URL used for canonical links and sitemap entries.",
+		"# Replace baseURL with the real public URL before publishing.",
 		"baseURL: https://example.com/",
 		"title: My Obsite Site",
-		"author: Your Name",
-		"description: Notes published with obsite.",
+		"author: \"\"",
+		"description: \"\"",
 		"defaultPublish: true",
-		"search:",
-		"# pagefindPath points to the pagefind_extended executable used during build, relative to this obsite.yaml file.",
-		"pagefindPath: tools/pagefind_extended",
-		"pagefindVersion: 1.5.2",
+		"defaultImg: \"\"",
 		"pagination:",
 		"pageSize: 20",
 		"related:",
@@ -472,47 +468,32 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 		"enabled: true",
 		"timeline:",
 		"path: notes",
-		"# themes optionally declares named build-time themes. themes.<name>.root is resolved relative to this obsite.yaml file unless absolute.",
-		"# themes:",
-		"#   feature:",
-		"#     root: themes/feature",
-		"# defaultTheme selects one of the configured theme names when --theme is omitted.",
-		"# defaultTheme: feature",
-		"# Obsite only auto-detects a global override stylesheet at <vault>/custom.css, loaded after the generated site stylesheet.",
-		"# Each selected theme root must provide every required HTML template.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("generated config missing %q\n%s", want, content)
 		}
 	}
-	for _, forbidden := range []string{"templateDir:", "customCSS:", "assets/theme/", "pageAssetURL"} {
+	for _, forbidden := range []string{"search:", "pagefind", "themes:", "defaultTheme", "templateDir:", "themeRoot", "customCSS:", "kaTeX", "mermaid"} {
 		if strings.Contains(content, forbidden) {
 			t.Fatalf("generated config unexpectedly contains legacy field %q\n%s", forbidden, content)
 		}
 	}
 
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	cfg, err := internalconfig.LoadForBuild(vaultPath)
 	if err != nil {
 		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
-	cfg := loadedCfg.Config
 	if cfg.BaseURL != "https://example.com/" {
 		t.Fatalf("cfg.BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/")
 	}
 	if cfg.Title != "My Obsite Site" {
 		t.Fatalf("cfg.Title = %q, want %q", cfg.Title, "My Obsite Site")
 	}
-	if cfg.Author != "Your Name" {
-		t.Fatalf("cfg.Author = %q, want %q", cfg.Author, "Your Name")
-	}
-	if cfg.Description != "Notes published with obsite." {
-		t.Fatalf("cfg.Description = %q, want %q", cfg.Description, "Notes published with obsite.")
+	if cfg.Author != "" || cfg.Description != "" {
+		t.Fatalf("optional metadata = %q, %q, want empty", cfg.Author, cfg.Description)
 	}
 	if !cfg.DefaultPublish {
 		t.Fatal("cfg.DefaultPublish = false, want true")
-	}
-	if cfg.Search.PagefindPath != expectedPagefindPath || cfg.Search.PagefindVersion != "1.5.2" {
-		t.Fatalf("cfg.Search = %#v, want default Pagefind settings", cfg.Search)
 	}
 	if cfg.Pagination.PageSize != 20 {
 		t.Fatalf("cfg.Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 20)
@@ -531,15 +512,14 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 func TestBuildIntegrationRejectsExternalConfigOutsideVaultBoundary(t *testing.T) {
 	t.Parallel()
 
-	vaultPath := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "obsite.yaml")
 	if err := os.WriteFile(configPath, []byte("title: External Config Site\nbaseURL: https://example.com/blog\n"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
 	}
 
-	_, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
-	if err == nil || !strings.Contains(err.Error(), "path must stay inside the vault") {
-		t.Fatalf("config.LoadForBuild(%q) error = %v, want vault boundary rejection", configPath, err)
+	_, err := internalconfig.LoadForBuild(configPath)
+	if err == nil {
+		t.Fatalf("config.LoadForBuild(config path) error = nil, want vault-only API rejection")
 	}
 }
 
@@ -548,25 +528,25 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 
 	vaultPath := copyFixtureVault(t, "feature-vault")
 	outputPath := filepath.Join(t.TempDir(), "site")
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
 
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
-	}
-	cfg := loadedCfg.Config
-	if cfg.DefaultTheme != "feature" {
-		t.Fatalf("cfg.DefaultTheme = %q, want %q", cfg.DefaultTheme, "feature")
-	}
-	if cfg.ActiveThemeName != "feature" {
-		t.Fatalf("cfg.ActiveThemeName = %q, want %q", cfg.ActiveThemeName, "feature")
-	}
-	if cfg.ThemeRoot != filepath.Join(vaultPath, "templates") {
-		t.Fatalf("cfg.ThemeRoot = %q, want %q", cfg.ThemeRoot, filepath.Join(vaultPath, "templates"))
-	}
-	if cfg.CustomCSS != filepath.Join(vaultPath, "custom.css") {
-		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, filepath.Join(vaultPath, "custom.css"))
-	}
+	cfg := internalconfig.Defaults()
+	cfg.Title = "Feature Garden"
+	cfg.BaseURL = "https://example.com/blog/"
+	cfg.Author = "Alice Example"
+	cfg.Description = "Integration coverage for advanced site features."
+	cfg.Pagination.PageSize = 2
+	cfg.Sidebar.Enabled = true
+	cfg.Popover.Enabled = true
+	cfg.Related.Enabled = true
+	cfg.Related.Count = 2
+	cfg.Timeline.Enabled = true
+	cfg.Timeline.AsHomepage = true
+	cfg.ActiveThemeName = "feature"
+	cfg.ThemeRoot = filepath.Join(vaultPath, "templates")
+	cfg.CustomCSS = filepath.Join(vaultPath, "custom.css")
+	cfg.Search.Enabled = true
+	cfg.Search.PagefindPath = filepath.Join(vaultPath, "tools", "pagefind_extended")
+	cfg.Search.PagefindVersion = "1.5.2"
 
 	var diagnostics bytes.Buffer
 	var pagefindCalls [][]string
@@ -891,7 +871,6 @@ func TestBuildIntegrationThemeSwitchFixtureIsolatesThemeOutputs(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := copyFixtureVault(t, "theme-switch-vault")
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
 	const (
 		alphaAssetRelPath = "assets/theme/nested/alpha/theme-marker.txt"
 		betaAssetRelPath  = "assets/theme/nested/beta/theme-marker.txt"
@@ -995,18 +974,21 @@ func TestBuildIntegrationThemeSwitchFixtureIsolatesThemeOutputs(t *testing.T) {
 
 	loadCfg := func(t *testing.T, theme string) internalmodel.SiteConfig {
 		t.Helper()
-
-		overrides := internalconfig.Overrides{VaultPath: vaultPath}
-		if trimmedTheme := strings.TrimSpace(theme); trimmedTheme != "" {
-			overrides.Theme = trimmedTheme
+		cfg := internalconfig.Defaults()
+		cfg.Title = "Theme Switch Garden"
+		cfg.BaseURL = "https://example.com/blog/"
+		cfg.Popover.Enabled = true
+		cfg.Timeline.Enabled = true
+		cfg.Timeline.Path = "timeline"
+		cfg.Search.Enabled = true
+		cfg.Search.PagefindPath = filepath.Join(vaultPath, "tools", "pagefind_extended")
+		cfg.Search.PagefindVersion = "1.5.2"
+		cfg.CustomCSS = filepath.Join(vaultPath, "custom.css")
+		if selected := strings.TrimSpace(theme); selected != "" {
+			cfg.ActiveThemeName = selected
+			cfg.ThemeRoot = filepath.Join(vaultPath, "themes", selected)
 		}
-
-		loadedCfg, err := internalconfig.LoadForBuild(configPath, overrides)
-		if err != nil {
-			t.Fatalf("config.LoadForBuild(%q, theme=%q) error = %v", configPath, theme, err)
-		}
-
-		return loadedCfg.Config
+		return cfg
 	}
 
 	detectRenderedPagefindTheme := func(t *testing.T, outputPath string) string {
@@ -1543,13 +1525,14 @@ func TestBuildIntegrationThemeSwitchFixtureIsolatesThemeOutputs(t *testing.T) {
 	})
 
 	t.Run("incomplete theme reports missing required template", func(t *testing.T) {
-		_, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath, Theme: "incomplete"})
+		cfg := loadCfg(t, "incomplete")
+		_, err := buildWithOptions(cfg, vaultPath, filepath.Join(t.TempDir(), "site"), buildOptions{diagnosticsWriter: io.Discard})
 		if err == nil {
-			t.Fatal("config.LoadForBuild() error = nil, want missing-template error for incomplete theme")
+			t.Fatal("buildWithOptions() error = nil, want missing-template error")
 		}
-		for _, want := range []string{`selected theme "incomplete" root`, `missing required HTML templates`, `tag.html`} {
+		for _, want := range []string{"missing required theme templates", "tag.html"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("config.LoadForBuild() error = %q, want substring %q", err.Error(), want)
+				t.Fatalf("buildWithOptions() error = %q, want substring %q", err.Error(), want)
 			}
 		}
 	})
@@ -1579,13 +1562,7 @@ func TestBuildIntegrationFeatureFixtureExercisesNoteOnlyIncrementalRebuildWithSe
 }
 
 func testBuildIntegrationFeatureFixtureExercisesNoteOnlyIncrementalRebuildWithSearchAndOverrides(t *testing.T, vaultPath string, outputPath string) {
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
-
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
-	}
-	cfg := loadedCfg.Config
+	cfg := featureFixtureConfig(vaultPath)
 
 	pagefindVersionChecks := 0
 	pagefindIndexRuns := 0
@@ -1853,13 +1830,7 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 	t.Parallel()
 	vaultPath := copyFixtureVault(t, "feature-vault")
 	outputPath := filepath.Join(t.TempDir(), "site")
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
-
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
-	}
-	cfg := loadedCfg.Config
+	cfg := featureFixtureConfig(vaultPath)
 	cfg.Search.Enabled = false
 	cfg.Timeline.Enabled = true
 	cfg.Timeline.AsHomepage = false
@@ -2103,6 +2074,28 @@ func TestBuildIntegrationSlugConflictFixturePreservesPublishedOutputOnFailure(t 
 			}
 		})
 	}
+}
+
+func featureFixtureConfig(vaultPath string) internalmodel.SiteConfig {
+	cfg := internalconfig.Defaults()
+	cfg.Title = "Feature Garden"
+	cfg.BaseURL = "https://example.com/blog/"
+	cfg.Author = "Alice Example"
+	cfg.Description = "Integration coverage for advanced site features."
+	cfg.Pagination.PageSize = 2
+	cfg.Sidebar.Enabled = true
+	cfg.Popover.Enabled = true
+	cfg.Related.Enabled = true
+	cfg.Related.Count = 2
+	cfg.Timeline.Enabled = true
+	cfg.Timeline.AsHomepage = true
+	cfg.ActiveThemeName = "feature"
+	cfg.ThemeRoot = filepath.Join(vaultPath, "templates")
+	cfg.CustomCSS = filepath.Join(vaultPath, "custom.css")
+	cfg.Search.Enabled = true
+	cfg.Search.PagefindPath = filepath.Join(vaultPath, "tools", "pagefind_extended")
+	cfg.Search.PagefindVersion = "1.5.2"
+	return cfg
 }
 
 func copyFixtureVault(t *testing.T, fixtureName string) string {

@@ -14,7 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigFilename = "obsite.yaml"
+const defaultConfigFilename = internalconfig.Filename
 
 type previewServer interface {
 	ListenAndServe() error
@@ -23,7 +23,7 @@ type previewServer interface {
 }
 
 type commandDependencies struct {
-	loadSiteInput        func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error)
+	loadSiteInput        func(resolvedVault string) (internalbuild.SiteInput, error)
 	buildSiteWithOptions func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
 	newPreviewServer     func(outputPath string, port int) (previewServer, error)
 	newFileWatcher       func() (fileWatcher, error)

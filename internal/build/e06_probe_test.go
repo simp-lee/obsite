@@ -108,11 +108,10 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 	}
 
 	configPath := filepath.Join(vaultPath, "obsite.yaml")
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	cfg, err := internalconfig.LoadForBuild(vaultPath)
 	if err != nil {
 		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
 	}
-	cfg := loadedCfg.Config
 
 	var baselineDiagnostics bytes.Buffer
 	baselineResult, err := buildWithOptions(cfg, vaultPath, outputPath, e06FeatureVaultBuildOptions(t, cfg, &baselineDiagnostics))
@@ -376,7 +375,6 @@ func runE06ThemeSwitchProbe(t *testing.T, workRoot string) e06ThemeSwitchProbeRe
 
 	themeWorkRoot := filepath.Join(workRoot, "theme-switch")
 	vaultPath := filepath.Join(themeWorkRoot, "vault")
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
 	const (
 		alphaAssetRelPath = "assets/theme/nested/alpha/theme-marker.txt"
 		betaAssetRelPath  = "assets/theme/nested/beta/theme-marker.txt"
@@ -394,19 +392,13 @@ func runE06ThemeSwitchProbe(t *testing.T, workRoot string) e06ThemeSwitchProbeRe
 
 	loadCfg := func(t *testing.T, theme string) model.SiteConfig {
 		t.Helper()
-
-		overrides := internalconfig.Overrides{VaultPath: vaultPath}
-		if trimmedTheme := strings.TrimSpace(theme); trimmedTheme != "" {
-			overrides.Theme = trimmedTheme
-		}
-
-		loadedCfg, err := internalconfig.LoadForBuild(configPath, overrides)
-		if err != nil {
-			t.Fatalf("config.LoadForBuild(%q, theme=%q) error = %v", configPath, theme, err)
-		}
-
-		cfg := loadedCfg.Config
-		cfg.Search.Enabled = false
+		cfg := internalconfig.Defaults()
+		cfg.Title = "Theme Switch Garden"
+		cfg.BaseURL = "https://example.com/blog/"
+		cfg.Popover.Enabled = true
+		cfg.Timeline.Enabled = true
+		cfg.ActiveThemeName = strings.TrimSpace(theme)
+		cfg.ThemeRoot = filepath.Join(vaultPath, "themes", cfg.ActiveThemeName)
 		return cfg
 	}
 

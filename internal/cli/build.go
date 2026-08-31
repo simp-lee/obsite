@@ -2,12 +2,9 @@ package cli
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
-	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/spf13/cobra"
 )
@@ -24,6 +21,12 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 		Short: "Build a static site from an Obsidian vault",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if strings.TrimSpace(configPath) != "" {
+				return fmt.Errorf("--config has been removed; Obsite reads <vault>/%s", defaultConfigFilename)
+			}
+			if strings.TrimSpace(theme) != "" {
+				return fmt.Errorf("--theme has been removed")
+			}
 			trimmedVaultPath, err := requiredPathFlag("vault", vaultPath)
 			if err != nil {
 				return err
@@ -37,12 +40,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 				return err
 			}
 
-			resolvedConfigPath, err := resolveBuildConfigPath(boundary.VaultPath, configPath)
-			if err != nil {
-				return err
-			}
-
-			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: boundary.VaultPath, Theme: theme})
+			input, err := deps.loadSiteInput(boundary.VaultPath)
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
@@ -65,22 +63,4 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	_ = cmd.MarkFlagRequired("output")
 
 	return cmd
-}
-
-func resolveBuildConfigPath(vaultPath string, configPath string) (string, error) {
-	trimmedConfigPath := strings.TrimSpace(configPath)
-	if trimmedConfigPath != "" {
-		return filepath.Clean(trimmedConfigPath), nil
-	}
-
-	defaultConfigPath := filepath.Join(vaultPath, defaultConfigFilename)
-	if _, err := os.Stat(defaultConfigPath); err != nil {
-		if os.IsNotExist(err) {
-			return "", fmt.Errorf("default config file %q does not exist; add %s to the vault or pass --config", defaultConfigPath, defaultConfigFilename)
-		}
-
-		return "", fmt.Errorf("stat default config file %q: %w", defaultConfigPath, err)
-	}
-
-	return defaultConfigPath, nil
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
-	internalconfig "github.com/simp-lee/obsite/internal/config"
 )
 
 func TestExecuteShowsRootHelp(t *testing.T) {
@@ -58,7 +57,7 @@ func executeForTest(t *testing.T, deps commandDependencies, args []string) (stdo
 
 func testCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadSiteInput: func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+		loadSiteInput: func(resolvedVault string) (internalbuild.SiteInput, error) {
 			return internalbuild.SiteInput{}, fmt.Errorf("unexpected loadSiteInput call")
 		},
 		buildSiteWithOptions: func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {

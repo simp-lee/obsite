@@ -1150,7 +1150,7 @@ func RuntimeAssetOutputPaths() []string {
 }
 
 func renderPage(page model.PageData, note *model.Note) (RenderedPage, error) {
-	page.HasRSS = page.Site.EffectiveRSSEnabled()
+	page.HasRSS = page.Site.RSS.Enabled
 
 	_, seoErr := seo.Apply(&page, note)
 	pageDiagnostics, handledSEOWarning := nonFatalSEODiagnostics(note, seoErr)

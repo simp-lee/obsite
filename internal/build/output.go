@@ -237,7 +237,7 @@ func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, fol
 			return err
 		}
 	}
-	if cfg.EffectiveRSSEnabled() {
+	if cfg.RSS.Enabled {
 		if err := plan.claimFile("index.xml", outputOwnerRSS, "recent notes"); err != nil {
 			return err
 		}

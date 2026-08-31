@@ -16,7 +16,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
-	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/model"
 	internalrender "github.com/simp-lee/obsite/internal/render"
 )
@@ -84,7 +83,7 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 	listenBlock := make(chan struct{})
 	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
 	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
-	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
+	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
 		return expectedInput, nil
 	}
 	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
@@ -110,7 +109,7 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 	var stderrBuf lockedBuffer
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath}, deps, &stdoutBuf, &stderrBuf)
 	}()
 
 	select {
@@ -267,35 +266,21 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	configPath := filepath.Join(configDir, "obsite.yaml")
-	themeRoot := filepath.Join(configDir, "themes", "feature")
-	extraWatchFilePath := filepath.Join(t.TempDir(), "watch-inputs", "explicit-input.txt")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
-	}
-	if err := os.MkdirAll(themeRoot, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", themeRoot, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(extraWatchFilePath), 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(extraWatchFilePath), err)
-	}
-	if err := os.WriteFile(extraWatchFilePath, []byte("watch input\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", extraWatchFilePath, err)
 	}
 	outputPath := filepath.Join(t.TempDir(), "site")
 
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
 	watcher := newFakeFileWatcher()
-	var gotConfigPath string
-	var gotOverrides internalconfig.Overrides
+	var gotLoadedVault string
 	var gotVaultPath string
 	var gotOutputPath string
-	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", ThemeRoot: themeRoot, CustomCSS: extraWatchFilePath}}
-	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
-		gotConfigPath = path
-		gotOverrides = overrides
+	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
+	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
+		gotLoadedVault = resolvedVault
 		return expectedInput, nil
 	}
 	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
@@ -319,7 +304,7 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 		return watcher, nil
 	}
 
-	stdout, stderr, err := executeForTest(t, deps, []string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath, "--theme", "feature"})
+	stdout, stderr, err := executeForTest(t, deps, []string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath})
 	if err != nil {
 		t.Fatalf("executeForTest() error = %v", err)
 	}
@@ -329,14 +314,8 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty stderr", stderr)
 	}
-	if gotConfigPath != configPath {
-		t.Fatalf("loadConfig path = %q, want %q", gotConfigPath, configPath)
-	}
-	if gotOverrides.VaultPath != vaultPath {
-		t.Fatalf("loadConfig overrides.VaultPath = %q, want %q", gotOverrides.VaultPath, vaultPath)
-	}
-	if gotOverrides.Theme != "feature" {
-		t.Fatalf("loadConfig overrides.Theme = %q, want %q", gotOverrides.Theme, "feature")
+	if gotLoadedVault != vaultPath {
+		t.Fatalf("loaded vault = %q, want %q", gotLoadedVault, vaultPath)
 	}
 	if gotVaultPath != vaultPath {
 		t.Fatalf("build vaultPath = %q, want %q", gotVaultPath, vaultPath)
@@ -347,14 +326,12 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	if server.enableCalls != 1 {
 		t.Fatalf("EnableLiveReload calls = %d, want 1 in watch mode", server.enableCalls)
 	}
-	waitForServeWatchAddCount(t, watcher, themeRoot, 1)
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(extraWatchFilePath), 1)
 	if server.listenCalls != 1 {
 		t.Fatalf("ListenAndServe calls = %d, want 1", server.listenCalls)
 	}
 }
 
-func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
+func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
@@ -370,14 +347,14 @@ func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
 	listenBlock := make(chan struct{})
 	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
 	buildSignal := make(chan struct{}, 4)
-	var overridesMu sync.Mutex
-	gotOverrides := make([]internalconfig.Overrides, 0, 2)
+	var loadedVaultsMu sync.Mutex
+	loadedVaults := make([]string, 0, 2)
 	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
 
-	deps.loadSiteInput = func(path string, overrides internalconfig.Overrides) (internalbuild.SiteInput, error) {
-		overridesMu.Lock()
-		gotOverrides = append(gotOverrides, overrides)
-		overridesMu.Unlock()
+	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
+		loadedVaultsMu.Lock()
+		loadedVaults = append(loadedVaults, resolvedVault)
+		loadedVaultsMu.Unlock()
 		return expectedInput, nil
 	}
 	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
@@ -401,7 +378,7 @@ func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
 	var stderrBuf lockedBuffer
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath, "--theme", "feature"}, deps, &stdoutBuf, &stderrBuf)
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath}, deps, &stdoutBuf, &stderrBuf)
 	}()
 
 	select {
@@ -415,19 +392,11 @@ func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignalWithin(t, buildSignal, "config rebuild", 900*time.Millisecond)
 
-	overridesMu.Lock()
-	overrides := append([]internalconfig.Overrides(nil), gotOverrides...)
-	overridesMu.Unlock()
-	if len(overrides) < 2 {
-		t.Fatalf("loadSiteInput override calls = %d, want at least %d", len(overrides), 2)
-	}
-	for index, overrides := range overrides[:2] {
-		if overrides.VaultPath != vaultPath {
-			t.Fatalf("loadSiteInput call %d overrides.VaultPath = %q, want %q", index, overrides.VaultPath, vaultPath)
-		}
-		if overrides.Theme != "feature" {
-			t.Fatalf("loadSiteInput call %d overrides.Theme = %q, want %q", index, overrides.Theme, "feature")
-		}
+	loadedVaultsMu.Lock()
+	gotVaults := append([]string(nil), loadedVaults...)
+	loadedVaultsMu.Unlock()
+	if len(gotVaults) < 2 || gotVaults[0] != vaultPath || gotVaults[1] != vaultPath {
+		t.Fatalf("loadSiteInput vault calls = %#v, want %q twice", gotVaults, vaultPath)
 	}
 
 	close(listenBlock)
@@ -471,10 +440,19 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 				nextThemeRootValue = filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
 			}
 
-			writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
+			writeCLIConfig(t, vaultPath)
 
 			deps := testCommandDependencies()
-			deps.loadSiteInput = internalbuild.LoadSiteInput
+			deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
+				data, err := os.ReadFile(configPath)
+				if err != nil {
+					return internalbuild.SiteInput{}, err
+				}
+				if strings.Contains(string(data), "themes:") {
+					return internalbuild.SiteInput{}, errors.New("removed themes field")
+				}
+				return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", ThemeRoot: initialThemeRoot}}, nil
+			}
 
 			watcher := newFakeFileWatcher()
 			listenStarted := make(chan struct{}, 1)
@@ -504,7 +482,7 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 			var stderrBuf lockedBuffer
 			errCh := make(chan error, 1)
 			go func() {
-				errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+				errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath}, deps, &stdoutBuf, &stderrBuf)
 			}()
 
 			select {
@@ -560,10 +538,19 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 
 	recoveryWatchDir := t.TempDir()
 	nextThemeRootPath := filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
-	writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
+	writeCLIConfig(t, vaultPath)
 
 	deps := testCommandDependencies()
-	deps.loadSiteInput = internalbuild.LoadSiteInput
+	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			return internalbuild.SiteInput{}, err
+		}
+		if strings.Contains(string(data), "themes:") {
+			return internalbuild.SiteInput{}, errors.New("removed themes field")
+		}
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", ThemeRoot: initialThemeRoot}}, nil
+	}
 
 	watcher := newFakeFileWatcher()
 	listenStarted := make(chan struct{}, 1)
@@ -593,7 +580,7 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 	var stderrBuf lockedBuffer
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath, "--config", configPath}, deps, &stdoutBuf, &stderrBuf)
+		errCh <- executeWithDeps([]string{"serve", "--output", outputPath, "--watch", "--vault", vaultPath}, deps, &stdoutBuf, &stderrBuf)
 	}()
 
 	select {

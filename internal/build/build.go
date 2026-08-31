@@ -280,13 +280,13 @@ func (e diagnosticBuildError) Error() string {
 }
 
 // LoadSiteInput loads build input using config-layer normalization.
-func LoadSiteInput(path string, overrides internalconfig.Overrides) (SiteInput, error) {
-	loaded, err := internalconfig.LoadForBuild(path, overrides)
+func LoadSiteInput(resolvedVault string) (SiteInput, error) {
+	cfg, err := internalconfig.LoadForBuild(resolvedVault)
 	if err != nil {
 		return SiteInput{}, err
 	}
 
-	return SiteInput{Config: loaded.Config}, nil
+	return SiteInput{Config: cfg}, nil
 }
 
 // BuildWithOptions runs the full Obsite site-generation pipeline from a build.SiteInput contract.
@@ -627,7 +627,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, err
 	}
 
-	if cfg.EffectiveRSSEnabled() {
+	if cfg.RSS.Enabled {
 		rssXML, err := seo.BuildRSS(cfg, recentNotes)
 		if err != nil {
 			return result, fmt.Errorf("build rss: %w", err)

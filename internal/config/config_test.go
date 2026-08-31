@@ -1,1395 +1,309 @@
 package config
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestLoadForBuildEnforcesVaultConfigBoundary(t *testing.T) {
+func TestDefaultsAreCanonical(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	vaultPath := filepath.Join(root, "vault")
-	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
-		t.Fatal(err)
+	cfg := Defaults()
+	if cfg.Language != "en" || !cfg.DefaultPublish || cfg.DefaultImg != "" {
+		t.Fatalf("core defaults = %#v", cfg)
 	}
-	externalPath := filepath.Join(root, "external.yaml")
-	if err := os.WriteFile(externalPath, []byte("title: External\nbaseURL: https://example.com/\n"), 0o644); err != nil {
-		t.Fatal(err)
+	if cfg.Pagination.PageSize != 20 || cfg.Sidebar.Enabled || cfg.Popover.Enabled {
+		t.Fatalf("navigation defaults = %#v", cfg)
 	}
-
-	_, err := LoadForBuild(externalPath, Overrides{VaultPath: vaultPath})
-	if err == nil || !strings.Contains(err.Error(), "path must stay inside the vault") {
-		t.Fatalf("LoadForBuild(external) error = %v, want vault boundary rejection", err)
+	if cfg.Related.Enabled || cfg.Related.Count != 5 || !cfg.RSS.Enabled {
+		t.Fatalf("feature defaults = %#v", cfg)
 	}
-
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
-	if err := os.Symlink(externalPath, configPath); err != nil {
-		if os.IsPermission(err) {
-			t.Skipf("symlink unavailable: %v", err)
-		}
-		t.Fatal(err)
-	}
-	_, err = LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err == nil || !strings.Contains(err.Error(), "must not contain symbolic links") {
-		t.Fatalf("LoadForBuild(symlink) error = %v, want symlink rejection", err)
+	if cfg.Timeline.Enabled || cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
+		t.Fatalf("timeline defaults = %#v", cfg.Timeline)
 	}
 }
 
-func TestLoadForBuildRejectsExternalThemeRootBoundary(t *testing.T) {
+func TestLoadForBuildReadsOnlyVaultConfigAndAppliesValues(t *testing.T) {
 	t.Parallel()
 
-	root := t.TempDir()
-	vaultPath := filepath.Join(root, "vault")
-	externalTheme := filepath.Join(root, "external-theme")
-	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(externalTheme, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(vaultPath, "obsite.yaml")
-	configData := fmt.Sprintf("title: Garden\nbaseURL: https://example.com/\nthemes:\n  external:\n    root: %q\n", externalTheme)
-	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	vault := writeConfigVault(t, `
+title: Garden Notes
+baseURL: https://example.com/blog
+author: Alice
+description: Public notes
+language: fr
+defaultImg: images/og.png
+defaultPublish: false
+pagination:
+  pageSize: 30
+sidebar:
+  enabled: true
+popover:
+  enabled: true
+related:
+  enabled: true
+  count: 7
+rss:
+  enabled: false
+timeline:
+  enabled: true
+  asHomepage: true
+  path: timeline
+`)
 
-	_, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err == nil || !strings.Contains(err.Error(), "must stay inside the vault") {
-		t.Fatalf("LoadForBuild() error = %v, want external theme boundary rejection", err)
-	}
-}
-
-func TestLoadParsesExtendedYAML(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	themeRoot := filepath.Join(configDir, "themes", "feature")
-	writeRequiredThemeTemplates(t, themeRoot)
-	configPath := writeConfigFileAt(t, configDir, strings.Join([]string{
-		"title: Garden Notes",
-		"baseURL: https://example.com/blog",
-		"author: Alice",
-		"description: Public notes",
-		"language: fr",
-		"defaultImg: images/og.png",
-		"defaultPublish: false",
-		"themes:",
-		"  feature:",
-		"    root: themes/feature",
-		"defaultTheme: feature",
-		"search:",
-		"  enabled: true",
-		"  pagefindPath: tools/pagefind_extended",
-		"  pagefindVersion: 1.5.2",
-		"pagination:",
-		"  pageSize: 30",
-		"sidebar:",
-		"  enabled: true",
-		"popover:",
-		"  enabled: true",
-		"related:",
-		"  enabled: true",
-		"  count: 7",
-		"rss:",
-		"  enabled: false",
-		"timeline:",
-		"  enabled: true",
-		"  asHomepage: true",
-		"  path: timeline",
-	}, "\n"))
-
-	loaded, err := LoadForBuild(configPath, Overrides{})
+	cfg, err := LoadForBuild(vault)
 	if err != nil {
 		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	cfg := loaded.Config
-
-	if cfg.Title != "Garden Notes" {
-		t.Fatalf("Title = %q, want %q", cfg.Title, "Garden Notes")
+	if cfg.Title != "Garden Notes" || cfg.BaseURL != "https://example.com/blog/" || cfg.Author != "Alice" || cfg.Description != "Public notes" || cfg.Language != "fr" {
+		t.Fatalf("metadata = %#v", cfg)
 	}
-	if cfg.BaseURL != "https://example.com/blog/" {
-		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/blog/")
+	if cfg.DefaultImg != "images/og.png" || cfg.DefaultPublish {
+		t.Fatalf("publish defaults = %#v", cfg)
 	}
-	if cfg.Author != "Alice" {
-		t.Fatalf("Author = %q, want %q", cfg.Author, "Alice")
+	if cfg.Pagination.PageSize != 30 || !cfg.Sidebar.Enabled || !cfg.Popover.Enabled {
+		t.Fatalf("navigation config = %#v", cfg)
 	}
-	if cfg.Description != "Public notes" {
-		t.Fatalf("Description = %q, want %q", cfg.Description, "Public notes")
-	}
-	if cfg.Language != "fr" {
-		t.Fatalf("Language = %q, want %q", cfg.Language, "fr")
-	}
-	if cfg.DefaultImg != "images/og.png" {
-		t.Fatalf("DefaultImg = %q, want %q", cfg.DefaultImg, "images/og.png")
-	}
-	if cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = true, want false")
-	}
-	themeCfg, ok := cfg.Themes["feature"]
-	if !ok {
-		t.Fatalf("Themes[feature] missing from %#v", cfg.Themes)
-	}
-	if themeCfg.Root != themeRoot {
-		t.Fatalf("Themes[feature].Root = %q, want %q", themeCfg.Root, themeRoot)
-	}
-	if cfg.DefaultTheme != "feature" {
-		t.Fatalf("DefaultTheme = %q, want %q", cfg.DefaultTheme, "feature")
-	}
-	if cfg.ActiveThemeName != "feature" {
-		t.Fatalf("ActiveThemeName = %q, want %q", cfg.ActiveThemeName, "feature")
-	}
-	if cfg.ThemeRoot != themeRoot {
-		t.Fatalf("ThemeRoot = %q, want %q", cfg.ThemeRoot, themeRoot)
-	}
-	if cfg.CustomCSS != "" {
-		t.Fatalf("CustomCSS = %q, want empty string", cfg.CustomCSS)
-	}
-	if !cfg.Search.Enabled {
-		t.Fatal("Search.Enabled = false, want true")
-	}
-	if cfg.Search.PagefindPath != filepath.Join(configDir, "tools", "pagefind_extended") {
-		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, filepath.Join(configDir, "tools", "pagefind_extended"))
-	}
-	if cfg.Search.PagefindVersion != "1.5.2" {
-		t.Fatalf("Search.PagefindVersion = %q, want %q", cfg.Search.PagefindVersion, "1.5.2")
-	}
-	if cfg.Pagination.PageSize != 30 {
-		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 30)
-	}
-	if !cfg.Sidebar.Enabled {
-		t.Fatal("Sidebar.Enabled = false, want true")
-	}
-	if !cfg.Popover.Enabled {
-		t.Fatal("Popover.Enabled = false, want true")
-	}
-	if !cfg.Related.Enabled || cfg.Related.Count != 7 {
-		t.Fatalf("Related = %#v, want enabled count=7", cfg.Related)
-	}
-	if cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = true, want false")
+	if !cfg.Related.Enabled || cfg.Related.Count != 7 || cfg.RSS.Enabled {
+		t.Fatalf("feature config = %#v", cfg)
 	}
 	if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage || cfg.Timeline.Path != "timeline" {
-		t.Fatalf("Timeline = %#v, want enabled homepage timeline path", cfg.Timeline)
+		t.Fatalf("timeline = %#v", cfg.Timeline)
 	}
 }
 
-func TestRelatedCountBoundaries(t *testing.T) {
+func TestLoadForBuildUsesDefaultsForOmittedOptionalFields(t *testing.T) {
 	t.Parallel()
 
-	for _, test := range []struct {
-		name      string
-		countLine string
-		wantCount int
-		wantError bool
-	}{
-		{name: "omitted", wantCount: 5},
-		{name: "minimum", countLine: "  count: 1\n", wantCount: 1},
-		{name: "maximum", countLine: "  count: 20\n", wantCount: 20},
-		{name: "explicit zero", countLine: "  count: 0\n", wantError: true},
-		{name: "negative", countLine: "  count: -1\n", wantError: true},
-		{name: "above maximum", countLine: "  count: 21\n", wantError: true},
-	} {
-		test := test
-		t.Run("yaml/"+test.name, func(t *testing.T) {
-			t.Parallel()
-			configPath := writeConfigFile(t, "title: Notes\nbaseURL: https://example.com\nrelated:\n  enabled: true\n"+test.countLine)
-			loaded, err := LoadForBuild(configPath, Overrides{})
-			if test.wantError {
-				if err == nil || !strings.Contains(err.Error(), "related.count must be between 1 and 20") {
-					t.Fatalf("LoadForBuild() error = %v, want related count range error", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("LoadForBuild() error = %v", err)
-			}
-			if loaded.Config.Related.Count != test.wantCount {
-				t.Fatalf("Related.Count = %d, want %d", loaded.Config.Related.Count, test.wantCount)
-			}
-		})
-	}
-
-	for _, test := range []struct {
-		count     int
-		wantCount int
-		wantError bool
-	}{
-		{count: 0, wantCount: 5},
-		{count: 1, wantCount: 1},
-		{count: 20, wantCount: 20},
-		{count: -1, wantError: true},
-		{count: 21, wantError: true},
-	} {
-		test := test
-		t.Run("programmatic/"+fmt.Sprint(test.count), func(t *testing.T) {
-			t.Parallel()
-			cfg, err := NormalizeSiteConfig(model.SiteConfig{
-				Title:   "Notes",
-				BaseURL: "https://example.com",
-				Related: model.RelatedConfig{Count: test.count},
-			})
-			if test.wantError {
-				if err == nil || !strings.Contains(err.Error(), "related.count must be between 1 and 20") {
-					t.Fatalf("NormalizeSiteConfig() error = %v, want related count range error", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("NormalizeSiteConfig() error = %v", err)
-			}
-			if cfg.Related.Count != test.wantCount {
-				t.Fatalf("Related.Count = %d, want %d", cfg.Related.Count, test.wantCount)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsLegacyTemplateFields(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		content string
-		wantErr string
-	}{
-		{
-			name: "templateDir",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-templateDir: themes/feature
-`,
-			wantErr: "templateDir is no longer supported",
-		},
-		{
-			name: "customCSS",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-customCSS: styles/site.css
-`,
-			wantErr: "customCSS is no longer supported",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFile(t, tt.content)
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadValidatesRequiredFields(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name    string
-		content string
-		wantErr string
-	}{
-		{
-			name: "missing title",
-			content: `
-baseURL: https://example.com
-`,
-			wantErr: "title is required",
-		},
-		{
-			name: "missing baseURL",
-			content: `
-title: Garden Notes
-`,
-			wantErr: "baseURL is required",
-		},
-		{
-			name: "relative baseURL",
-			content: `
-title: Garden Notes
-baseURL: /blog
-`,
-			wantErr: "baseURL must be an absolute http or https URL",
-		},
-		{
-			name: "query in baseURL",
-			content: `
-title: Garden Notes
-baseURL: https://example.com/blog?ref=1
-`,
-			wantErr: "baseURL must not include query or fragment",
-		},
-		{
-			name: "username in baseURL",
-			content: `
-title: Garden Notes
-baseURL: https://alice@example.com/blog
-`,
-			wantErr: "baseURL must not include user info",
-		},
-		{
-			name: "username and password in baseURL",
-			content: `
-title: Garden Notes
-baseURL: https://alice:secret@example.com/blog
-`,
-			wantErr: "baseURL must not include user info",
-		},
-	}
-
-	for _, tt := range testCases {
-		caseData := tt
-		t.Run(caseData.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFile(t, caseData.content)
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsUnknownYAMLFields(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		content string
-		wantErr string
-	}{
-		{
-			name: "top level typo",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-defaultPublsh: false
-`,
-			wantErr: "field defaultPublsh not found",
-		},
-		{
-			name: "nested typo",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-search:
-  enabledd: true
-`,
-			wantErr: "field enabledd not found",
-		},
-	}
-
-	for _, tt := range tests {
-		caseData := tt
-		t.Run(caseData.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFile(t, caseData.content)
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsInvalidThemeDeclarations(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		content string
-		wantErr string
-	}{
-		{
-			name: "blank theme name",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  "   ":
-    root: themes/blank
-`,
-			wantErr: "themes contains an empty theme name",
-		},
-		{
-			name: "duplicate theme name",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/one
-  feature:
-    root: themes/two
-`,
-			wantErr: `themes contains duplicate theme name "feature"`,
-		},
-		{
-			name: "blank theme root",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: "   "
-defaultTheme: feature
-`,
-			wantErr: "themes.feature.root must not be empty",
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFile(t, tt.content)
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsInvalidExtendedValues(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		content string
-		wantErr string
-	}{
-		{
-			name: "pagination page size must be positive",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-pagination:
-  pageSize: 0
-`,
-			wantErr: "pagination.pageSize must be greater than 0",
-		},
-		{
-			name: "related count must be positive",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-related:
-  count: -1
-`,
-			wantErr: "related.count must be between 1 and 20",
-		},
-	}
-
-	for _, tt := range tests {
-		caseData := tt
-		t.Run(caseData.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFile(t, caseData.content)
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), caseData.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), caseData.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadAppliesExplicitOverrides(t *testing.T) {
-	t.Parallel()
-
-	configPath := writeConfigFile(t, `
-title: File Title
-baseURL: https://file.example.com/wiki
-author: File Author
-description: File description
-language: fr
-defaultPublish: false
-`)
-
-	loaded, err := LoadForBuild(configPath, Overrides{
-		Title:          "CLI Title",
-		BaseURL:        "https://cli.example.com/docs",
-		Author:         "CLI Author",
-		DefaultPublish: boolPtr(true),
-	})
+	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
+	cfg, err := LoadForBuild(vault)
 	if err != nil {
 		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	cfg := loaded.Config
-
-	if cfg.Title != "CLI Title" {
-		t.Fatalf("Title = %q, want %q", cfg.Title, "CLI Title")
-	}
-	if cfg.BaseURL != "https://cli.example.com/docs/" {
-		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://cli.example.com/docs/")
-	}
-	if cfg.Author != "CLI Author" {
-		t.Fatalf("Author = %q, want %q", cfg.Author, "CLI Author")
-	}
-	if cfg.Description != "File description" {
-		t.Fatalf("Description = %q, want %q", cfg.Description, "File description")
-	}
-	if cfg.Language != "fr" {
-		t.Fatalf("Language = %q, want %q", cfg.Language, "fr")
-	}
-	if !cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = false, want true")
+	defaults := Defaults()
+	if cfg.Language != defaults.Language || cfg.DefaultPublish != defaults.DefaultPublish || cfg.Pagination != defaults.Pagination || cfg.Sidebar != defaults.Sidebar || cfg.Popover != defaults.Popover || cfg.Related != defaults.Related || cfg.RSS != defaults.RSS || cfg.Timeline != defaults.Timeline {
+		t.Fatalf("loaded defaults = %#v, want %#v", cfg, defaults)
 	}
 }
 
-func TestLoadAppliesThemeSelectionPriority(t *testing.T) {
+func TestLoadForBuildRejectsRemovedAndUnknownFieldsWithLocation(t *testing.T) {
 	t.Parallel()
 
-	configDir := t.TempDir()
-	featureRoot := filepath.Join(configDir, "themes", "feature")
-	serifRoot := filepath.Join(configDir, "themes", "serif")
-	writeRequiredThemeTemplates(t, featureRoot)
-	writeRequiredThemeTemplates(t, serifRoot)
-
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-  serif:
-    root: themes/serif
-defaultTheme: feature
-`)
-
 	tests := []struct {
-		name            string
-		overrides       Overrides
-		wantThemeName   string
-		wantThemeRoot   string
-		wantDefaultName string
+		name  string
+		field string
+		yaml  string
 	}{
-		{
-			name:            "override beats defaultTheme",
-			overrides:       Overrides{Theme: "serif"},
-			wantThemeName:   "serif",
-			wantThemeRoot:   serifRoot,
-			wantDefaultName: "feature",
-		},
-		{
-			name:            "defaultTheme selected when no override",
-			overrides:       Overrides{},
-			wantThemeName:   "feature",
-			wantThemeRoot:   featureRoot,
-			wantDefaultName: "feature",
-		},
+		{name: "search", field: "search", yaml: "search:\n  enabled: true"},
+		{name: "pagefind path", field: "pagefindPath", yaml: "pagefindPath: pagefind"},
+		{name: "pagefind version", field: "pagefindVersion", yaml: "pagefindVersion: 1.5.2"},
+		{name: "themes", field: "themes", yaml: "themes: {}"},
+		{name: "default theme", field: "defaultTheme", yaml: "defaultTheme: feature"},
+		{name: "template dir", field: "templateDir", yaml: "templateDir: templates"},
+		{name: "theme root", field: "themeRoot", yaml: "themeRoot: theme"},
+		{name: "custom css", field: "customCSS", yaml: "customCSS: other.css"},
+		{name: "katex css", field: "kaTeXCSSURL", yaml: "kaTeXCSSURL: https://cdn.example/katex.css"},
+		{name: "katex js", field: "kaTeXJSURL", yaml: "kaTeXJSURL: https://cdn.example/katex.js"},
+		{name: "katex auto render", field: "kaTeXAutoRenderURL", yaml: "kaTeXAutoRenderURL: https://cdn.example/auto.js"},
+		{name: "mermaid", field: "mermaidJSURL", yaml: "mermaidJSURL: https://cdn.example/mermaid.js"},
+		{name: "unknown nested", field: "extra", yaml: "sidebar:\n  extra: true"},
+		{name: "removed field in second document", field: "search", yaml: "---\nsearch:\n  enabled: true"},
 	}
 
 	for _, tt := range tests {
-		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			loaded, err := LoadForBuild(configPath, tt.overrides)
-			if err != nil {
-				t.Fatalf("LoadForBuild() error = %v", err)
-			}
-			cfg := loaded.Config
-			if cfg.DefaultTheme != tt.wantDefaultName {
-				t.Fatalf("DefaultTheme = %q, want %q", cfg.DefaultTheme, tt.wantDefaultName)
-			}
-			if cfg.ActiveThemeName != tt.wantThemeName {
-				t.Fatalf("ActiveThemeName = %q, want %q", cfg.ActiveThemeName, tt.wantThemeName)
-			}
-			if cfg.ThemeRoot != tt.wantThemeRoot {
-				t.Fatalf("ThemeRoot = %q, want %q", cfg.ThemeRoot, tt.wantThemeRoot)
-			}
-		})
-	}
-}
-
-func TestLoadResolvesRelativeThemeRootsAgainstObsiteYAMLAndPreservesAbsoluteRoots(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	relativeRoot := filepath.Join(configDir, "themes", "feature")
-	absoluteRoot := filepath.Join(t.TempDir(), "themes", "serif")
-	writeRequiredThemeTemplates(t, relativeRoot)
-	writeRequiredThemeTemplates(t, absoluteRoot)
-
-	configPath := writeConfigFileAt(t, configDir, strings.Join([]string{
-		"title: Garden Notes",
-		"baseURL: https://example.com",
-		"themes:",
-		"  feature:",
-		"    root: themes/feature",
-		"  serif:",
-		"    root: " + absoluteRoot,
-		"defaultTheme: feature",
-	}, "\n"))
-
-	loaded, err := LoadForBuild(configPath, Overrides{})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	if got := loaded.Config.Themes["feature"].Root; got != relativeRoot {
-		t.Fatalf("Themes[feature].Root = %q, want %q", got, relativeRoot)
-	}
-	if got := loaded.Config.Themes["serif"].Root; got != absoluteRoot {
-		t.Fatalf("Themes[serif].Root = %q, want %q", got, absoluteRoot)
-	}
-	if loaded.Config.ThemeRoot != relativeRoot {
-		t.Fatalf("ThemeRoot = %q, want %q", loaded.Config.ThemeRoot, relativeRoot)
-	}
-}
-
-func TestLoadFallsBackToEmbeddedDefaultThemeWhenNoThemeIsSelected(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	featureRoot := filepath.Join(configDir, "themes", "feature")
-	writeRequiredThemeTemplates(t, featureRoot)
-
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-`)
-
-	loaded, err := LoadForBuild(configPath, Overrides{})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	if loaded.Config.ActiveThemeName != "" {
-		t.Fatalf("ActiveThemeName = %q, want empty string for embedded default theme", loaded.Config.ActiveThemeName)
-	}
-	if loaded.Config.ThemeRoot != "" {
-		t.Fatalf("ThemeRoot = %q, want empty string for embedded default theme", loaded.Config.ThemeRoot)
-	}
-	if got := loaded.Config.Themes["feature"].Root; got != featureRoot {
-		t.Fatalf("Themes[feature].Root = %q, want %q", got, featureRoot)
-	}
-}
-
-func TestLoadRejectsUnknownSelectedTheme(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	featureRoot := filepath.Join(configDir, "themes", "feature")
-	writeRequiredThemeTemplates(t, featureRoot)
-
-	tests := []struct {
-		name      string
-		content   string
-		overrides Overrides
-		wantErr   string
-	}{
-		{
-			name: "defaultTheme missing from map",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-defaultTheme: missing
-`,
-			wantErr: `defaultTheme "missing" was not found in themes`,
-		},
-		{
-			name: "override theme missing from map",
-			content: `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-`,
-			overrides: Overrides{Theme: "missing"},
-			wantErr:   `theme "missing" was not found in themes`,
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := writeConfigFileAt(t, configDir, tt.content)
-			_, err := LoadForBuild(configPath, tt.overrides)
+			vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n"+tt.yaml+"\n")
+			_, err := LoadForBuild(vault)
 			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
+				t.Fatal("LoadForBuild() error = nil")
 			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), tt.wantErr)
-			}
-		})
-	}
-}
-
-func TestLoadRejectsSelectedThemeRootProblems(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		prepareRoot  func(t *testing.T, root string)
-		wantErrParts []string
-	}{
-		{
-			name: "missing theme root directory",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "does not exist"},
-		},
-		{
-			name: "theme root must be directory",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-				if err := os.MkdirAll(filepath.Dir(root), 0o755); err != nil {
-					t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(root), err)
-				}
-				if err := os.WriteFile(root, []byte("not a directory\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", root, err)
-				}
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "is not a directory"},
-		},
-		{
-			name: "missing required templates",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-				writeRequiredThemeTemplatesExcept(t, root, "tag.html", "timeline.html")
-			},
-			wantErrParts: []string{"missing required HTML templates", "tag.html", "timeline.html"},
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			configDir := t.TempDir()
-			themeRoot := filepath.Join(configDir, "themes", "feature")
-			tt.prepareRoot(t, themeRoot)
-			configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-defaultTheme: feature
-`)
-
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			for _, wantErrPart := range tt.wantErrParts {
-				if !strings.Contains(err.Error(), wantErrPart) {
-					t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), wantErrPart)
-				}
+			if !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "line ") {
+				t.Fatalf("LoadForBuild() error = %q, want field %q and line", err, tt.field)
 			}
 		})
 	}
 }
 
-func TestLoadRejectsUnselectedMissingThemeRootWhenAnotherThemeIsSelected(t *testing.T) {
+func TestLoadForBuildRejectsArbitraryConfigPath(t *testing.T) {
 	t.Parallel()
 
-	configDir := t.TempDir()
-	featureRoot := filepath.Join(configDir, "themes", "feature")
-	writeRequiredThemeTemplates(t, featureRoot)
-
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-  broken:
-    root: themes/broken
-`)
-
-	_, err := LoadForBuild(configPath, Overrides{Theme: "feature"})
+	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
+	configPath := filepath.Join(vault, Filename)
+	_, err := LoadForBuild(configPath)
 	if err == nil {
-		t.Fatal("LoadForBuild() error = nil, want unselected missing theme root failure")
+		t.Fatal("LoadForBuild(config path) error = nil")
 	}
-	for _, wantErrPart := range []string{"theme \"broken\" root", "does not exist"} {
-		if !strings.Contains(err.Error(), wantErrPart) {
-			t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), wantErrPart)
+}
+
+func TestLoadForBuildValidatesRequiredAndBoundedValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		yaml string
+		want string
+	}{
+		{name: "title", yaml: "baseURL: https://example.com/", want: "title is required"},
+		{name: "base URL", yaml: "title: Garden", want: "baseURL is required"},
+		{name: "relative base URL", yaml: "title: Garden\nbaseURL: /blog", want: "absolute http or https"},
+		{name: "pagination", yaml: "title: Garden\nbaseURL: https://example.com/\npagination:\n  pageSize: 0", want: "pagination.pageSize"},
+		{name: "related low", yaml: "title: Garden\nbaseURL: https://example.com/\nrelated:\n  count: 0", want: "related.count"},
+		{name: "related high", yaml: "title: Garden\nbaseURL: https://example.com/\nrelated:\n  count: 21", want: "related.count"},
+		{name: "timeline traversal", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: ../outside", want: "timeline.path"},
+		{name: "timeline query", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes?draft=1", want: "timeline.path"},
+		{name: "timeline fragment", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes#draft", want: "timeline.path"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vault := writeConfigVault(t, tt.yaml+"\n")
+			_, err := LoadForBuild(vault)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadForBuild() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadForBuildDiscoversOnlyFixedVaultInputs(t *testing.T) {
+	t.Parallel()
+
+	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
+	writeConfigTestFile(t, vault, "custom.css", "body{}")
+	writeConfigTestFile(t, vault, ".obsite/theme/theme.css", ":root{}")
+	writeConfigTestFile(t, vault, "elsewhere/custom.css", "ignored")
+
+	cfg, err := LoadForBuild(vault)
+	if err != nil {
+		t.Fatalf("LoadForBuild() error = %v", err)
+	}
+	if cfg.CustomCSS != filepath.Join(vault, "custom.css") {
+		t.Fatalf("CustomCSS = %q", cfg.CustomCSS)
+	}
+	if cfg.ThemeDir != filepath.Join(vault, ".obsite", "theme") {
+		t.Fatalf("ThemeDir = %q", cfg.ThemeDir)
+	}
+	if cfg.ThemeRoot != "" || cfg.ActiveThemeName != "" || len(cfg.Themes) != 0 {
+		t.Fatalf("legacy theme state activated: %#v", cfg)
+	}
+}
+
+func TestLoadForBuildRejectsInvalidFixedVaultInputs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, vault string, external string)
+		want  string
+	}{
+		{
+			name: "custom CSS directory",
+			setup: func(t *testing.T, vault string, _ string) {
+				if err := os.Mkdir(filepath.Join(vault, "custom.css"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "regular non-symlink file",
+		},
+		{
+			name: "custom CSS symlink",
+			setup: func(t *testing.T, vault string, external string) {
+				writeConfigTestFile(t, external, "secret.css", "secret")
+				if err := os.Symlink(filepath.Join(external, "secret.css"), filepath.Join(vault, "custom.css")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "regular non-symlink file",
+		},
+		{
+			name: "theme file",
+			setup: func(t *testing.T, vault string, _ string) {
+				writeConfigTestFile(t, vault, ".obsite/theme", "not a directory")
+			},
+			want: "non-symlink directory",
+		},
+		{
+			name: "theme symlink",
+			setup: func(t *testing.T, vault string, external string) {
+				if err := os.MkdirAll(filepath.Join(external, "theme"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Join(vault, ".obsite"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(filepath.Join(external, "theme"), filepath.Join(vault, ".obsite", "theme")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: "non-symlink directory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
+			external := t.TempDir()
+			tt.setup(t, vault, external)
+			_, err := LoadForBuild(vault)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("LoadForBuild() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestInitialYAMLUsesDefaultsAndStrictFields(t *testing.T) {
+	t.Parallel()
+
+	yaml := InitialYAML()
+	for _, want := range []string{"baseURL: https://example.com/", "title: My Obsite Site", "language: en", "defaultPublish: true", "defaultImg: \"\"", "pageSize: 20", "count: 5", "path: notes"} {
+		if !strings.Contains(yaml, want) {
+			t.Fatalf("InitialYAML() missing %q\n%s", want, yaml)
 		}
 	}
-	if strings.Contains(err.Error(), "selected theme \"feature\" root") {
-		t.Fatalf("LoadForBuild() error = %q, want unselected theme root failure before selected theme contract validation", err.Error())
-	}
-}
-
-func TestLoadRejectsUnselectedNonDirectoryThemeRootWhenFallingBackToEmbeddedTheme(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	featureRoot := filepath.Join(configDir, "themes", "feature")
-	if err := os.MkdirAll(featureRoot, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", featureRoot, err)
-	}
-	brokenRoot := filepath.Join(configDir, "themes", "broken")
-	if err := os.MkdirAll(filepath.Dir(brokenRoot), 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(brokenRoot), err)
-	}
-	if err := os.WriteFile(brokenRoot, []byte("not a directory\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenRoot, err)
-	}
-
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-  broken:
-    root: themes/broken
-`)
-
-	_, err := LoadForBuild(configPath, Overrides{})
-	if err == nil {
-		t.Fatal("LoadForBuild() error = nil, want unselected non-directory theme root failure")
-	}
-	for _, wantErrPart := range []string{"theme \"broken\" root", "is not a directory"} {
-		if !strings.Contains(err.Error(), wantErrPart) {
-			t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), wantErrPart)
+	for _, forbidden := range []string{"search:", "pagefind", "themes:", "defaultTheme", "templateDir", "themeRoot", "customCSS", "kaTeX", "mermaid"} {
+		if strings.Contains(yaml, forbidden) {
+			t.Fatalf("InitialYAML() contains removed field %q\n%s", forbidden, yaml)
 		}
 	}
-	if strings.Contains(err.Error(), "selected theme") {
-		t.Fatalf("LoadForBuild() error = %q, want failure before any selected-theme-only validation because embedded theme stays active", err.Error())
-	}
 }
 
-func TestLoadRejectsSymlinkedThemeOwnedFiles(t *testing.T) {
+func TestNormalizeSiteConfigPreservesInternalBooleanPolicy(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name         string
-		prepareRoot  func(t *testing.T, root string)
-		wantErrParts []string
-	}{
-		{
-			name: "required template symlink",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-
-				writeRequiredThemeTemplatesExcept(t, root, "tag.html")
-				targetPath := filepath.Join(t.TempDir(), "tag.html")
-				if err := os.WriteFile(targetPath, []byte("{{define \"content-tag\"}}tag{{end}}\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
-				}
-				if err := os.Symlink(targetPath, filepath.Join(root, "tag.html")); err != nil {
-					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, filepath.Join(root, "tag.html"), err)
-				}
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "tag.html", "regular non-symlink file"},
-		},
-		{
-			name: "theme style symlink",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-
-				writeRequiredThemeTemplates(t, root)
-				targetPath := filepath.Join(t.TempDir(), "style.css")
-				if err := os.WriteFile(targetPath, []byte("body { color: tomato; }\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
-				}
-				if err := os.Symlink(targetPath, filepath.Join(root, "style.css")); err != nil {
-					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, filepath.Join(root, "style.css"), err)
-				}
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "style.css", "regular non-symlink file"},
-		},
-		{
-			name: "optional html partial symlink",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-
-				writeRequiredThemeTemplates(t, root)
-				targetPath := filepath.Join(t.TempDir(), "badge.html")
-				if err := os.WriteFile(targetPath, []byte("{{define \"theme-badge\"}}badge{{end}}\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
-				}
-				partialPath := filepath.Join(root, "partials", "badge.html")
-				if err := os.MkdirAll(filepath.Dir(partialPath), 0o755); err != nil {
-					t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(partialPath), err)
-				}
-				if err := os.Symlink(targetPath, partialPath); err != nil {
-					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, partialPath, err)
-				}
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "partials/badge.html", "regular non-symlink file"},
-		},
-		{
-			name: "theme static asset symlink",
-			prepareRoot: func(t *testing.T, root string) {
-				t.Helper()
-
-				writeRequiredThemeTemplates(t, root)
-				targetPath := filepath.Join(t.TempDir(), "logo.svg")
-				if err := os.WriteFile(targetPath, []byte("<svg></svg>\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
-				}
-				assetPath := filepath.Join(root, "assets", "logo.svg")
-				if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
-					t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(assetPath), err)
-				}
-				if err := os.Symlink(targetPath, assetPath); err != nil {
-					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, assetPath, err)
-				}
-			},
-			wantErrParts: []string{"selected theme \"feature\" root", "assets/logo.svg", "regular non-symlink file"},
-		},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			configDir := t.TempDir()
-			themeRoot := filepath.Join(configDir, "themes", "feature")
-			tt.prepareRoot(t, themeRoot)
-			configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-themes:
-  feature:
-    root: themes/feature
-defaultTheme: feature
-`)
-
-			_, err := LoadForBuild(configPath, Overrides{})
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil, want non-nil")
-			}
-			for _, wantErrPart := range tt.wantErrParts {
-				if !strings.Contains(err.Error(), wantErrPart) {
-					t.Fatalf("LoadForBuild() error = %q, want substring %q", err.Error(), wantErrPart)
-				}
-			}
-		})
-	}
-}
-
-func TestLoadAppliesDefaults(t *testing.T) {
-	t.Parallel()
-
-	loaded, err := LoadForBuild("", Overrides{
-		Title:   "Garden Notes",
-		BaseURL: "https://example.com",
-	})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	cfg := loaded.Config
-
-	if cfg.BaseURL != "https://example.com/" {
-		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/")
-	}
-	if cfg.Language != defaultLanguage {
-		t.Fatalf("Language = %q, want %q", cfg.Language, defaultLanguage)
-	}
-	if !cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = false, want true")
-	}
-	if cfg.Search.PagefindPath != defaultPagefindPath {
-		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, defaultPagefindPath)
-	}
-	if cfg.Search.PagefindVersion != defaultPagefindVersion {
-		t.Fatalf("Search.PagefindVersion = %q, want %q", cfg.Search.PagefindVersion, defaultPagefindVersion)
-	}
-	if cfg.Pagination.PageSize != defaultPaginationPageSize {
-		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, defaultPaginationPageSize)
-	}
-	if cfg.Related.Count != defaultRelatedCount {
-		t.Fatalf("Related.Count = %d, want %d", cfg.Related.Count, defaultRelatedCount)
-	}
-	if !cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = false, want true")
-	}
-	if cfg.Timeline.Enabled {
-		t.Fatal("Timeline.Enabled = true, want false")
-	}
-	if cfg.Timeline.AsHomepage {
-		t.Fatal("Timeline.AsHomepage = true, want false")
-	}
-	if cfg.Timeline.Path != defaultTimelinePath {
-		t.Fatalf("Timeline.Path = %q, want %q", cfg.Timeline.Path, defaultTimelinePath)
-	}
-	if cfg.CustomCSS != "" {
-		t.Fatalf("CustomCSS = %q, want empty string", cfg.CustomCSS)
-	}
-	if cfg.DefaultTheme != "" {
-		t.Fatalf("DefaultTheme = %q, want empty string", cfg.DefaultTheme)
-	}
-	if cfg.ActiveThemeName != "" {
-		t.Fatalf("ActiveThemeName = %q, want empty string", cfg.ActiveThemeName)
-	}
-	if cfg.ThemeRoot != "" {
-		t.Fatalf("ThemeRoot = %q, want empty string", cfg.ThemeRoot)
-	}
-	if len(cfg.Themes) != 0 {
-		t.Fatalf("Themes = %#v, want empty map", cfg.Themes)
-	}
-	if cfg.KaTeXCSSURL != defaultKaTeXCSSURL {
-		t.Fatalf("KaTeXCSSURL = %q, want %q", cfg.KaTeXCSSURL, defaultKaTeXCSSURL)
-	}
-	if cfg.KaTeXJSURL != defaultKaTeXJSURL {
-		t.Fatalf("KaTeXJSURL = %q, want %q", cfg.KaTeXJSURL, defaultKaTeXJSURL)
-	}
-	if cfg.KaTeXAutoRenderURL != defaultKaTeXAutoRenderURL {
-		t.Fatalf("KaTeXAutoRenderURL = %q, want %q", cfg.KaTeXAutoRenderURL, defaultKaTeXAutoRenderURL)
-	}
-	if cfg.MermaidJSURL != defaultMermaidJSURL {
-		t.Fatalf("MermaidJSURL = %q, want %q", cfg.MermaidJSURL, defaultMermaidJSURL)
-	}
-}
-
-func TestLoadAutoDetectsCustomCSSInVaultRoot(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	configPath := writeConfigFileAt(t, vaultPath, `
-title: Garden Notes
-baseURL: https://example.com
-`)
-	customCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
-	if err := os.WriteFile(customCSSPath, []byte("body { color: rebeccapurple; }\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
-	}
-
-	loaded, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	if loaded.Config.CustomCSS != customCSSPath {
-		t.Fatalf("CustomCSS = %q, want %q", loaded.Config.CustomCSS, customCSSPath)
-	}
-}
-
-func TestLoadRejectsInvalidAutoDetectedCustomCSSInVaultRoot(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	configPath := writeConfigFileAt(t, vaultPath, `
-title: Garden Notes
-baseURL: https://example.com
-`)
-	vaultCustomCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
-	if err := os.Mkdir(vaultCustomCSSPath, 0o755); err != nil {
-		t.Fatalf("os.Mkdir(%q) error = %v", vaultCustomCSSPath, err)
-	}
-
-	_, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err == nil {
-		t.Fatal("LoadForBuild() error = nil, want explicit invalid auto-detected custom CSS error")
-	}
-	if !strings.Contains(err.Error(), `auto-detected custom CSS "`+vaultCustomCSSPath+`" must be a regular non-symlink file`) {
-		t.Fatalf("LoadForBuild() error = %q, want invalid vault-root custom CSS path error", err.Error())
-	}
-}
-
-func TestLoadResolvesRelativePagefindPathAgainstConfigDir(t *testing.T) {
-	t.Parallel()
-
-	configDir := t.TempDir()
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-search:
-  enabled: true
-  pagefindPath: tools/pagefind_extended
-`)
-
-	loaded, err := LoadForBuild(configPath, Overrides{})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	cfg := loaded.Config
-	if cfg.Search.PagefindPath != filepath.Join(configDir, "tools", "pagefind_extended") {
-		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, filepath.Join(configDir, "tools", "pagefind_extended"))
-	}
-}
-
-func TestNormalizeSiteConfigAppliesDocumentedDefaults(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := NormalizeSiteConfig(model.SiteConfig{
-		Title:   "Garden Notes",
-		BaseURL: "https://example.com/blog",
-	})
+	cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultPublish: false, RSS: model.RSSConfig{Enabled: false}})
 	if err != nil {
 		t.Fatalf("NormalizeSiteConfig() error = %v", err)
 	}
-
-	if cfg.BaseURL != "https://example.com/blog/" {
-		t.Fatalf("BaseURL = %q, want %q", cfg.BaseURL, "https://example.com/blog/")
+	if cfg.DefaultPublish || cfg.RSS.Enabled {
+		t.Fatalf("NormalizeSiteConfig() changed explicit false policy: %#v", cfg)
 	}
-	if cfg.Language != defaultLanguage {
-		t.Fatalf("Language = %q, want %q", cfg.Language, defaultLanguage)
-	}
-	if !cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = false, want documented default true")
-	}
-	if cfg.Search.PagefindPath != defaultPagefindPath {
-		t.Fatalf("Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, defaultPagefindPath)
-	}
-	if cfg.Search.PagefindVersion != defaultPagefindVersion {
-		t.Fatalf("Search.PagefindVersion = %q, want %q", cfg.Search.PagefindVersion, defaultPagefindVersion)
-	}
-	if cfg.Pagination.PageSize != defaultPaginationPageSize {
-		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, defaultPaginationPageSize)
-	}
-	if cfg.Related.Count != defaultRelatedCount {
-		t.Fatalf("Related.Count = %d, want %d", cfg.Related.Count, defaultRelatedCount)
-	}
-	if !cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = false, want documented default true")
-	}
-	if cfg.Timeline.Path != defaultTimelinePath {
-		t.Fatalf("Timeline.Path = %q, want %q", cfg.Timeline.Path, defaultTimelinePath)
-	}
-	if cfg.KaTeXCSSURL != defaultKaTeXCSSURL {
-		t.Fatalf("KaTeXCSSURL = %q, want %q", cfg.KaTeXCSSURL, defaultKaTeXCSSURL)
-	}
-	if cfg.KaTeXJSURL != defaultKaTeXJSURL {
-		t.Fatalf("KaTeXJSURL = %q, want %q", cfg.KaTeXJSURL, defaultKaTeXJSURL)
-	}
-	if cfg.KaTeXAutoRenderURL != defaultKaTeXAutoRenderURL {
-		t.Fatalf("KaTeXAutoRenderURL = %q, want %q", cfg.KaTeXAutoRenderURL, defaultKaTeXAutoRenderURL)
-	}
-	if cfg.MermaidJSURL != defaultMermaidJSURL {
-		t.Fatalf("MermaidJSURL = %q, want %q", cfg.MermaidJSURL, defaultMermaidJSURL)
+	if cfg.Language != "en" || cfg.Pagination.PageSize != 20 || cfg.Related.Count != 5 || cfg.Timeline.Path != "notes" {
+		t.Fatalf("NormalizeSiteConfig() defaults = %#v", cfg)
 	}
 }
 
-func TestNormalizeSiteConfigPreservesExplicitDefaultPoliciesWhenMarkedSet(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := NormalizeSiteConfig(model.SiteConfig{
-		Title:             "Garden Notes",
-		BaseURL:           "https://example.com/blog",
-		DefaultPublish:    false,
-		DefaultPublishSet: true,
-		RSS: model.RSSConfig{
-			Enabled:    false,
-			EnabledSet: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("NormalizeSiteConfig() error = %v", err)
-	}
-	if cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = true, want explicit false to be preserved")
-	}
-	if cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = true, want explicit false to be preserved")
-	}
-}
-
-func TestValidateLoadedSiteConfigPreservesExplicitDefaultPublishFalse(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := ValidateLoadedSiteConfig(model.SiteConfig{
-		Title:             "Garden Notes",
-		BaseURL:           "https://example.com/blog",
-		DefaultPublish:    false,
-		DefaultPublishSet: true,
-	})
-	if err != nil {
-		t.Fatalf("ValidateLoadedSiteConfig() error = %v", err)
-	}
-	if cfg.DefaultPublish {
-		t.Fatal("DefaultPublish = true, want explicit false to be preserved")
-	}
-}
-
-func TestValidateLoadedSiteConfigPreservesExplicitRSSFalse(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := ValidateLoadedSiteConfig(model.SiteConfig{
-		Title:   "Garden Notes",
-		BaseURL: "https://example.com/blog",
-		RSS: model.RSSConfig{
-			Enabled:    false,
-			EnabledSet: true,
-		},
-	})
-	if err != nil {
-		t.Fatalf("ValidateLoadedSiteConfig() error = %v", err)
-	}
-	if cfg.RSS.Enabled {
-		t.Fatal("RSS.Enabled = true, want explicit false to be preserved")
-	}
-}
-
-func TestNormalizeSiteConfigRejectsTimelinePathTraversal(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		timelinePath string
-	}{
-		{name: "slash separated", timelinePath: "../notes"},
-		{name: "backslash separated", timelinePath: `..\notes`},
-		{name: "mixed separators", timelinePath: `..\/notes`},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := NormalizeSiteConfig(model.SiteConfig{
-				Title:   "Garden Notes",
-				BaseURL: "https://example.com/blog",
-				Timeline: model.TimelineConfig{
-					Path: tt.timelinePath,
-				},
-			})
-			if err == nil {
-				t.Fatal("NormalizeSiteConfig() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), "timeline.path") {
-				t.Fatalf("NormalizeSiteConfig() error = %q, want timeline.path validation", err.Error())
-			}
-		})
-	}
-}
-
-func TestNormalizeSiteConfigRejectsNonSiteRelativeTimelinePath(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name         string
-		timelinePath string
-	}{
-		{name: "windows drive", timelinePath: `C:\notes`},
-		{name: "unc path", timelinePath: `\\server\share`},
-		{name: "query", timelinePath: "notes?draft=1"},
-		{name: "fragment", timelinePath: "notes#archive"},
-	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			_, err := NormalizeSiteConfig(model.SiteConfig{
-				Title:   "Garden Notes",
-				BaseURL: "https://example.com/blog",
-				Timeline: model.TimelineConfig{
-					Path: tt.timelinePath,
-				},
-			})
-			if err == nil {
-				t.Fatal("NormalizeSiteConfig() error = nil, want non-nil")
-			}
-			if !strings.Contains(err.Error(), "timeline.path") {
-				t.Fatalf("NormalizeSiteConfig() error = %q, want timeline.path validation", err.Error())
-			}
-		})
-	}
-}
-
-func TestNormalizeSiteConfigNormalizesTimelinePathSeparators(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := NormalizeSiteConfig(model.SiteConfig{
-		Title:   "Garden Notes",
-		BaseURL: "https://example.com/blog",
-		Timeline: model.TimelineConfig{
-			Path: `journal\2026`,
-		},
-	})
-	if err != nil {
-		t.Fatalf("NormalizeSiteConfig() error = %v", err)
-	}
-	if cfg.Timeline.Path != "journal/2026" {
-		t.Fatalf("Timeline.Path = %q, want %q", cfg.Timeline.Path, "journal/2026")
-	}
-}
-
-func writeConfigFile(t *testing.T, content string) string {
+func writeConfigVault(t *testing.T, content string) string {
 	t.Helper()
-
-	return writeConfigFileAt(t, t.TempDir(), content)
+	vault := t.TempDir()
+	writeConfigTestFile(t, vault, Filename, strings.TrimSpace(content)+"\n")
+	return vault
 }
 
-func writeConfigFileAt(t *testing.T, dir string, content string) string {
+func writeConfigTestFile(t *testing.T, root string, relPath string, content string) {
 	t.Helper()
-
-	configPath := filepath.Join(dir, "obsite.yaml")
-	if err := os.WriteFile(configPath, []byte(strings.TrimLeft(content, "\n")), 0o644); err != nil {
-		t.Fatalf("WriteFile(%q) error = %v", configPath, err)
+	filePath := filepath.Join(root, filepath.FromSlash(relPath))
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+		t.Fatal(err)
 	}
-
-	return configPath
-}
-
-func boolPtr(value bool) *bool {
-	return &value
-}
-
-func writeRequiredThemeTemplates(t *testing.T, root string) {
-	t.Helper()
-
-	writeRequiredThemeTemplatesExcept(t, root)
-}
-
-func writeRequiredThemeTemplatesExcept(t *testing.T, root string, missing ...string) {
-	t.Helper()
-
-	if err := os.MkdirAll(root, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", root, err)
-	}
-
-	missingSet := make(map[string]struct{}, len(missing))
-	for _, name := range missing {
-		missingSet[name] = struct{}{}
-	}
-
-	for _, name := range requiredThemeTemplateNames() {
-		if _, skip := missingSet[name]; skip {
-			continue
-		}
-		filePath := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.WriteFile(filePath, []byte(name+"\n"), 0o644); err != nil {
-			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
-		}
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

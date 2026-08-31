@@ -30,7 +30,7 @@ type FrontmatterResult struct {
 // ParseFrontmatter reads each scanned Markdown file, extracts YAML frontmatter
 // when present, and partitions notes according to publish/defaultPublish.
 func ParseFrontmatter(scanResult ScanResult, cfg model.SiteConfig) (FrontmatterResult, error) {
-	defaultPublish := cfg.EffectiveDefaultPublish()
+	defaultPublish := cfg.DefaultPublish
 
 	result := FrontmatterResult{
 		PublicNotes: make([]*model.Note, 0, len(scanResult.MarkdownFiles)),

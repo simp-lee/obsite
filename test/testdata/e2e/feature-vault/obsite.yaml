@@ -4,10 +4,7 @@ author: Alice Example
 description: Integration coverage for advanced site features.
 language: en
 defaultPublish: true
-search:
-  enabled: true
-  pagefindPath: tools/pagefind_extended
-  pagefindVersion: 1.5.2
+defaultImg: ""
 pagination:
   pageSize: 2
 sidebar:
@@ -23,7 +20,3 @@ timeline:
   enabled: true
   asHomepage: true
   path: notes
-themes:
-  feature:
-    root: templates
-defaultTheme: feature

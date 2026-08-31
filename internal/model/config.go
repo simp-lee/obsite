@@ -7,29 +7,27 @@ type ThemeConfig struct {
 
 // SiteConfig is the stable site-level configuration contract shared across packages.
 // URL-like fields intentionally remain plain strings so html/template keeps contextual escaping.
-// DefaultPublishSet and RSS.EnabledSet disambiguate explicit false from shared
-// product defaults, which resolve to true when unset.
 type SiteConfig struct {
-	Title             string
-	BaseURL           string
-	Author            string
-	Description       string
-	Language          string
-	DefaultPublish    bool
-	DefaultPublishSet bool
-	DefaultImg        string
-	Themes            map[string]ThemeConfig
-	DefaultTheme      string
-	ActiveThemeName   string
-	ThemeRoot         string
-	CustomCSS         string
-	Search            SearchConfig
-	Pagination        PaginationConfig
-	Sidebar           SidebarConfig
-	Popover           PopoverConfig
-	Related           RelatedConfig
-	RSS               RSSConfig
-	Timeline          TimelineConfig
+	Title           string
+	BaseURL         string
+	Author          string
+	Description     string
+	Language        string
+	DefaultPublish  bool
+	DefaultImg      string
+	Themes          map[string]ThemeConfig
+	DefaultTheme    string
+	ActiveThemeName string
+	ThemeRoot       string
+	ThemeDir        string
+	CustomCSS       string
+	Search          SearchConfig
+	Pagination      PaginationConfig
+	Sidebar         SidebarConfig
+	Popover         PopoverConfig
+	Related         RelatedConfig
+	RSS             RSSConfig
+	Timeline        TimelineConfig
 
 	KaTeXCSSURL        string
 	KaTeXJSURL         string
@@ -67,8 +65,7 @@ type RelatedConfig struct {
 
 // RSSConfig controls RSS feed emission.
 type RSSConfig struct {
-	Enabled    bool
-	EnabledSet bool
+	Enabled bool
 }
 
 // TimelineConfig controls the recent-notes timeline page.
@@ -76,23 +73,4 @@ type TimelineConfig struct {
 	Enabled    bool
 	AsHomepage bool
 	Path       string
-}
-
-// EffectiveDefaultPublish returns the resolved publish policy for notes that do
-// not set frontmatter publish.
-func (cfg SiteConfig) EffectiveDefaultPublish() bool {
-	if cfg.DefaultPublishSet {
-		return cfg.DefaultPublish
-	}
-
-	return true
-}
-
-// EffectiveRSSEnabled returns the resolved RSS policy for the site.
-func (cfg SiteConfig) EffectiveRSSEnabled() bool {
-	if cfg.RSS.EnabledSet {
-		return cfg.RSS.Enabled
-	}
-
-	return true
 }

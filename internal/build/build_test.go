@@ -2770,11 +2770,10 @@ Body.
 		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
 	}
 
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	cfg, err := internalconfig.LoadForBuild(vaultPath)
 	if err != nil {
 		t.Fatalf("config.LoadForBuild() error = %v", err)
 	}
-	cfg := loadedCfg.Config
 	if cfg.CustomCSS != customCSSPath {
 		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
 	}
@@ -2902,9 +2901,9 @@ Body.
 		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
 	}
 
-	input, err := LoadSiteInput(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	input, err := LoadSiteInput(vaultPath)
 	if err != nil {
-		t.Fatalf("LoadSiteInput(%q) error = %v", configPath, err)
+		t.Fatalf("LoadSiteInput(%q) error = %v", vaultPath, err)
 	}
 	if input.Config.CustomCSS != customCSSPath {
 		t.Fatalf("input.Config.CustomCSS = %q, want %q", input.Config.CustomCSS, customCSSPath)
@@ -3628,7 +3627,6 @@ Alpha summary.
 
 	cfg := testBuildSiteConfig()
 	cfg.RSS.Enabled = false
-	cfg.RSS.EnabledSet = true
 
 	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
 	if err != nil {
@@ -3659,7 +3657,7 @@ Alpha summary.
 	}
 }
 
-func TestBuildUsesDocumentedRSSDefaultWhenPolicyUnset(t *testing.T) {
+func TestBuildUsesCanonicalRSSDefault(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
@@ -3673,7 +3671,7 @@ Alpha summary.
 `)
 
 	cfg := testBuildSiteConfig()
-	cfg.RSS = model.RSSConfig{}
+	cfg.RSS = internalconfig.Defaults().RSS
 
 	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
 	if err != nil {
@@ -3697,7 +3695,7 @@ Alpha summary.
 			`<link rel="alternate" type="application/rss+xml"`,
 			`<link rel=alternate type=application/rss+xml`,
 		) {
-			t.Fatalf("%s missing RSS autodiscovery link when RSS policy is unset\n%s", page.name, page.data)
+			t.Fatalf("%s missing RSS autodiscovery link for canonical default\n%s", page.name, page.data)
 		}
 	}
 }
@@ -4877,14 +4875,14 @@ func TestBuildUsesLoadedConfigDefaultsForMinimalConfig(t *testing.T) {
 		"",
 	}, "\n"))
 
-	loadedCfg, err := internalconfig.LoadForBuild("", internalconfig.Overrides{
-		Title:   "Field Notes",
-		BaseURL: "https://example.com/blog",
-	})
+	cfg := internalconfig.Defaults()
+	cfg.Title = "Field Notes"
+	cfg.BaseURL = "https://example.com/blog"
+	loadedCfg, err := internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
-		t.Fatalf("config.LoadForBuild() error = %v", err)
+		t.Fatalf("config.NormalizeSiteConfig() error = %v", err)
 	}
-	expectedInput := SiteInput{Config: loadedCfg.Config}
+	expectedInput := SiteInput{Config: loadedCfg}
 
 	result, err := BuildWithOptions(expectedInput, vaultPath, outputPath, Options{})
 	if err != nil {
@@ -8202,16 +8200,14 @@ func TestRunOrderedPipelineHonorsConcurrencyAndInputOrder(t *testing.T) {
 
 func testBuildSiteConfig() model.SiteConfig {
 	return model.SiteConfig{
-		Title:             "Field Notes",
-		BaseURL:           "https://example.com/blog/",
-		Author:            "Alice Example",
-		Description:       "An editorial notebook.",
-		Language:          "en",
-		DefaultPublish:    true,
-		DefaultPublishSet: true,
+		Title:          "Field Notes",
+		BaseURL:        "https://example.com/blog/",
+		Author:         "Alice Example",
+		Description:    "An editorial notebook.",
+		Language:       "en",
+		DefaultPublish: true,
 		RSS: model.RSSConfig{
-			Enabled:    true,
-			EnabledSet: true,
+			Enabled: true,
 		},
 	}
 }

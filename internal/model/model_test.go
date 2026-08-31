@@ -36,30 +36,6 @@ func TestLinkRefRetainsRawAndResolvedTargets(t *testing.T) {
 	}
 }
 
-func TestSiteConfigEffectiveDefaultPublishUsesDocumentedDefaultUntilSet(t *testing.T) {
-	cfg := SiteConfig{}
-	if !cfg.EffectiveDefaultPublish() {
-		t.Fatal("EffectiveDefaultPublish() = false, want documented default true")
-	}
-
-	cfg = SiteConfig{DefaultPublish: false, DefaultPublishSet: true}
-	if cfg.EffectiveDefaultPublish() {
-		t.Fatal("EffectiveDefaultPublish() = true, want explicit false")
-	}
-}
-
-func TestSiteConfigEffectiveRSSEnabledUsesDocumentedDefaultUntilSet(t *testing.T) {
-	cfg := SiteConfig{}
-	if !cfg.EffectiveRSSEnabled() {
-		t.Fatal("EffectiveRSSEnabled() = false, want documented default true")
-	}
-
-	cfg = SiteConfig{RSS: RSSConfig{Enabled: false, EnabledSet: true}}
-	if cfg.EffectiveRSSEnabled() {
-		t.Fatal("EffectiveRSSEnabled() = true, want explicit false")
-	}
-}
-
 func TestNoteFrontmatterPublishStoresSinglePublishPolicy(t *testing.T) {
 	published := true
 	hidden := false

@@ -12,7 +12,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
-	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
@@ -118,6 +117,12 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 }
 
 func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath string, vaultPath string, configPath string, theme string, port int) error {
+	if strings.TrimSpace(configPath) != "" {
+		return fmt.Errorf("--config has been removed; Obsite reads <vault>/%s", defaultConfigFilename)
+	}
+	if strings.TrimSpace(theme) != "" {
+		return fmt.Errorf("--theme has been removed")
+	}
 	trimmedVaultPath := strings.TrimSpace(vaultPath)
 	if trimmedVaultPath == "" {
 		return fmt.Errorf("--vault is required when --watch is enabled")
@@ -130,16 +135,13 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath 
 	normalizedVaultPath := boundary.VaultPath
 	resolvedOutputPath := boundary.OutputPath
 
-	resolvedConfigPath, err := resolveBuildConfigPath(normalizedVaultPath, configPath)
-	if err != nil {
-		return err
-	}
+	resolvedConfigPath := filepath.Join(normalizedVaultPath, defaultConfigFilename)
 
 	var currentExtraWatchInputs []serveWatchInput
 	var currentThemeRoots []string
 
 	build := func() error {
-		input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath, Theme: theme})
+		input, err := deps.loadSiteInput(normalizedVaultPath)
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}

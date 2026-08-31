@@ -368,10 +368,10 @@ func TestParseFrontmatterNormalizedSiteConfigPublishesByDefault(t *testing.T) {
 		t.Fatalf("Scan() error = %v", err)
 	}
 
-	cfg, err := internalconfig.NormalizeSiteConfig(model.SiteConfig{
-		Title:   "Garden Notes",
-		BaseURL: "https://example.com/blog",
-	})
+	cfg := internalconfig.Defaults()
+	cfg.Title = "Garden Notes"
+	cfg.BaseURL = "https://example.com/blog"
+	cfg, err = internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
 		t.Fatalf("config.NormalizeSiteConfig() error = %v", err)
 	}
@@ -392,30 +392,6 @@ func TestParseFrontmatterNormalizedSiteConfigPublishesByDefault(t *testing.T) {
 	}
 	if _, ok := got.Unpublished.Notes["notes/default.md"]; ok {
 		t.Fatal("Unpublished.Notes unexpectedly contains notes/default.md")
-	}
-}
-
-func TestParseFrontmatterUsesDocumentedDefaultPublishWhenPolicyUnset(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	writeVaultFile(t, vaultPath, "notes/default.md", "---\ntitle: Default\n---\nvisible\n")
-
-	scanResult, err := Scan(vaultPath)
-	if err != nil {
-		t.Fatalf("Scan() error = %v", err)
-	}
-
-	got, err := ParseFrontmatter(scanResult, model.SiteConfig{})
-	if err != nil {
-		t.Fatalf("ParseFrontmatter() error = %v", err)
-	}
-
-	if len(got.PublicNotes) != 1 {
-		t.Fatalf("len(PublicNotes) = %d, want 1 when defaultPublish is unset", len(got.PublicNotes))
-	}
-	if got.PublicNotes[0].RelPath != "notes/default.md" {
-		t.Fatalf("PublicNotes[0].RelPath = %q, want %q", got.PublicNotes[0].RelPath, "notes/default.md")
 	}
 }
 
@@ -440,7 +416,7 @@ visible
 		t.Fatalf("Scan() error = %v", err)
 	}
 
-	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: false, DefaultPublishSet: true})
+	got, err := ParseFrontmatter(scanResult, model.SiteConfig{DefaultPublish: false})
 	if err != nil {
 		t.Fatalf("ParseFrontmatter() error = %v", err)
 	}
