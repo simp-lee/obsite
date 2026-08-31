@@ -187,18 +187,12 @@ func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
 func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	updated := time.Date(2026, 4, 7, 15, 4, 0, 0, time.UTC)
 	cfg := SiteConfig{
-		Themes: map[string]ThemeConfig{
-			"serif": {Root: "themes/serif"},
-		},
-		DefaultTheme:    "serif",
-		ActiveThemeName: "serif",
-		ThemeRoot:       "/tmp/themes/serif",
-		CustomCSS:       "assets/custom.css",
-		Pagination:      PaginationConfig{PageSize: 30},
-		Sidebar:         SidebarConfig{Enabled: true},
-		Popover:         PopoverConfig{Enabled: true},
-		Related:         RelatedConfig{Enabled: true, Count: 6},
-		RSS:             RSSConfig{Enabled: true},
+		CustomCSS:  "assets/custom.css",
+		Pagination: PaginationConfig{PageSize: 30},
+		Sidebar:    SidebarConfig{Enabled: true},
+		Popover:    PopoverConfig{Enabled: true},
+		Related:    RelatedConfig{Enabled: true, Count: 6},
+		RSS:        RSSConfig{Enabled: true},
 		Timeline: TimelineConfig{
 			Enabled:    true,
 			AsHomepage: true,
@@ -208,18 +202,6 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	frontmatter := Frontmatter{Updated: updated}
 	summary := NoteSummary{Summary: "Used by RSS and list pages."}
 
-	if got := cfg.Themes["serif"].Root; got != "themes/serif" {
-		t.Fatalf("Themes[serif].Root = %q, want %q", got, "themes/serif")
-	}
-	if cfg.DefaultTheme != "serif" {
-		t.Fatalf("DefaultTheme = %q, want %q", cfg.DefaultTheme, "serif")
-	}
-	if cfg.ActiveThemeName != "serif" {
-		t.Fatalf("ActiveThemeName = %q, want %q", cfg.ActiveThemeName, "serif")
-	}
-	if cfg.ThemeRoot != "/tmp/themes/serif" {
-		t.Fatalf("ThemeRoot = %q, want %q", cfg.ThemeRoot, "/tmp/themes/serif")
-	}
 	if cfg.Pagination.PageSize != 30 {
 		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 30)
 	}

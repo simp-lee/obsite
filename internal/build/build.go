@@ -320,15 +320,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, fmt.Errorf("resolve custom CSS: %w", err)
 	}
-	cfg.ThemeRoot, err = resolveThemeRoot(normalizedVaultPath, cfg.ThemeRoot)
-	if err != nil {
-		return result, fmt.Errorf("resolve theme root: %w", err)
-	}
-	themeAssets, err := render.ListThemeStaticAssets(cfg.ThemeRoot)
-	if err != nil {
-		return result, fmt.Errorf("list theme static assets: %w", err)
-	}
-	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, themeAssets)
+	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
 	if err != nil {
@@ -361,7 +353,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		buildABISignature = abiSourceErr.fallbackSignature
 		warnBuildABISourceSignatureFailure(diagnostics, abiSourceErr)
 	}
-	templateSignature, err := buildTemplateSignature(cfg.ActiveThemeName, cfg.ThemeRoot, themeAssets)
+	templateSignature, err := buildEmbeddedTemplateSignature()
 	if err != nil {
 		return result, err
 	}
@@ -506,11 +498,8 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	result.RecentNotes = append([]model.NoteSummary(nil), recentNotes...)
 	siteLastModified := siteLastModified(allPublicNotes(idx))
 	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
-	writeStyleCSS, err := styleCSSDestinationPlanned(cfg)
-	if err != nil {
-		return result, fmt.Errorf("plan site stylesheet: %w", err)
-	}
-	if err := validateOutputDestinations(cfg, idx, folderPages, themeAssets, mergedAssets, writeStyleCSS, !disableCacheReuse); err != nil {
+	writeStyleCSS := true
+	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, writeStyleCSS, !disableCacheReuse); err != nil {
 		return result, fmt.Errorf("plan generated output: %w", err)
 	}
 	stagingOutputPath := publisher.OutputPath()
@@ -590,9 +579,6 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		if err := minifyCSSFile(filepath.Join(stagingOutputPath, "style.css"), options.minifier); err != nil {
 			return result, err
 		}
-	}
-	if err := render.EmitThemeStaticAssets(stagingOutputPath, themeAssets); err != nil {
-		return result, fmt.Errorf("emit theme static assets: %w", err)
 	}
 	if err := render.EmitRuntimeAssets(stagingOutputPath); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
@@ -1959,9 +1945,9 @@ func minifyCSSFile(filePath string, minifier *minify.M) error {
 	return nil
 }
 
-func buildReservedAssetOutputPaths(customCSSPath string, themeAssets []render.ThemeStaticAsset) []string {
-	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+len(themeAssets)+1)
-	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+len(themeAssets)+1)
+func buildReservedAssetOutputPaths(customCSSPath string) []string {
+	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+1)
+	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+1)
 	appendReserved := func(value string) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
@@ -1976,9 +1962,6 @@ func buildReservedAssetOutputPaths(customCSSPath string, themeAssets []render.Th
 
 	for _, outputPath := range render.RuntimeAssetOutputPaths() {
 		appendReserved(outputPath)
-	}
-	for _, asset := range themeAssets {
-		appendReserved(asset.OutputPath)
 	}
 	if strings.TrimSpace(customCSSPath) != "" {
 		appendReserved(customCSSOutputPath)
@@ -2008,25 +1991,6 @@ func resolveCustomCSSSource(vaultRoot string, customCSSPath string) (string, err
 	}
 
 	return resolvedPath, nil
-}
-
-func resolveThemeRoot(vaultRoot string, themeRoot string) (string, error) {
-	trimmedRoot := strings.TrimSpace(themeRoot)
-	if trimmedRoot == "" {
-		return "", nil
-	}
-
-	resolvedRoot, _, err := internalfsutil.InspectContainedDirectory(vaultRoot, trimmedRoot)
-	if err != nil {
-		if errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
-			return "", fmt.Errorf("theme root %q must stay inside the vault", trimmedRoot)
-		}
-		if errors.Is(err, internalfsutil.ErrSymlinkPath) {
-			return "", fmt.Errorf("theme root %q must not contain symbolic links", trimmedRoot)
-		}
-		return "", fmt.Errorf("inspect theme root %q: %w", trimmedRoot, err)
-	}
-	return resolvedRoot, nil
 }
 
 func copyCustomCSS(vaultRoot string, customCSSPath string, outputRoot string) error {

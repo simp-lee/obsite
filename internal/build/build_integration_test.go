@@ -543,8 +543,6 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 	cfg.Related.Count = 2
 	cfg.Timeline.Enabled = true
 	cfg.Timeline.AsHomepage = true
-	cfg.ActiveThemeName = "feature"
-	cfg.ThemeRoot = filepath.Join(vaultPath, "templates")
 	cfg.CustomCSS = filepath.Join(vaultPath, "custom.css")
 	var diagnostics bytes.Buffer
 	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
@@ -627,7 +625,6 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		updatedHTML := readBuildOutputFile(t, outputPath, "updated-story/index.html")
 
 		for _, snippets := range [][]string{
-			{`data-e2e-custom-note="updated-story"`, `data-e2e-custom-note=updated-story`},
 			{`data-theme-toggle`, `data-theme-toggle=""`},
 			{`__obsiteInitThemeToggle`, `window.__obsiteInitThemeToggle`},
 			{`localStorage.getItem(storageKey)`},
@@ -740,21 +737,7 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 			}
 		}
 
-		notesFolderHTML := readBuildOutputFile(t, outputPath, "notes/index.html")
-		if !containsAny(notesFolderHTML,
-			`data-e2e-custom-folder="notes"`,
-			`data-e2e-custom-folder=notes`,
-		) {
-			t.Fatalf("notes folder page missing override marker\n%s", notesFolderHTML)
-		}
-
 		gardenFolderHTML := readBuildOutputFile(t, outputPath, "notes/garden/index.html")
-		if !containsAny(gardenFolderHTML,
-			`data-e2e-custom-folder="notes/garden"`,
-			`data-e2e-custom-folder=notes/garden`,
-		) {
-			t.Fatalf("notes/garden folder page missing override marker\n%s", gardenFolderHTML)
-		}
 		if !containsAny(gardenFolderHTML,
 			`href="../../updated-story/"`,
 			`href=../../updated-story/`,
@@ -764,7 +747,6 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 
 		gardenPageTwoHTML := readBuildOutputFile(t, outputPath, "notes/garden/page/2/index.html")
 		for _, snippets := range [][]string{
-			{`data-e2e-custom-folder="notes/garden"`, `data-e2e-custom-folder=notes/garden`},
 			{`href="../../../../field-notes/"`, `href=../../../../field-notes/`},
 			{`href="../../" rel="prev">Previous</a>`, `href=../../ rel=prev>Previous</a>`},
 		} {
@@ -825,7 +807,7 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/updated-story/", http.StatusOK, "Updated Story")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/page/2/", http.StatusOK, "Reference Guide")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/page/3/", http.StatusOK, "Archive")
-		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, `data-e2e-custom-folder=notes`)
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, "notes")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/garden/page/2/", http.StatusOK, "Field Notes")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/tags/field/page/2/", http.StatusOK, "Field Notes")
 		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/index.xml", http.StatusOK, "Updated Story")
@@ -931,12 +913,6 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 	})
 
 	notesFolderHTML := readBuildOutputFile(t, outputPath, "notes/index.html")
-	if !containsAny(notesFolderHTML,
-		`data-e2e-custom-folder="notes"`,
-		`data-e2e-custom-folder=notes`,
-	) {
-		t.Fatalf("notes folder page missing override marker while standalone timeline route exists\n%s", notesFolderHTML)
-	}
 	for _, snippets := range [][]string{
 		{`class="pagination-nav"`, `class=pagination-nav`},
 		{`class="pagination-pages"`, `class=pagination-pages`},
@@ -967,7 +943,7 @@ func TestBuildIntegrationFeatureFixtureEmitsStandaloneTimelineRoute(t *testing.T
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/", http.StatusOK, "Feature Garden")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/timeline/", http.StatusOK, "Updated Story")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/timeline/page/2/", http.StatusOK, "Reference Guide")
-	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, `data-e2e-custom-folder=notes`)
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/notes/", http.StatusOK, "notes")
 }
 
 func TestBuildIntegrationSlugConflictFixtureReportsFatalDiagnostics(t *testing.T) {
@@ -1095,8 +1071,6 @@ func featureFixtureConfig(vaultPath string) internalmodel.SiteConfig {
 	cfg.Related.Count = 2
 	cfg.Timeline.Enabled = true
 	cfg.Timeline.AsHomepage = true
-	cfg.ActiveThemeName = "feature"
-	cfg.ThemeRoot = filepath.Join(vaultPath, "templates")
 	cfg.CustomCSS = filepath.Join(vaultPath, "custom.css")
 	return cfg
 }

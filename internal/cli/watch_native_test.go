@@ -40,7 +40,6 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 		outputPath:       output,
 		configPath:       filepath.Join(vault, defaultConfigFilename),
 		extraWatchInputs: collectServeWatchInputs(themeDir, filepath.Join(vault, "custom.css"), vault),
-		themeRoots:       []string{themeDir},
 		debounce:         20 * time.Millisecond,
 		rebuild: func() error {
 			if failNext.Swap(false) {

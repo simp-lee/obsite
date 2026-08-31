@@ -188,9 +188,6 @@ func TestLoadForBuildDiscoversOnlyFixedVaultInputs(t *testing.T) {
 	if cfg.ThemeDir != filepath.Join(vault, ".obsite", "theme") {
 		t.Fatalf("ThemeDir = %q", cfg.ThemeDir)
 	}
-	if cfg.ThemeRoot != "" || cfg.ActiveThemeName != "" || len(cfg.Themes) != 0 {
-		t.Fatalf("legacy theme state activated: %#v", cfg)
-	}
 }
 
 func TestLoadForBuildRejectsInvalidFixedVaultInputs(t *testing.T) {

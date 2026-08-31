@@ -28,15 +28,6 @@ func TestOutputOwnerRegistryRejectsCrossOwnerAndAncestorCollisions(t *testing.T)
 			},
 		},
 		{
-			name: "same owner different source",
-			claims: func(plan *outputDestinationPlan) error {
-				if err := plan.claimFile("assets/theme/logo.svg", outputOwnerTheme, "logo.svg"); err != nil {
-					return err
-				}
-				return plan.claimFile("assets/theme/LOGO.svg", outputOwnerTheme, "LOGO.svg")
-			},
-		},
-		{
 			name: "file is ancestor",
 			claims: func(plan *outputDestinationPlan) error {
 				if err := plan.claimFile("style.css/index.html", outputOwnerPage, "style.css folder"); err != nil {
@@ -72,12 +63,6 @@ func TestBuildRejectsExternalVaultInputSources(t *testing.T) {
 			},
 			setup: func(t *testing.T, external string) {
 				writeBuildTestFile(t, external, "sentinel.css", "sentinel")
-			},
-		},
-		{
-			name: "theme root",
-			set: func(cfg *model.SiteConfig, external string) {
-				cfg.ThemeRoot = external
 			},
 		},
 	}
@@ -155,25 +140,6 @@ func TestBuildPublishesToNestedOutputWithMissingParents(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(outputPath, "note", "index.html")); err != nil {
 		t.Fatalf("os.Stat(note page) error = %v", err)
-	}
-}
-
-func TestBuildAllowsStylePathWhenThemeHasNoStyleOutput(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	outputPath := filepath.Join(vaultPath, "public")
-	themeRoot := filepath.Join(vaultPath, ".obsite", "theme")
-	writeBuildCompleteThemeRoot(t, themeRoot, nil)
-	writeBuildTestFile(t, vaultPath, "style.css/note.md", "# Note")
-	cfg := testBuildSiteConfig()
-	cfg.ThemeRoot = themeRoot
-
-	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
-		t.Fatalf("buildWithOptions() error = %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(outputPath, "style.css", "index.html")); err != nil {
-		t.Fatalf("os.Stat(style.css/index.html) error = %v", err)
 	}
 }
 

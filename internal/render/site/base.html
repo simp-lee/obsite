@@ -191,9 +191,9 @@
 
   {{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>{{end}}
 </head>
-<body class="kind-{{.Kind}}">
+<body class="kind-{{.Kind}}" data-obsite-root data-obsite-kind="{{.Kind}}">
   <div class="site-frame">
-    <header class="site-masthead">
+    <header class="site-masthead" data-obsite-header>
       <div class="masthead-band">
         <a class="site-mark" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}">{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}</a>
         <p class="site-mark-caption">Notes, references, and linked fragments.</p>
@@ -250,12 +250,12 @@
       </aside>
       {{end}}
 
-      <main class="site-main">
+      <main class="site-main" data-obsite-main>
         {{template "content" .}}
       </main>
     </div>
 
-    <footer class="site-footer">
+    <footer class="site-footer" data-obsite-footer>
       <p>{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}{{if .Site.Author}} · {{.Site.Author}}{{end}}</p>
       <p class="site-footer-note">Built for long-form reading, quick scanning, and durable internal links.</p>
     </footer>

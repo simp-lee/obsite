@@ -2,19 +2,14 @@ package render
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
-	"io/fs"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"reflect"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +20,8 @@ import (
 	"golang.org/x/net/html/atom"
 
 	"github.com/simp-lee/obsite/internal/diag"
-	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/seo"
-	templateassets "github.com/simp-lee/obsite/templates"
 )
 
 const (
@@ -58,6 +51,14 @@ var embeddedTemplateAssetNames = []string{
 
 var embeddedHTMLTemplateNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
 
+var embeddedHTMLTemplatePaths = func() []string {
+	paths := make([]string, len(embeddedHTMLTemplateNames))
+	for index, name := range embeddedHTMLTemplateNames {
+		paths[index] = embeddedSiteAssetPath(name)
+	}
+	return paths
+}()
+
 // RequiredHTMLTemplateNames lists the HTML template files every external theme must provide.
 var RequiredHTMLTemplateNames = []string{
 	"base.html",
@@ -85,61 +86,12 @@ var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 	return parseEmbeddedTemplates()
 })
 
-var (
-	templateSetCache           sync.Map
-	themeTemplateSnapshotCache sync.Map
-)
-
-type themeIdentity struct {
-	activeThemeName string
-	themeRoot       string
-}
-
-type templateSetCacheKey struct {
-	activeThemeName string
-	themeRoot       string
-	signature       string
-}
-
-type themeTemplateFile struct {
-	path     string
-	contents string
-}
-
-type themeTemplateSnapshot struct {
-	identity  themeIdentity
-	files     []themeTemplateFile
-	signature string
-}
-
-type themeTemplateFileState struct {
-	name            string
-	path            string
-	exists          bool
-	size            int64
-	modTimeUnixNano int64
-	changeToken     string
-	contents        string
-}
-
-type themeTemplateState struct {
-	identity themeIdentity
-	files    []themeTemplateFileState
-}
-
-type cachedThemeTemplateSnapshot struct {
-	mu       sync.Mutex
-	state    themeTemplateState
-	snapshot themeTemplateSnapshot
-	ready    bool
-}
-
 func parseEmbeddedTemplates() (*template.Template, error) {
 	return template.New(baseTemplateName).Funcs(template.FuncMap{
 		"toJSON":       templateJSON,
 		"pageAssetURL": pageAssetURL,
 		"siteBasePath": siteBasePath,
-	}).ParseFS(templateassets.FS, embeddedHTMLTemplateNames...)
+	}).ParseFS(embeddedSiteFS, embeddedHTMLTemplatePaths...)
 }
 
 // RenderedPage is the rendered HTML plus the PageData used to execute it.
@@ -983,27 +935,14 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 	return renderPage(page, nil)
 }
 
-// ThemeStaticAsset describes one regular file owned by the selected theme root.
-type ThemeStaticAsset struct {
-	rootPath          string
-	SourcePath        string
-	ThemeRelativePath string
-	OutputPath        string
-}
-
-// EmitStyleCSS writes the configured stylesheet into the output root.
-// It returns whether style.css was actually written.
+// EmitStyleCSS writes the permanent embedded stylesheet into the output root.
 func EmitStyleCSS(outputRoot string, site model.SiteConfig) (bool, error) {
 	if strings.TrimSpace(outputRoot) == "" {
 		return false, errors.New("emit style.css: output root is required")
 	}
-
-	data, found, err := readStyleAsset(site)
+	data, err := readEmbeddedAsset("style.css")
 	if err != nil {
 		return false, fmt.Errorf("emit style.css: %w", err)
-	}
-	if !found {
-		return false, nil
 	}
 	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
 		return false, fmt.Errorf("emit style.css: mkdir %q: %w", outputRoot, err)
@@ -1011,96 +950,7 @@ func EmitStyleCSS(outputRoot string, site model.SiteConfig) (bool, error) {
 	if err := os.WriteFile(filepath.Join(outputRoot, "style.css"), data, 0o644); err != nil {
 		return false, fmt.Errorf("emit style.css: write style.css: %w", err)
 	}
-
 	return true, nil
-}
-
-// ListThemeStaticAssets returns the stable inventory of regular, non-HTML files
-// owned by the selected theme root. Theme-owned HTML is always treated as
-// template input and is never emitted as a static asset.
-func ListThemeStaticAssets(themeRoot string) ([]ThemeStaticAsset, error) {
-	normalizedRoot, err := normalizeThemeRoot(themeRoot)
-	if err != nil {
-		return nil, err
-	}
-	if normalizedRoot == "" {
-		return nil, nil
-	}
-
-	assets := make([]ThemeStaticAsset, 0)
-	err = filepath.WalkDir(normalizedRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return fmt.Errorf("walk theme root %q: %w", normalizedRoot, walkErr)
-		}
-		if entry == nil || entry.IsDir() {
-			return nil
-		}
-
-		relPath, err := themeOwnedRelativePath(normalizedRoot, currentPath)
-		if err != nil {
-			return fmt.Errorf("relative theme asset path %q: %w", currentPath, err)
-		}
-		if relPath == "style.css" {
-			return nil
-		}
-		if isThemeHTMLTemplatePath(relPath) {
-			return nil
-		}
-		resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(normalizedRoot, currentPath)
-		if err != nil {
-			return fmt.Errorf("theme static asset %q must be a regular non-symlink file: %w", currentPath, err)
-		}
-
-		assets = append(assets, ThemeStaticAsset{
-			rootPath:          normalizedRoot,
-			SourcePath:        resolvedPath,
-			ThemeRelativePath: relPath,
-			OutputPath:        path.Join("assets", "theme", relPath),
-		})
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	return assets, nil
-}
-
-// EmitThemeStaticAssets copies the provided theme-owned files into the output root.
-func EmitThemeStaticAssets(outputRoot string, assets []ThemeStaticAsset) error {
-	if strings.TrimSpace(outputRoot) == "" {
-		return errors.New("emit theme static assets: output root is required")
-	}
-
-	for _, asset := range assets {
-		_, data, _, err := internalfsutil.ReadContainedRegularFile(asset.rootPath, asset.SourcePath)
-		if err != nil {
-			return fmt.Errorf("emit theme static assets: read %q: %w", asset.SourcePath, err)
-		}
-
-		assetPath := filepath.Join(outputRoot, filepath.FromSlash(asset.OutputPath))
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
-			return fmt.Errorf("emit theme static assets: mkdir %q: %w", filepath.Dir(assetPath), err)
-		}
-		if err := os.WriteFile(assetPath, data, 0o644); err != nil {
-			return fmt.Errorf("emit theme static assets: write %q: %w", asset.OutputPath, err)
-		}
-	}
-
-	return nil
-}
-
-func isThemeHTMLTemplatePath(relPath string) bool {
-	return strings.EqualFold(path.Ext(relPath), ".html")
-}
-
-func themeOwnedRelativePath(themeRoot string, currentPath string) (string, error) {
-	relPath, err := filepath.Rel(themeRoot, currentPath)
-	if err != nil {
-		return "", err
-	}
-
-	return filepath.ToSlash(relPath), nil
 }
 
 // EmitRuntimeAssets writes the embedded offline math and Mermaid runtime files into the output root.
@@ -1195,406 +1045,15 @@ func executeTemplate(page model.PageData) ([]byte, error) {
 }
 
 func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
-	identity, err := resolveThemeIdentity(site)
+	tmpl, err := parseDefaultTemplates()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse default templates: %w", err)
 	}
-	if identity.themeRoot == "" {
-		tmpl, err := parseDefaultTemplates()
-		if err != nil {
-			return nil, fmt.Errorf("parse default templates: %w", err)
-		}
-
-		return tmpl, nil
-	}
-
-	snapshot, err := loadThemeTemplateSnapshot(identity)
-	if err != nil {
-		return nil, err
-	}
-
-	key := snapshot.cacheKey()
-	loader := cachedTemplateSetLoader(snapshot)
-	tmpl, err := loader()
-	if err != nil {
-		templateSetCache.Delete(key)
-		return nil, err
-	}
-	pruneTemplateSetCacheEntries(key)
-
 	return tmpl, nil
-}
-
-func resolveThemeIdentity(site model.SiteConfig) (themeIdentity, error) {
-	themeRoot, err := normalizeThemeRoot(site.ThemeRoot)
-	if err != nil {
-		return themeIdentity{}, err
-	}
-
-	return themeIdentity{
-		activeThemeName: strings.TrimSpace(site.ActiveThemeName),
-		themeRoot:       themeRoot,
-	}, nil
-}
-
-func loadThemeTemplateSnapshot(identity themeIdentity) (themeTemplateSnapshot, error) {
-	state, err := scanThemeTemplateState(identity)
-	if err != nil {
-		return themeTemplateSnapshot{}, err
-	}
-
-	entry, _ := themeTemplateSnapshotCache.LoadOrStore(identity, &cachedThemeTemplateSnapshot{})
-	return entry.(*cachedThemeTemplateSnapshot).load(state)
-}
-
-func (cached *cachedThemeTemplateSnapshot) load(state themeTemplateState) (themeTemplateSnapshot, error) {
-	cached.mu.Lock()
-	defer cached.mu.Unlock()
-
-	if cached.ready && themeTemplateStateMatches(cached.state, state) {
-		return cached.snapshot, nil
-	}
-
-	snapshot, err := scanThemeTemplateSnapshotFromState(state)
-	if err != nil {
-		return themeTemplateSnapshot{}, err
-	}
-
-	cached.state = state
-	cached.snapshot = snapshot
-	cached.ready = true
-
-	return snapshot, nil
-}
-
-func themeTemplateStateMatches(left themeTemplateState, right themeTemplateState) bool {
-	if left.identity != right.identity || len(left.files) != len(right.files) {
-		return false
-	}
-
-	for index := range left.files {
-		if left.files[index] != right.files[index] {
-			return false
-		}
-	}
-
-	return true
-}
-
-func (snapshot themeTemplateSnapshot) cacheKey() templateSetCacheKey {
-	return templateSetCacheKey{
-		activeThemeName: snapshot.identity.activeThemeName,
-		themeRoot:       snapshot.identity.themeRoot,
-		signature:       snapshot.signature,
-	}
-}
-
-func cachedTemplateSetLoader(snapshot themeTemplateSnapshot) func() (*template.Template, error) {
-	key := snapshot.cacheKey()
-	loader, _ := templateSetCache.LoadOrStore(key, sync.OnceValues(func() (*template.Template, error) {
-		return parseTemplateSet(snapshot)
-	}))
-
-	return loader.(func() (*template.Template, error))
-}
-
-func pruneTemplateSetCacheEntries(activeKey templateSetCacheKey) {
-	keys := make([]templateSetCacheKey, 0, 1)
-	templateSetCache.Range(func(key, _ any) bool {
-		cachedKey, ok := key.(templateSetCacheKey)
-		if !ok {
-			return true
-		}
-		if cachedKey.activeThemeName == activeKey.activeThemeName && cachedKey.themeRoot == activeKey.themeRoot && cachedKey.signature != activeKey.signature {
-			keys = append(keys, cachedKey)
-		}
-		return true
-	})
-	for _, key := range keys {
-		templateSetCache.Delete(key)
-	}
-}
-
-func scanThemeTemplateState(identity themeIdentity) (themeTemplateState, error) {
-	if err := validateRequiredThemeTemplateFiles(identity.themeRoot); err != nil {
-		return themeTemplateState{}, err
-	}
-
-	files, err := listThemeTemplateFileStatesInRoot(identity.themeRoot)
-	if err != nil {
-		return themeTemplateState{}, err
-	}
-
-	return themeTemplateState{
-		identity: identity,
-		files:    files,
-	}, nil
-}
-
-func validateRequiredThemeTemplateFiles(themeRoot string) error {
-	missing := make([]string, 0, len(RequiredHTMLTemplateNames))
-	for _, name := range RequiredHTMLTemplateNames {
-		fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, name)
-		if err != nil {
-			return err
-		}
-		if !fileState.exists {
-			missing = append(missing, name)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("missing required theme templates in %q: %s", themeRoot, strings.Join(missing, ", "))
-	}
-
-	return nil
-}
-
-func listThemeTemplateFileStatesInRoot(themeRoot string) ([]themeTemplateFileState, error) {
-	if themeRoot == "" {
-		return nil, nil
-	}
-
-	files := make([]themeTemplateFileState, 0, len(RequiredHTMLTemplateNames))
-	err := filepath.WalkDir(themeRoot, func(currentPath string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return fmt.Errorf("walk theme root %q: %w", themeRoot, walkErr)
-		}
-		if entry == nil || entry.IsDir() {
-			return nil
-		}
-
-		relPath, err := themeOwnedRelativePath(themeRoot, currentPath)
-		if err != nil {
-			return fmt.Errorf("relative theme template path %q: %w", currentPath, err)
-		}
-		if !isThemeHTMLTemplatePath(relPath) {
-			return nil
-		}
-		if !entry.Type().IsRegular() {
-			return fmt.Errorf("theme HTML template %q must be a regular non-symlink file", currentPath)
-		}
-
-		fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, relPath)
-		if err != nil {
-			return err
-		}
-		if !fileState.exists {
-			return nil
-		}
-
-		files = append(files, fileState)
-		return nil
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	sort.Slice(files, func(i int, j int) bool {
-		return files[i].name < files[j].name
-	})
-
-	return files, nil
-}
-
-func scanThemeTemplateSnapshotFromState(state themeTemplateState) (themeTemplateSnapshot, error) {
-	hasher := sha256.New()
-	files := make([]themeTemplateFile, 0, len(state.files))
-	_, _ = hasher.Write([]byte(state.identity.activeThemeName))
-	_, _ = hasher.Write([]byte{0})
-	_, _ = hasher.Write([]byte(state.identity.themeRoot))
-	_, _ = hasher.Write([]byte{0})
-	for _, fileState := range state.files {
-		name := fileState.name
-
-		_, _ = hasher.Write([]byte(name))
-		if !fileState.exists {
-			return themeTemplateSnapshot{}, fmt.Errorf("missing required theme template %q in %q", name, state.identity.themeRoot)
-		}
-
-		_, _ = hasher.Write([]byte{0, 1})
-		_, _ = hasher.Write([]byte(fileState.contents))
-		_, _ = hasher.Write([]byte{0})
-
-		files = append(files, themeTemplateFile{
-			path:     fileState.path,
-			contents: fileState.contents,
-		})
-	}
-
-	return themeTemplateSnapshot{
-		identity:  state.identity,
-		files:     files,
-		signature: hex.EncodeToString(hasher.Sum(nil)),
-	}, nil
-}
-
-func parseTemplateSet(snapshot themeTemplateSnapshot) (*template.Template, error) {
-	if snapshot.identity.themeRoot == "" {
-		tmpl, err := parseDefaultTemplates()
-		if err != nil {
-			return nil, fmt.Errorf("parse default templates: %w", err)
-		}
-
-		return tmpl, nil
-	}
-
-	tmpl := template.New(baseTemplateName).Funcs(template.FuncMap{
-		"toJSON":       templateJSON,
-		"pageAssetURL": pageAssetURL,
-		"siteBasePath": siteBasePath,
-	})
-	for _, file := range snapshot.files {
-		if _, err := tmpl.Parse(file.contents); err != nil {
-			return nil, fmt.Errorf("parse theme template %q: %w", file.path, err)
-		}
-	}
-
-	return tmpl, nil
-}
-
-func readStyleAsset(site model.SiteConfig) ([]byte, bool, error) {
-	themeRoot, err := normalizeThemeRoot(site.ThemeRoot)
-	if err != nil {
-		return nil, false, err
-	}
-	if themeRoot == "" {
-		data, err := readEmbeddedAsset("style.css")
-		if err != nil {
-			return nil, false, err
-		}
-
-		return data, true, nil
-	}
-
-	stylePath, ok, err := resolveOptionalThemeFilePathInRoot(themeRoot, "style.css")
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok {
-		return nil, false, nil
-	}
-
-	_, data, _, err := internalfsutil.ReadContainedRegularFile(themeRoot, stylePath)
-	if err != nil {
-		return nil, false, fmt.Errorf("read theme style %q: %w", stylePath, err)
-	}
-
-	return data, true, nil
-}
-
-func resolveOptionalThemeFilePathInRoot(themeRoot string, name string) (string, bool, error) {
-	fileState, err := resolveThemeTemplateFileStateInRoot(themeRoot, name)
-	if err != nil {
-		return "", false, err
-	}
-
-	return fileState.path, fileState.exists, nil
-}
-
-func resolveThemeTemplateFileStateInRoot(themeRoot string, name string) (themeTemplateFileState, error) {
-	state := themeTemplateFileState{name: name}
-	if themeRoot == "" {
-		return state, nil
-	}
-
-	themePath := filepath.Join(themeRoot, filepath.FromSlash(name))
-	resolvedPath, contents, info, err := internalfsutil.ReadContainedRegularFile(themeRoot, themePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return state, nil
-		}
-		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) || errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
-			return themeTemplateFileState{}, fmt.Errorf("theme file %q must be a regular non-symlink file", themePath)
-		}
-
-		return themeTemplateFileState{}, fmt.Errorf("stat theme file %q: %w", themePath, err)
-	}
-
-	state.path = resolvedPath
-	state.exists = true
-	state.size = info.Size()
-	state.modTimeUnixNano = info.ModTime().UnixNano()
-	state.changeToken = themeTemplateFileChangeToken(info)
-	state.contents = string(contents)
-
-	return state, nil
-}
-
-func themeTemplateFileChangeToken(info os.FileInfo) string {
-	if info == nil {
-		return ""
-	}
-
-	token := fmt.Sprintf("%d:%d:%v", info.Size(), info.ModTime().UnixNano(), info.Mode())
-	value := reflect.ValueOf(info.Sys())
-	if !value.IsValid() {
-		return token
-	}
-	if value.Kind() == reflect.Pointer {
-		if value.IsNil() {
-			return token
-		}
-		value = value.Elem()
-	}
-	if value.Kind() != reflect.Struct {
-		return token
-	}
-
-	parts := []string{
-		themeTemplateStatFieldString(value, "Dev"),
-		themeTemplateStatFieldString(value, "Ino"),
-		themeTemplateStatFieldString(value, "Ctim"),
-		themeTemplateStatFieldString(value, "Ctimespec"),
-		themeTemplateStatFieldString(value, "Mtim"),
-		themeTemplateStatFieldString(value, "Mtimespec"),
-	}
-
-	return token + ":" + strings.Join(parts, ":")
-}
-
-func themeTemplateStatFieldString(value reflect.Value, fieldName string) string {
-	field := value.FieldByName(fieldName)
-	if !field.IsValid() {
-		return ""
-	}
-
-	return fmt.Sprint(field.Interface())
-}
-
-func normalizeThemeRoot(themeRoot string) (string, error) {
-	trimmedRoot := strings.TrimSpace(themeRoot)
-	if trimmedRoot == "" {
-		return "", nil
-	}
-
-	normalizedRoot, err := filepath.Abs(filepath.Clean(trimmedRoot))
-	if err != nil {
-		return "", fmt.Errorf("normalize theme root %q: %w", trimmedRoot, err)
-	}
-	if err := validateThemeRoot(normalizedRoot); err != nil {
-		return "", err
-	}
-
-	return normalizedRoot, nil
-}
-
-func validateThemeRoot(themeRoot string) error {
-	info, err := os.Lstat(themeRoot)
-	if err != nil {
-		return fmt.Errorf("stat theme root %q: %w", themeRoot, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("theme root %q must not be a symlink", themeRoot)
-	}
-	if !info.IsDir() {
-		return fmt.Errorf("theme root %q is not a directory", themeRoot)
-	}
-
-	return nil
 }
 
 func readEmbeddedAsset(name string) ([]byte, error) {
-	data, err := templateassets.FS.ReadFile(name)
+	data, err := embeddedSiteFS.ReadFile(embeddedSiteAssetPath(name))
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset %q: %w", name, err)
 	}

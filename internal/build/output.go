@@ -1,15 +1,11 @@
 package build
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 
-	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/render"
 	internalslug "github.com/simp-lee/obsite/internal/slug"
@@ -22,7 +18,6 @@ const (
 	outputOwnerPage       outputOwner = "page renderer"
 	outputOwnerPopover    outputOwner = "popover data"
 	outputOwnerStyle      outputOwner = "site stylesheet"
-	outputOwnerTheme      outputOwner = "theme assets"
 	outputOwnerRuntime    outputOwner = "runtime assets"
 	outputOwnerCustomCSS  outputOwner = "custom stylesheet"
 	outputOwnerVaultAsset outputOwner = "vault assets"
@@ -124,22 +119,7 @@ func outputClaimConflict(existing outputClaim, next outputClaim) error {
 	)
 }
 
-func styleCSSDestinationPlanned(cfg model.SiteConfig) (bool, error) {
-	themeRoot := strings.TrimSpace(cfg.ThemeRoot)
-	if themeRoot == "" {
-		return true, nil
-	}
-	_, _, err := internalfsutil.InspectContainedRegularFile(themeRoot, filepath.Join(themeRoot, "style.css"))
-	if err == nil {
-		return true, nil
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
-	}
-	return false, err
-}
-
-func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, themeAssets []render.ThemeStaticAsset, assets map[string]*model.Asset, writeStyleCSS bool, writeCache bool) error {
+func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, assets map[string]*model.Asset, writeStyleCSS bool, writeCache bool) error {
 	plan := newOutputDestinationPlan()
 	if err := plan.claimFile(managedOutputMarkerFilename, outputOwnerMarker, "output manager"); err != nil {
 		return err
@@ -173,11 +153,6 @@ func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, fol
 	}
 	for _, relPath := range render.RuntimeAssetOutputPaths() {
 		if err := plan.claimFile(relPath, outputOwnerRuntime, relPath); err != nil {
-			return err
-		}
-	}
-	for _, asset := range themeAssets {
-		if err := plan.claimFile(asset.OutputPath, outputOwnerTheme, asset.ThemeRelativePath); err != nil {
 			return err
 		}
 	}
