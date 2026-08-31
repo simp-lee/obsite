@@ -7,11 +7,25 @@ mode=${1:-}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
+run_and_capture() {
+  output=$1
+  shift
+  if "$@" >"$output" 2>&1; then
+    cat "$output"
+    return 0
+  else
+    status=$?
+    cat "$output" >&2
+    return "$status"
+  fi
+}
+
 case "$mode" in
   core)
-    GOMAXPROCS=4 go test ./internal/recommend -run '^$' \
+    run_and_capture "$tmp/core.txt" env GOMAXPROCS=4 \
+      go test ./internal/recommend -run '^$' \
       -bench '^BenchmarkRelatedBuildWarm/mixed-(500|1000|5000)$' \
-      -benchtime=1x -count=5 -benchmem -timeout=15m | tee "$tmp/core.txt"
+      -benchtime=1x -count=5 -benchmem -timeout=15m
     python3 - "$tmp/core.txt" <<'PY'
 import re, statistics, sys
 rows={500:[],1000:[],5000:[]}
@@ -31,18 +45,20 @@ PY
     ;;
   adversarial)
     for case_name in sparse-posting term-49%-coverage tag-49%-coverage rejected-content; do
-      GOMAXPROCS=4 go test ./internal/recommend -run '^$' \
+      run_and_capture "$tmp/${case_name}.txt" env GOMAXPROCS=4 \
+        go test ./internal/recommend -run '^$' \
         -bench "^BenchmarkRelatedBuildWarm/${case_name}-5000$" \
-        -benchtime=1x -count=3 -benchmem -timeout=15m | tee "$tmp/${case_name}.txt"
+        -benchtime=1x -count=3 -benchmem -timeout=15m
       count=$(grep -Ec "^BenchmarkRelatedBuildWarm/${case_name}-5000-[0-9]+[[:space:]]" "$tmp/${case_name}.txt")
       [ "$count" -eq 3 ] || { echo "$case_name: got $count rows, want 3" >&2; exit 1; }
     done
     printf 'adversarial completion budgets verified\n'
     ;;
   end-to-end)
-    GOMAXPROCS=4 go test ./internal/build -run '^$' \
+    run_and_capture "$tmp/end.txt" env GOMAXPROCS=4 \
+      go test ./internal/build -run '^$' \
       -bench '^BenchmarkRelatedEndToEndWarm/mixed-5000$' \
-      -benchtime=1x -count=5 -benchmem -timeout=15m | tee "$tmp/end.txt"
+      -benchtime=1x -count=5 -benchmem -timeout=15m
     python3 - "$tmp/end.txt" <<'PY'
 import re, statistics, sys
 pat=re.compile(r'^BenchmarkRelatedEndToEndWarm/mixed-5000-\d+\s+\d+\s+(\d+) ns/op')
@@ -57,8 +73,9 @@ PY
     ;;
   rss)
     for count in 500 1000 5000; do
-      OBSITE_RELATED_END_TO_END_RSS_HELPER="mixed:${count}" GOMAXPROCS=4 \
-        go test ./internal/build -run '^TestRSSHelperIsolation$' -count=1 -v -timeout=15m | tee "$tmp/rss-${count}.txt"
+      run_and_capture "$tmp/rss-${count}.txt" env \
+        OBSITE_RELATED_END_TO_END_RSS_HELPER="mixed:${count}" GOMAXPROCS=4 \
+        go test ./internal/build -run '^TestRSSHelperIsolation$' -count=1 -v -timeout=15m
     done
     python3 - "$tmp/rss-500.txt" "$tmp/rss-1000.txt" "$tmp/rss-5000.txt" <<'PY'
 import re, sys
