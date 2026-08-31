@@ -99,8 +99,12 @@ func tagScore(left []int, right []int) float64 {
 			rightIndex++
 		}
 	}
-	union := len(left) + len(right) - intersection
-	if union == 0 {
+	return tagScoreFromIntersection(len(left), len(right), intersection)
+}
+
+func tagScoreFromIntersection(leftCount int, rightCount int, intersection int) float64 {
+	union := leftCount + rightCount - intersection
+	if intersection <= 0 || union <= 0 {
 		return 0
 	}
 	return tagSignalWeight * float64(intersection) / float64(union)
@@ -113,6 +117,10 @@ func LinkSignal(graph *model.LinkGraph, sourcePath string, candidatePath string)
 	}
 	forward := sortedStringContains(graph.Forward[sourcePath], candidatePath)
 	reverse := sortedStringContains(graph.Forward[candidatePath], sourcePath)
+	return linkScoreFromDirections(forward, reverse)
+}
+
+func linkScoreFromDirections(forward bool, reverse bool) float64 {
 	score := 0.0
 	if forward {
 		score += oneWayLinkWeight

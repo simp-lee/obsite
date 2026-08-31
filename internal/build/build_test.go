@@ -127,8 +127,8 @@ func TestRelatedTagLimit(t *testing.T) {
 		idx.Tags[name] = &model.Tag{Name: name, Slug: "tags/" + name}
 	}
 	article := materializeRelatedArticle("source/index.html", idx, candidate, "summary", 0.5)
-	if len(article.Tags) != 8 {
-		t.Fatalf("len(article.Tags) = %d, want 8", len(article.Tags))
+	if len(article.Tags) != 8 || cap(article.Tags) != 8 {
+		t.Fatalf("article.Tags len/cap = %d/%d, want bounded 8/8", len(article.Tags), cap(article.Tags))
 	}
 	for index, tag := range article.Tags {
 		if want := fmt.Sprintf("tag-%02d", index); tag.Name != want {

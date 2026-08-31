@@ -101,7 +101,7 @@ func TestTopKOrdering(t *testing.T) {
 			"Ａ.md":      {"source.md"},
 		},
 	}
-	result, err := rankFeatureIndex(features, &TagSignalIndex{DocumentTags: make([][]int, 5)}, idx, graph, testEngineParameters(1, 3), ScorePair)
+	result, err := rankFeatureIndex(features, &TagSignalIndex{DocumentTags: make([][]int, 5)}, idx, graph, testEngineParameters(1, 3), nil)
 	if err != nil {
 		t.Fatalf("rankFeatureIndex() error = %v", err)
 	}
@@ -159,7 +159,7 @@ func TestBuildErrorPropagation(t *testing.T) {
 		CorpusDF: []int{2},
 		Postings: [][]Posting{{{DocID: 0, Weight: 1 + 2e-12}, {DocID: 1, Weight: 1}}},
 	}
-	_, err := rankFeatureIndex(features, &TagSignalIndex{DocumentTags: make([][]int, 2)}, nil, &model.LinkGraph{}, testEngineParameters(2, 1), ScorePair)
+	_, err := rankFeatureIndex(features, &TagSignalIndex{DocumentTags: make([][]int, 2)}, nil, &model.LinkGraph{}, testEngineParameters(2, 1), nil)
 	if err == nil || !strings.Contains(err.Error(), "cosine similarity above one tolerance") {
 		t.Fatalf("rankFeatureIndex() error = %v, want propagated cosine overflow", err)
 	}

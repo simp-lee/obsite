@@ -70,7 +70,7 @@ func FrozenManifest() Manifest {
 		},
 		Samples: []CorpusDigest{
 			{Name: CaseMixed, Count: 20, SHA256: "1247a2cac179100b17a184a92aff64a77abd6b69932351dd4f175f70e93c1393"},
-			{Name: CaseSparsePosting, Count: 10, SHA256: "9423a3e8406f3e45402d674ed53e2825b0be5f4be736e06c9fc86484ecb058cb"},
+			{Name: CaseSparsePosting, Count: 10, SHA256: "7754aaa57a10518bddf98c28fd96a76cb476bba11f5581e5af1bfe90f10d9091"},
 			{Name: CaseTermCoverage49, Count: 100, SHA256: "ffd6db4a125100997f2741a40ff31a7fb1a8167e9bd582b9b70712c45d1bdbb4"},
 			{Name: CaseTagCoverage49, Count: 100, SHA256: "0eccbd90262a0014bdb61695d766bfa8ba9174de0f1cdc43e8827b79ba6a764d"},
 			{Name: CaseRejectedContent, Count: 100, SHA256: "838f0ef42c48eb5928640f338dc6a60bd5ce39760c3da28b21d3def663fb3040"},
@@ -224,7 +224,8 @@ func mixedBody(docID int, tokenCount int) string {
 func sparseBody(docID int, tokenCount int) string {
 	var builder strings.Builder
 	builder.Grow(tokenCount * 18)
-	builder.WriteString("database protocol ")
+	pairID := docID / 2
+	_, _ = fmt.Fprintf(&builder, "sparsetopic%d%05da sparsetopic%d%05db ", Seed%1000, pairID, Seed%1000, pairID)
 	for tokenID := 2; tokenID < tokenCount; tokenID++ {
 		_, _ = fmt.Fprintf(&builder, "u%d%05dx%04d ", Seed%1000, docID, tokenID)
 	}

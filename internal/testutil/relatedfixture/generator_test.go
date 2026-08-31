@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/simp-lee/obsite/internal/recommend"
 )
 
 func TestPerformanceFixtureManifest(t *testing.T) {
@@ -56,8 +58,26 @@ func TestPerformanceAdversarialCases(t *testing.T) {
 		}
 		fixtures[name] = fixture
 	}
-	if got := len(strings.Fields(fixtures[CaseSparsePosting].Semantics[0].Body)); got != 2000 {
+	sparse := fixtures[CaseSparsePosting]
+	if got := len(strings.Fields(sparse.Semantics[0].Body)); got != 2000 {
 		t.Fatalf("sparse fixture tokens = %d, want 2000", got)
+	}
+	sparseIndex, err := recommend.BuildFeatureIndex(sparse.Semantics, recommend.ProductionEngineParameters(5, 1).Features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sparseIndex.Terms) != 100 || len(sparseIndex.Postings) != 100 {
+		t.Fatalf("sparse fixture terms/postings = %d/%d, want two pair-shared terms per document", len(sparseIndex.Terms), len(sparseIndex.Postings))
+	}
+	for docID, document := range sparseIndex.Documents {
+		if len(document.Features) != 2 {
+			t.Fatalf("sparse fixture document %d features = %d, want 2", docID, len(document.Features))
+		}
+	}
+	for termID, postings := range sparseIndex.Postings {
+		if len(postings) != 2 {
+			t.Fatalf("sparse fixture posting %d length = %d, want 2", termID, len(postings))
+		}
 	}
 	termMembers := 0
 	for _, document := range fixtures[CaseTermCoverage49].Semantics {

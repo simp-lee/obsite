@@ -251,6 +251,14 @@ func (c *headingTextCollector) inInvisibleRawHTML() bool {
 	return c != nil && c.invisibleHTMLDepth > 0
 }
 
+func (c *headingTextCollector) endBlock() {
+	if c == nil {
+		return
+	}
+	c.htmlStack = c.htmlStack[:0]
+	c.invisibleHTMLDepth = 0
+}
+
 func (c *headingTextCollector) applyRawHTML(fragment string) {
 	if c == nil || fragment == "" {
 		return

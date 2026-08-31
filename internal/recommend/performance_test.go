@@ -175,7 +175,7 @@ func TestMemoryProfileCheckpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	profileCount := 0
-	profiledScorer := func(index *FeatureIndex, tagIndex *TagSignalIndex, graph *model.LinkGraph, sourceDocID int, candidateDocID int, parameters ContentParameters) (PairScore, error) {
+	profiledObserver := func(_ int, _ int) {
 		switch profileCount {
 		case 0:
 			runtime.GC()
@@ -185,9 +185,8 @@ func TestMemoryProfileCheckpoints(t *testing.T) {
 			writeRelatedHeapProfile(t, profileDir, "during-scoring.pprof")
 		}
 		profileCount++
-		return ScorePair(index, tagIndex, graph, sourceDocID, candidateDocID, parameters)
 	}
-	ranking, err := buildEngineFromSemanticOwner(&fixture.Semantics, fixture.Index, fixture.Graph, ProductionEngineParameters(5, 1), profiledScorer)
+	ranking, err := buildEngineFromSemanticOwner(&fixture.Semantics, fixture.Index, fixture.Graph, ProductionEngineParameters(5, 1), profiledObserver)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,13 +206,13 @@ func TestMemoryProfileCheckpoints(t *testing.T) {
 	}
 }
 
-func buildEngineFromSemanticOwner(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, scorer pairScorer) (*EngineResult, error) {
+func buildEngineFromSemanticOwner(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
 	var semantics []model.RelatedSemanticDocument
 	if owner != nil {
 		semantics = *owner
 		*owner = nil
 	}
-	return buildEngine(semantics, idx, graph, parameters, scorer)
+	return buildEngine(semantics, idx, graph, parameters, observer)
 }
 
 func writeRetainedOwnerControlProfile(t *testing.T, profileDir string) {

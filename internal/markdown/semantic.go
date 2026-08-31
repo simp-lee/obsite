@@ -130,6 +130,7 @@ func appendRelatedBodyText(collector *headingTextCollector, node gast.Node, sour
 		}
 		if node.Type() == gast.TypeBlock {
 			collector.space()
+			collector.endBlock()
 		}
 	}
 }

@@ -103,15 +103,11 @@ func qualifiedContentScore(index *FeatureIndex, sourceDocID int, candidateDocID 
 	if err != nil {
 		return 0, err
 	}
-	if cosine < parameters.MinCosine {
-		return 0, nil
-	}
-
 	leftIndex, rightIndex := 0, 0
 	sharedTerms := 0
 	sharedTopicTerms := 0
-	singleTermID := -1
-	var singleLeft, singleRight Feature
+	singleTermDF := -1
+	singleTermStrong := false
 	for leftIndex < len(left) && rightIndex < len(right) {
 		switch {
 		case left[leftIndex].TermID < right[rightIndex].TermID:
@@ -123,43 +119,55 @@ func qualifiedContentScore(index *FeatureIndex, sourceDocID int, candidateDocID 
 			termID := left[leftIndex].TermID
 			if termID >= 0 && termID < len(index.Terms) && TopicShape(index.Terms[termID]) {
 				sharedTopicTerms++
-				singleTermID = termID
-				singleLeft = left[leftIndex]
-				singleRight = right[rightIndex]
+				if termID < len(index.CorpusDF) {
+					singleTermDF = index.CorpusDF[termID]
+				}
+				singleTermStrong = topicEvidence(index.Terms[termID], left[leftIndex]) && topicEvidence(index.Terms[termID], right[rightIndex])
 			}
 			leftIndex++
 			rightIndex++
 		}
 	}
 
-	if sharedTopicTerms == 0 {
-		return 0, nil
+	return qualifiedContentFromEvidence(
+		cosine,
+		sharedTerms,
+		sharedTopicTerms,
+		singleTermDF,
+		singleTermStrong,
+		len(index.Documents),
+		parameters,
+	), nil
+}
+
+func qualifiedContentFromEvidence(
+	cosine float64,
+	sharedTerms int,
+	sharedTopicTerms int,
+	singleTermDF int,
+	singleTermStrong bool,
+	documentCount int,
+	parameters ContentParameters,
+) float64 {
+	if cosine < parameters.MinCosine || sharedTopicTerms == 0 {
+		return 0
 	}
 	if sharedTerms >= 2 {
-		return cosine, nil
+		return cosine
 	}
-	if sharedTerms != 1 || sharedTopicTerms != 1 {
-		return 0, nil
+	if sharedTerms != 1 || sharedTopicTerms != 1 || !singleTermStrong || singleTermDF < 0 {
+		return 0
 	}
-	if !topicEvidence(index.Terms[singleTermID], singleLeft) || !topicEvidence(index.Terms[singleTermID], singleRight) {
-		return 0, nil
-	}
-	if singleTermID < 0 || singleTermID >= len(index.CorpusDF) {
-		return 0, nil
-	}
-
-	documentFrequency := index.CorpusDF[singleTermID]
-	documentCount := len(index.Documents)
 	if documentCount < 20 {
-		if documentFrequency <= 2 {
-			return cosine, nil
+		if singleTermDF <= 2 {
+			return cosine
 		}
-		return 0, nil
+		return 0
 	}
-	if float64(documentFrequency)/float64(documentCount) <= parameters.MaxSingleTermRatio {
-		return cosine, nil
+	if float64(singleTermDF)/float64(documentCount) <= parameters.MaxSingleTermRatio {
+		return cosine
 	}
-	return 0, nil
+	return 0
 }
 
 func validateContentParameters(parameters ContentParameters) error {

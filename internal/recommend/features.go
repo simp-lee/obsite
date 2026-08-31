@@ -40,6 +40,7 @@ type Feature struct {
 type Posting struct {
 	DocID  int
 	Weight float64
+	Fields fieldMask
 }
 
 // FeatureDocument contains the compact feature state retained after indexing.
@@ -186,20 +187,42 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 		}
 	}
 
+	finalTermCount := 0
+	for _, frequency := range selectedDF {
+		if frequency > 1 {
+			finalTermCount++
+		}
+	}
+	finalTermIDs := make([]int, len(terms))
+	for termID := range finalTermIDs {
+		finalTermIDs[termID] = -1
+	}
+	finalTerms := make([]string, 0, finalTermCount)
+	finalCorpusDF := make([]int, 0, finalTermCount)
+	for termID, term := range terms {
+		if selectedDF[termID] <= 1 {
+			continue
+		}
+		finalTermIDs[termID] = len(finalTerms)
+		finalTerms = append(finalTerms, term)
+		finalCorpusDF = append(finalCorpusDF, corpusDF[termID])
+	}
+
 	index := &FeatureIndex{
 		Documents: make([]FeatureDocument, len(counts)),
-		Terms:     terms,
-		CorpusDF:  corpusDF,
-		Postings:  make([][]Posting, len(terms)),
+		Terms:     finalTerms,
+		CorpusDF:  finalCorpusDF,
+		Postings:  make([][]Posting, len(finalTerms)),
 	}
 	for docID, document := range counts {
 		features := make([]Feature, 0, len(selected[docID]))
 		for _, candidate := range selected[docID] {
-			if selectedDF[candidate.termID] <= 1 {
+			termID := finalTermIDs[candidate.termID]
+			if termID < 0 {
 				continue
 			}
 			features = append(features, Feature{
-				TermID: candidate.termID,
+				TermID: termID,
 				Weight: candidate.weight,
 				Fields: candidate.fields,
 			})
@@ -218,6 +241,7 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 			index.Postings[feature.TermID] = append(index.Postings[feature.TermID], Posting{
 				DocID:  docID,
 				Weight: feature.Weight,
+				Fields: feature.Fields,
 			})
 		}
 	}
@@ -406,6 +430,10 @@ func SparseCosine(left []Feature, right []Feature) (float64, error) {
 		}
 	}
 
+	return boundedCosine(similarity)
+}
+
+func boundedCosine(similarity float64) (float64, error) {
 	if math.IsNaN(similarity) || math.IsInf(similarity, 0) {
 		return 0, fmt.Errorf("cosine similarity is not finite: %v", similarity)
 	}

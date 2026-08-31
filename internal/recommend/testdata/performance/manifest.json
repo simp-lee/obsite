@@ -40,7 +40,7 @@
       "sharedTerms": 1
     }
   ],
-  "sha256": "b4fdbf6086028a924047ccea08549f6e9ac65600a2fbce97056f6f7091e5854d",
+  "sha256": "8c254a18c6b5dd2ec6d9ec59258c93785e5ab510a8030636810118d02cee5747",
   "samples": [
     {
       "name": "mixed",
@@ -50,7 +50,7 @@
     {
       "name": "sparse-posting",
       "count": 10,
-      "sha256": "9423a3e8406f3e45402d674ed53e2825b0be5f4be736e06c9fc86484ecb058cb"
+      "sha256": "7754aaa57a10518bddf98c28fd96a76cb476bba11f5581e5af1bfe90f10d9091"
     },
     {
       "name": "term-49%-coverage",

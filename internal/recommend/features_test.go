@@ -199,8 +199,11 @@ func TestSelectedFeaturePruning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildFeatureIndex() error = %v", err)
 	}
-	if stringIndex(featureIndex.Terms, "solo") < 0 {
-		t.Fatal("corpus term solo is missing before selectedDF pruning")
+	if stringIndex(featureIndex.Terms, "solo") >= 0 {
+		t.Fatal("selectedDF=1 term solo retained a final term ID")
+	}
+	if cap(featureIndex.Terms) != len(featureIndex.Terms) || cap(featureIndex.CorpusDF) != len(featureIndex.CorpusDF) {
+		t.Fatalf("final term state len/cap = %d/%d and %d/%d, want compact backing arrays", len(featureIndex.Terms), cap(featureIndex.Terms), len(featureIndex.CorpusDF), cap(featureIndex.CorpusDF))
 	}
 	for _, document := range featureIndex.Documents {
 		if containsString(featureTerms(featureIndex, document.Features), "solo") {

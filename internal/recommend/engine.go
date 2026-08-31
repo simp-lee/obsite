@@ -33,19 +33,32 @@ type EngineResult struct {
 	Documents []EngineDocument
 }
 
+const (
+	candidateForwardLink uint8 = 1 << iota
+	candidateReverseLink
+)
+
 type candidateScratch struct {
-	seen    []bool
-	touched []int
+	dot               []float64
+	sharedTerms       []uint16
+	sharedTopicTerms  []uint16
+	singleTermDF      []int
+	singleTermStrong  []bool
+	sharedTags        []uint32
+	linkFlags         []uint8
+	generation        []uint32
+	currentGeneration uint32
+	touched           []int
 }
 
-type pairScorer func(*FeatureIndex, *TagSignalIndex, *model.LinkGraph, int, int, ContentParameters) (PairScore, error)
+type pairObserver func(sourceDocID int, candidateDocID int)
 
 // BuildEngine builds and scores the deterministic bounded recommendation index.
 func BuildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters) (*EngineResult, error) {
-	return buildEngine(semantics, idx, graph, parameters, ScorePair)
+	return buildEngine(semantics, idx, graph, parameters, nil)
 }
 
-func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, scorer pairScorer) (*EngineResult, error) {
+func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
 	if len(semantics) < 2 {
 		return &EngineResult{}, nil
 	}
@@ -59,7 +72,7 @@ func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultInde
 	}
 	semantics = nil
 	tags := BuildTagSignalIndex(features.Documents, idx)
-	return rankFeatureIndex(features, tags, idx, graph, parameters, scorer)
+	return rankFeatureIndex(features, tags, idx, graph, parameters, observer)
 }
 
 func validateEngineParameters(parameters EngineParameters) error {
@@ -72,7 +85,7 @@ func validateEngineParameters(parameters EngineParameters) error {
 	return validateContentParameters(parameters.Content)
 }
 
-func rankFeatureIndex(features *FeatureIndex, tags *TagSignalIndex, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, scorer pairScorer) (*EngineResult, error) {
+func rankFeatureIndex(features *FeatureIndex, tags *TagSignalIndex, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
 	if features == nil || len(features.Documents) < 2 {
 		return &EngineResult{}, nil
 	}
@@ -97,10 +110,7 @@ func rankFeatureIndex(features *FeatureIndex, tags *TagSignalIndex, idx *model.V
 	errorsByDoc := make([]error, documentCount)
 	workerCount := normalizeEngineWorkerCount(parameters.WorkerCount, documentCount)
 	runWorker := func(jobs <-chan int) {
-		scratch := candidateScratch{
-			seen:    make([]bool, documentCount),
-			touched: make([]int, 0, documentCount),
-		}
+		scratch := newCandidateScratch(documentCount)
 		for sourceDocID := range jobs {
 			ranked[sourceDocID], errorsByDoc[sourceDocID] = rankSourceDocument(
 				features,
@@ -111,8 +121,8 @@ func rankFeatureIndex(features *FeatureIndex, tags *TagSignalIndex, idx *model.V
 				sourceDocID,
 				limit,
 				parameters.Content,
-				scorer,
-				&scratch,
+				observer,
+				scratch,
 			)
 		}
 	}
@@ -168,28 +178,47 @@ func rankSourceDocument(
 	sourceDocID int,
 	limit int,
 	parameters ContentParameters,
-	scorer pairScorer,
+	observer pairObserver,
 	scratch *candidateScratch,
 ) ([]RankedDocument, error) {
-	scratch.reset()
+	scratch.beginSource()
 	source := features.Documents[sourceDocID]
 	for _, feature := range source.Features {
-		if feature.TermID < 0 || feature.TermID >= len(features.Postings) {
+		if feature.TermID < 0 || feature.TermID >= len(features.Postings) || feature.TermID >= len(features.Terms) {
 			continue
 		}
+		term := features.Terms[feature.TermID]
+		termHasTopicShape := TopicShape(term)
+		termDF := -1
+		if feature.TermID < len(features.CorpusDF) {
+			termDF = features.CorpusDF[feature.TermID]
+		}
 		for _, posting := range features.Postings[feature.TermID] {
-			scratch.touch(posting.DocID)
+			candidateDocID := posting.DocID
+			if candidateDocID == sourceDocID || !scratch.touch(candidateDocID) {
+				continue
+			}
+			scratch.dot[candidateDocID] += feature.Weight * posting.Weight
+			scratch.sharedTerms[candidateDocID]++
+			if termHasTopicShape {
+				scratch.sharedTopicTerms[candidateDocID]++
+				if scratch.sharedTerms[candidateDocID] == 1 {
+					scratch.singleTermDF[candidateDocID] = termDF
+					scratch.singleTermStrong[candidateDocID] = topicEvidence(term, feature) &&
+						posting.Fields&(fieldTitle|fieldAliases|fieldHeadings) != 0
+				}
+			}
 		}
 	}
 	if graph != nil {
 		for _, candidatePath := range graph.Forward[source.RelPath] {
-			if candidateDocID, ok := docIDByPath[candidatePath]; ok {
-				scratch.touch(candidateDocID)
+			if candidateDocID, ok := docIDByPath[candidatePath]; ok && candidateDocID != sourceDocID && scratch.touch(candidateDocID) {
+				scratch.linkFlags[candidateDocID] |= candidateForwardLink
 			}
 		}
 		for _, candidatePath := range graph.Backward[source.RelPath] {
-			if candidateDocID, ok := docIDByPath[candidatePath]; ok {
-				scratch.touch(candidateDocID)
+			if candidateDocID, ok := docIDByPath[candidatePath]; ok && candidateDocID != sourceDocID && scratch.touch(candidateDocID) {
+				scratch.linkFlags[candidateDocID] |= candidateReverseLink
 			}
 		}
 	}
@@ -199,7 +228,10 @@ func rankSourceDocument(
 				continue
 			}
 			for _, candidateDocID := range tags.Postings[tagID] {
-				scratch.touch(candidateDocID)
+				if candidateDocID == sourceDocID || !scratch.touch(candidateDocID) {
+					continue
+				}
+				scratch.sharedTags[candidateDocID]++
 			}
 		}
 	}
@@ -207,10 +239,10 @@ func rankSourceDocument(
 	sort.Ints(scratch.touched)
 	topK := newTopKHeap(limit, documents)
 	for _, candidateDocID := range scratch.touched {
-		if candidateDocID == sourceDocID {
-			continue
+		if observer != nil {
+			observer(sourceDocID, candidateDocID)
 		}
-		score, err := scorer(features, tags, graph, sourceDocID, candidateDocID, parameters)
+		score, err := scratch.score(features, tags, sourceDocID, candidateDocID, parameters)
 		if err != nil {
 			return nil, fmt.Errorf("score %q: %w", features.Documents[candidateDocID].RelPath, err)
 		}
@@ -226,19 +258,78 @@ func rankSourceDocument(
 	return append([]RankedDocument(nil), topK.items...), nil
 }
 
-func (s *candidateScratch) reset() {
-	for _, docID := range s.touched {
-		s.seen[docID] = false
+func newCandidateScratch(documentCount int) *candidateScratch {
+	return &candidateScratch{
+		dot:              make([]float64, documentCount),
+		sharedTerms:      make([]uint16, documentCount),
+		sharedTopicTerms: make([]uint16, documentCount),
+		singleTermDF:     make([]int, documentCount),
+		singleTermStrong: make([]bool, documentCount),
+		sharedTags:       make([]uint32, documentCount),
+		linkFlags:        make([]uint8, documentCount),
+		generation:       make([]uint32, documentCount),
+		touched:          make([]int, 0, documentCount),
 	}
-	s.touched = s.touched[:0]
 }
 
-func (s *candidateScratch) touch(docID int) {
-	if s == nil || docID < 0 || docID >= len(s.seen) || s.seen[docID] {
-		return
+func (s *candidateScratch) beginSource() {
+	s.touched = s.touched[:0]
+	s.currentGeneration++
+	if s.currentGeneration == 0 {
+		clear(s.generation)
+		s.currentGeneration = 1
 	}
-	s.seen[docID] = true
+}
+
+func (s *candidateScratch) touch(docID int) bool {
+	if s == nil || docID < 0 || docID >= len(s.generation) {
+		return false
+	}
+	if s.generation[docID] == s.currentGeneration {
+		return true
+	}
+	s.generation[docID] = s.currentGeneration
+	s.dot[docID] = 0
+	s.sharedTerms[docID] = 0
+	s.sharedTopicTerms[docID] = 0
+	s.singleTermDF[docID] = -1
+	s.singleTermStrong[docID] = false
+	s.sharedTags[docID] = 0
+	s.linkFlags[docID] = 0
 	s.touched = append(s.touched, docID)
+	return true
+}
+
+func (s *candidateScratch) score(features *FeatureIndex, tags *TagSignalIndex, sourceDocID int, candidateDocID int, parameters ContentParameters) (PairScore, error) {
+	cosine, err := boundedCosine(s.dot[candidateDocID])
+	if err != nil {
+		return PairScore{}, err
+	}
+	content := qualifiedContentFromEvidence(
+		cosine,
+		int(s.sharedTerms[candidateDocID]),
+		int(s.sharedTopicTerms[candidateDocID]),
+		s.singleTermDF[candidateDocID],
+		s.singleTermStrong[candidateDocID],
+		len(features.Documents),
+		parameters,
+	)
+	flags := s.linkFlags[candidateDocID]
+	linkScore := linkScoreFromDirections(flags&candidateForwardLink != 0, flags&candidateReverseLink != 0)
+	tagScore := 0.0
+	if tags != nil && sourceDocID < len(tags.DocumentTags) && candidateDocID < len(tags.DocumentTags) {
+		tagScore = tagScoreFromIntersection(
+			len(tags.DocumentTags[sourceDocID]),
+			len(tags.DocumentTags[candidateDocID]),
+			int(s.sharedTags[candidateDocID]),
+		)
+	}
+	return PairScore{
+		Content: content,
+		Link:    linkScore,
+		Tag:     tagScore,
+		Final:   content + linkScore + tagScore,
+	}, nil
 }
 
 func normalizeEngineWorkerCount(requested int, documentCount int) int {

@@ -2965,11 +2965,18 @@ func buildNoteSummaries(currentRelPath string, idx *model.VaultIndex, notes []*m
 }
 
 func buildTagLinks(currentRelPath string, idx *model.VaultIndex, tagNames []string) []model.TagLink {
-	if len(tagNames) == 0 || idx == nil {
+	return buildTagLinksLimited(currentRelPath, idx, tagNames, len(tagNames))
+}
+
+func buildTagLinksLimited(currentRelPath string, idx *model.VaultIndex, tagNames []string, limit int) []model.TagLink {
+	if len(tagNames) == 0 || idx == nil || limit <= 0 {
 		return nil
 	}
+	if limit > len(tagNames) {
+		limit = len(tagNames)
+	}
 
-	links := make([]model.TagLink, 0, len(tagNames))
+	links := make([]model.TagLink, 0, limit)
 	for _, tagName := range tagNames {
 		tag := idx.Tags[tagName]
 		if tag == nil || tag.Slug == "" {
@@ -2980,6 +2987,9 @@ func buildTagLinks(currentRelPath string, idx *model.VaultIndex, tagNames []stri
 			Slug: tag.Slug,
 			URL:  relativePageURL(currentRelPath, tag.Slug, true),
 		})
+		if len(links) == limit {
+			break
+		}
 	}
 	return links
 }

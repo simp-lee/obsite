@@ -71,10 +71,7 @@ func materializeRelatedArticle(
 		return model.RelatedArticle{}
 	}
 
-	tags := buildTagLinks(currentRelPath, idx, candidate.Tags)
-	if len(tags) > maxRelatedArticleTags {
-		tags = tags[:maxRelatedArticleTags]
-	}
+	tags := buildTagLinksLimited(currentRelPath, idx, candidate.Tags, maxRelatedArticleTags)
 	return model.RelatedArticle{
 		Title:   noteDisplayTitle(candidate),
 		URL:     relativePageURL(currentRelPath, candidate.Slug, true),
