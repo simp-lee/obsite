@@ -1,0 +1,522 @@
+{
+  "schemaVersion": 1,
+  "method": "Fresh semantic review of article content only; labels, discovery markers, production rankings and scores, quality metrics, and Git history were withheld from each adjudicator.",
+  "rubric": {
+    "0": "incidental or general overlap; not useful enough as a related article",
+    "1": "materially related and useful, but adjacent or broader",
+    "2": "same core problem and directly, strongly useful"
+  },
+  "reviewedAt": "2026-08-31T00:00:00Z",
+  "reviews": [
+    {
+      "language": "en",
+      "reviewer": "pi-rank-metric-blind-adjudicator-en-20260831",
+      "pairs": [
+        {
+          "sourceId": "hold-en-00",
+          "candidateId": "hold-en-01",
+          "grade": 1,
+          "rationale": "Duplicate-effect prevention and event ordering are complementary reliability concerns, but solve different failure modes."
+        },
+        {
+          "sourceId": "hold-en-00",
+          "candidateId": "hold-zh-hant-00",
+          "grade": 0,
+          "rationale": "Payment retry outcomes and online index locking address unrelated operational problems."
+        },
+        {
+          "sourceId": "hold-en-01",
+          "candidateId": "hold-en-00",
+          "grade": 1,
+          "rationale": "Idempotent operation identity complements aggregate sequencing without solving event-order gaps."
+        },
+        {
+          "sourceId": "hold-en-01",
+          "candidateId": "hold-mixed-00",
+          "grade": 0,
+          "rationale": "Event sequence correctness and Protobuf wire compatibility are independent messaging concerns."
+        },
+        {
+          "sourceId": "hold-en-02",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 1,
+          "rationale": "Decision-state handoffs are useful broader practice for a prolonged saturation incident."
+        },
+        {
+          "sourceId": "hold-en-02",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 1,
+          "rationale": "User-impact alert design complements detection of backlogs hidden by healthy-looking API metrics."
+        },
+        {
+          "sourceId": "hold-en-03",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 0,
+          "rationale": "Incident shift handoff does not materially inform service-time-based concurrency control."
+        },
+        {
+          "sourceId": "hold-en-03",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 0,
+          "rationale": "Alert-noise governance does not address the controller limit adjustment or recovery behavior."
+        },
+        {
+          "sourceId": "hold-en-04",
+          "candidateId": "hold-en-05",
+          "grade": 2,
+          "rationale": "Executable ownership directly supports preserving operational procedures while responsibility and documentation transition."
+        },
+        {
+          "sourceId": "hold-en-04",
+          "candidateId": "hold-mixed-04",
+          "grade": 1,
+          "rationale": "Canonical sources, ownership, and navigation are adjacent governance needs for multilingual documentation retirement."
+        },
+        {
+          "sourceId": "hold-en-04",
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "rationale": "Semantic translation review helps preserve changed replacement, timing, and responsibility instructions during deprecation."
+        },
+        {
+          "sourceId": "hold-en-04",
+          "candidateId": "hold-zh-hant-04",
+          "grade": 0,
+          "rationale": "Research-claim citation organization is not useful for retiring public operational documentation."
+        },
+        {
+          "sourceId": "hold-en-05",
+          "candidateId": "hold-en-04",
+          "grade": 2,
+          "rationale": "The deprecation map directly supplies lifecycle steps for retiring runbooks without breaking operational entry points."
+        },
+        {
+          "sourceId": "hold-en-05",
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "rationale": "Translation review of imperatives, limits, and owners is materially useful for multilingual runbook correctness."
+        },
+        {
+          "sourceId": "hold-en-05",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 1,
+          "rationale": "Incident handoffs complement runbooks by preserving action ownership, evidence, and completion state across shifts."
+        },
+        {
+          "sourceId": "hold-en-05",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 1,
+          "rationale": "Actionable alerts and executable runbooks are adjacent parts of effective on-call response."
+        },
+        {
+          "sourceId": "hold-en-06",
+          "candidateId": "hold-en-07",
+          "grade": 1,
+          "rationale": "Herb guidance explains safe use of mature compost but does not diagnose or recover the composting process."
+        },
+        {
+          "sourceId": "hold-en-06",
+          "candidateId": "hold-zh-hans-07",
+          "grade": 0,
+          "rationale": "Food-purchasing waste analysis does not materially help correct moisture and aeration in compost."
+        },
+        {
+          "sourceId": "hold-en-07",
+          "candidateId": "hold-en-06",
+          "grade": 1,
+          "rationale": "Compost diagnosis supports one soil input for herbs but not their plant-specific watering and container needs."
+        },
+        {
+          "sourceId": "hold-en-08",
+          "candidateId": "hold-en-09",
+          "grade": 1,
+          "rationale": "Acoustic-zone quality is useful alongside finding a quiet seat, but differs from route wayfinding."
+        },
+        {
+          "sourceId": "hold-en-09",
+          "candidateId": "hold-en-08",
+          "grade": 1,
+          "rationale": "Wayfinding helps visitors locate quiet choices but does not establish their acoustic integrity."
+        },
+        {
+          "sourceId": "hold-en-09",
+          "candidateId": "hold-mixed-08",
+          "grade": 2,
+          "rationale": "Both address making quiet and conversational boundaries understandable and usable in shared spaces."
+        },
+        {
+          "sourceId": "hold-en-09",
+          "candidateId": "hold-mixed-09",
+          "grade": 1,
+          "rationale": "Task-based accessibility interviews are a broader method for studying seat, room, and assistance barriers, not acoustic design itself."
+        }
+      ]
+    },
+    {
+      "language": "mixed",
+      "reviewer": "pi-rank-metric-blind-adjudicator-mixed-20260831",
+      "pairs": [
+        {
+          "sourceId": "hold-mixed-00",
+          "candidateId": "hold-en-01",
+          "grade": 0,
+          "rationale": "Wire-schema evolution and aggregate event ordering solve distinct compatibility problems."
+        },
+        {
+          "sourceId": "hold-mixed-01",
+          "candidateId": "hold-zh-hans-01",
+          "grade": 1,
+          "rationale": "Version and causal evidence can diagnose behavioral contract failures, but the focus is adjacent consistency debugging."
+        },
+        {
+          "sourceId": "hold-mixed-02",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 1,
+          "rationale": "Incident handoff practices are useful during a prolonged cache incident but do not address cache traffic shaping."
+        },
+        {
+          "sourceId": "hold-mixed-02",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 0,
+          "rationale": "General alert quality does not materially address this purge-induced origin overload."
+        },
+        {
+          "sourceId": "hold-mixed-02",
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "rationale": "Durable backfill reconciliation is unrelated to recovery from cache invalidation traffic."
+        },
+        {
+          "sourceId": "hold-mixed-02",
+          "candidateId": "hold-zh-hant-03",
+          "grade": 0,
+          "rationale": "Configuration drift is not implicated in the purge scope or cold-cache recovery problem."
+        },
+        {
+          "sourceId": "hold-mixed-03",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 1,
+          "rationale": "Handoff state and prohibited actions are useful operational context for breaker recovery, but remain broader incident practice."
+        },
+        {
+          "sourceId": "hold-mixed-03",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 1,
+          "rationale": "Actionable-alert guidance complements breaker telemetry and automatic recovery without solving probe control itself."
+        },
+        {
+          "sourceId": "hold-mixed-03",
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "rationale": "Data backfill compensation does not help manage half-open breaker probes."
+        },
+        {
+          "sourceId": "hold-mixed-04",
+          "candidateId": "hold-zh-hant-05",
+          "grade": 1,
+          "rationale": "Retirement rules help maintain a documentation map navigation and references, but do not address cross-language alignment directly."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-en-04",
+          "grade": 1,
+          "rationale": "Deprecation changes contain replacement, ownership, and transition semantics that translations must preserve."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-en-05",
+          "grade": 1,
+          "rationale": "Runbook authority and ownership are material operational meanings for translation review, though the candidate is domain-specific."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-zh-hans-04",
+          "grade": 1,
+          "rationale": "Navigation maintenance supports the canonical cross-language paths surrounding translation review."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-zh-hans-05",
+          "grade": 1,
+          "rationale": "Alias and broken-link governance materially supports stable navigation across renamed translated documentation."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-zh-hant-04",
+          "grade": 0,
+          "rationale": "Research claim-and-citation organization does not materially help review translation semantics."
+        },
+        {
+          "sourceId": "hold-mixed-05",
+          "candidateId": "hold-zh-hant-05",
+          "grade": 1,
+          "rationale": "Archival criteria are useful for stale or superseded translations but are adjacent to semantic-diff review."
+        },
+        {
+          "sourceId": "hold-mixed-06",
+          "candidateId": "hold-mixed-07",
+          "grade": 1,
+          "rationale": "Recovery nutrition is a useful follow-on to easy-run planning but does not help determine running intensity."
+        },
+        {
+          "sourceId": "hold-mixed-07",
+          "candidateId": "hold-mixed-06",
+          "grade": 2,
+          "rationale": "Determining whether a session was genuinely easy directly supports matching recovery intake to training load."
+        },
+        {
+          "sourceId": "hold-mixed-09",
+          "candidateId": "hold-en-09",
+          "grade": 1,
+          "rationale": "Observable sound boundaries and wayfinding provide a concrete adjacent public-space task for accessibility research."
+        }
+      ]
+    },
+    {
+      "language": "zh-hans",
+      "reviewer": "pi-rank-metric-blind-adjudicator-zh-hans-20260831",
+      "pairs": [
+        {
+          "sourceId": "hold-zh-hans-00",
+          "candidateId": "hold-mixed-01",
+          "grade": 0,
+          "rationale": "Replication visibility and event-consumer contracts involve distinct mechanisms; shared concern for application semantics is too general."
+        },
+        {
+          "sourceId": "hold-zh-hans-01",
+          "candidateId": "hold-zh-hant-01",
+          "grade": 0,
+          "rationale": "Consistency-anomaly evidence gathering does not materially benefit from a hash-join cardinality-skew case."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-en-02",
+          "grade": 0,
+          "rationale": "The saturation postmortem concerns queue controls rather than transferring decision state between responders."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-en-03",
+          "grade": 0,
+          "rationale": "Adaptive concurrency control does not address incident handoff practice."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-en-05",
+          "grade": 1,
+          "rationale": "Runbook ownership, authorization, and success criteria materially complement assigning and constraining handoff actions."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-mixed-02",
+          "grade": 0,
+          "rationale": "A cache-purge postmortem does not provide guidance on shift handoff."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-mixed-03",
+          "grade": 0,
+          "rationale": "Breaker probe budgeting is a recovery-control topic, not decision-state transfer."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-mixed-04",
+          "grade": 0,
+          "rationale": "Cross-language documentation navigation is unrelated to incident handoff."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-zh-hans-03",
+          "grade": 2,
+          "rationale": "Actionable alerts and clear current-state handoffs directly reinforce each other in reducing on-call cognitive load."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-zh-hant-02",
+          "grade": 0,
+          "rationale": "Backfill reconciliation and compensation do not materially address responder handoff."
+        },
+        {
+          "sourceId": "hold-zh-hans-02",
+          "candidateId": "hold-zh-hant-03",
+          "grade": 0,
+          "rationale": "Configuration-drift controls concern release recovery rather than handoff communication."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-en-02",
+          "grade": 1,
+          "rationale": "Hidden queue saturation and its user-impact signals provide a useful adjacent example for designing actionable alerts."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-en-03",
+          "grade": 0,
+          "rationale": "Concurrency-controller tuning and logging do not address alert noise or paging policy."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-en-05",
+          "grade": 1,
+          "rationale": "Alert-started runbook exercises and explicit ownership materially support alert actionability and responsibility boundaries."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-mixed-02",
+          "grade": 0,
+          "rationale": "The cache incident reports metrics but does not address alert fatigue or signal design."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-mixed-03",
+          "grade": 0,
+          "rationale": "Breaker recovery mechanics do not materially inform alert prioritization or noise reduction."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-mixed-04",
+          "grade": 0,
+          "rationale": "Documentation-language navigation is unrelated to alert fatigue."
+        },
+        {
+          "sourceId": "hold-zh-hans-03",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 2,
+          "rationale": "Decision-state handoffs are directly useful for preventing duplicated response and preserving clarity across on-call shifts."
+        },
+        {
+          "sourceId": "hold-zh-hans-04",
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "rationale": "Semantic translation review and canonical-source handling are a relevant specialized aspect of maintaining navigation content."
+        },
+        {
+          "sourceId": "hold-zh-hans-04",
+          "candidateId": "hold-zh-hant-04",
+          "grade": 2,
+          "rationale": "Both address navigation-map structure and lifecycle, including maintaining useful paths and archiving obsolete material."
+        },
+        {
+          "sourceId": "hold-zh-hans-05",
+          "candidateId": "hold-mixed-05",
+          "grade": 1,
+          "rationale": "Semantic-diff and canonical-source practices complement rename, alias, and link migration during documentation evolution."
+        },
+        {
+          "sourceId": "hold-zh-hans-07",
+          "candidateId": "hold-en-06",
+          "grade": 1,
+          "rationale": "Composting food scraps is adjacent to auditing kitchen waste, though it manages residual material rather than correcting procurement."
+        },
+        {
+          "sourceId": "hold-zh-hans-08",
+          "candidateId": "hold-zh-hant-08",
+          "grade": 0,
+          "rationale": "Shared attention to walking conditions is incidental; coastal tide planning does not help evaluate transit transfers."
+        }
+      ]
+    },
+    {
+      "language": "zh-hant",
+      "reviewer": "pi-rank-metric-blind-adjudicator-zh-hant-20260831",
+      "pairs": [
+        {
+          "sourceId": "hold-zh-hant-00",
+          "candidateId": "hold-en-00",
+          "grade": 0,
+          "rationale": "Online-index locking does not inform payment idempotency outcomes."
+        },
+        {
+          "sourceId": "hold-zh-hant-00",
+          "candidateId": "hold-mixed-00",
+          "grade": 0,
+          "rationale": "Protobuf wire compatibility does not materially address online-index locking or cleanup."
+        },
+        {
+          "sourceId": "hold-zh-hant-00",
+          "candidateId": "hold-zh-hant-01",
+          "grade": 2,
+          "rationale": "Cardinality skew directly informs whether an index helps and affects online-build resource planning."
+        },
+        {
+          "sourceId": "hold-zh-hant-00",
+          "candidateId": "hold-zh-hant-02",
+          "grade": 1,
+          "rationale": "Both address recovery from database changes, but row compensation is adjacent to index-build cancellation."
+        },
+        {
+          "sourceId": "hold-zh-hant-01",
+          "candidateId": "hold-zh-hant-00",
+          "grade": 2,
+          "rationale": "Online-index planning directly addresses the resource and indexing concerns raised by the skew investigation."
+        },
+        {
+          "sourceId": "hold-zh-hant-02",
+          "candidateId": "hold-mixed-00",
+          "grade": 1,
+          "rationale": "Schema-evolution compatibility is useful context for preventing cross-version data recovery problems."
+        },
+        {
+          "sourceId": "hold-zh-hant-02",
+          "candidateId": "hold-zh-hans-02",
+          "grade": 0,
+          "rationale": "Generic incident handoff does not materially explain reconciliation or compensation after a faulty backfill."
+        },
+        {
+          "sourceId": "hold-zh-hant-02",
+          "candidateId": "hold-zh-hant-00",
+          "grade": 1,
+          "rationale": "Index cancellation is adjacent database-recovery guidance, though it does not address corrupted rows or external effects."
+        },
+        {
+          "sourceId": "hold-zh-hant-02",
+          "candidateId": "hold-zh-hant-03",
+          "grade": 2,
+          "rationale": "Configuration-drift controls directly help ensure reconciliation and compensation run under known conditions."
+        },
+        {
+          "sourceId": "hold-zh-hant-03",
+          "candidateId": "hold-mixed-03",
+          "grade": 0,
+          "rationale": "Breaker probe recovery does not materially address cross-environment configuration drift."
+        },
+        {
+          "sourceId": "hold-zh-hant-03",
+          "candidateId": "hold-zh-hant-02",
+          "grade": 2,
+          "rationale": "Data reconciliation directly covers the cross-version rollback risk identified by the configuration note."
+        },
+        {
+          "sourceId": "hold-zh-hant-04",
+          "candidateId": "hold-en-04",
+          "grade": 1,
+          "rationale": "Deprecation mapping is useful for preserving trails while retiring parts of a research navigation map."
+        },
+        {
+          "sourceId": "hold-zh-hant-04",
+          "candidateId": "hold-zh-hans-04",
+          "grade": 2,
+          "rationale": "Navigation-page maintenance directly supports keeping an evidence-and-argument map usable."
+        },
+        {
+          "sourceId": "hold-zh-hant-05",
+          "candidateId": "hold-mixed-04",
+          "grade": 1,
+          "rationale": "Canonical-source and review practices are adjacent to retiring stale notes while preserving references."
+        },
+        {
+          "sourceId": "hold-zh-hant-08",
+          "candidateId": "hold-zh-hans-08",
+          "grade": 0,
+          "rationale": "Urban transit-transfer walking does not materially address coastal tide-window safety."
+        },
+        {
+          "sourceId": "hold-zh-hant-09",
+          "candidateId": "hold-zh-hans-08",
+          "grade": 0,
+          "rationale": "Transit wayfinding does not materially support coastal microclimate observation."
+        }
+      ]
+    }
+  ]
+}

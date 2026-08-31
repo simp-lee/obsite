@@ -16,9 +16,10 @@ import (
 const qualityAssetRoot = "testdata/quality"
 
 type qualityManifest struct {
-	SchemaVersion int                        `json:"schemaVersion"`
-	Sources       []qualitySource            `json:"sources"`
-	LabelSets     []qualityLabelSetReference `json:"labelSets"`
+	SchemaVersion       int                           `json:"schemaVersion"`
+	Sources             []qualitySource               `json:"sources"`
+	LabelSets           []qualityLabelSetReference    `json:"labelSets"`
+	HoldoutAdjudication *qualityAdjudicationReference `json:"holdoutAdjudication,omitempty"`
 }
 
 type qualitySource struct {
@@ -52,12 +53,47 @@ type qualityLabelSetReference struct {
 	SHA256   string `json:"sha256"`
 }
 
+type qualityAdjudicationReference struct {
+	Path      string `json:"path"`
+	SHA256    string `json:"sha256"`
+	PairCount int    `json:"pairCount"`
+}
+
+type qualityAdjudicationRecord struct {
+	SchemaVersion int                         `json:"schemaVersion"`
+	Method        string                      `json:"method"`
+	Rubric        map[string]string           `json:"rubric"`
+	ReviewedAt    string                      `json:"reviewedAt"`
+	Reviews       []qualityAdjudicationReview `json:"reviews"`
+}
+
+type qualityAdjudicationReview struct {
+	Language string                   `json:"language"`
+	Reviewer string                   `json:"reviewer"`
+	Pairs    []qualityAdjudicatedPair `json:"pairs"`
+}
+
+type qualityAdjudicatedPair struct {
+	SourceID    string `json:"sourceId"`
+	CandidateID string `json:"candidateId"`
+	Grade       int    `json:"grade"`
+	Rationale   string `json:"rationale"`
+}
+
+type qualityJudgmentReview struct {
+	Reviewer          string `json:"reviewer"`
+	Record            string `json:"record"`
+	Method            string `json:"method"`
+	ReviewedPairCount int    `json:"reviewedPairCount"`
+}
+
 type qualityJudgmentSet struct {
-	Split          string                  `json:"split"`
-	Language       string                  `json:"language"`
-	PoolKind       string                  `json:"poolKind"`
-	GridTupleCount int                     `json:"gridTupleCount,omitempty"`
-	Sources        []qualitySourceJudgment `json:"sources"`
+	Split              string                  `json:"split"`
+	Language           string                  `json:"language"`
+	PoolKind           string                  `json:"poolKind"`
+	GridTupleCount     int                     `json:"gridTupleCount,omitempty"`
+	AdjudicationReview *qualityJudgmentReview  `json:"adjudicationReview,omitempty"`
+	Sources            []qualitySourceJudgment `json:"sources"`
 }
 
 type qualitySourceJudgment struct {
@@ -142,6 +178,18 @@ func TestQualityAssetSchema(t *testing.T) {
 	badKnown.Sources[0].KnownRelevant = []string{"missing"}
 	if err := validateQualityJudgments(badKnown, sourceIndex); err == nil {
 		t.Fatal("validateQualityJudgments(missing known-relevant grade) error = nil")
+	}
+
+	holdoutSet := qualityJudgmentSet{
+		Split: "holdout", Language: "en", PoolKind: "holdout-active",
+		AdjudicationReview: &qualityJudgmentReview{Reviewer: "blind-reviewer", Record: "holdout/review.json", Method: "article-content-only", ReviewedPairCount: 1},
+		Sources:            []qualitySourceJudgment{{SourceID: "source", Candidates: []qualityCandidateJudgment{{CandidateID: "candidate", Grade: 1}}}},
+	}
+	holdoutRecord := qualityAdjudicationRecord{Reviews: []qualityAdjudicationReview{{
+		Language: "en", Reviewer: "blind-reviewer", Pairs: []qualityAdjudicatedPair{{SourceID: "source", CandidateID: "candidate", Grade: 2, Rationale: "same core problem"}},
+	}}}
+	if err := validateHoldoutAdjudicationBinding(holdoutSet, qualityAdjudicationReference{Path: "holdout/review.json", PairCount: 1}, holdoutRecord); err == nil {
+		t.Fatal("validateHoldoutAdjudicationBinding(grade mismatch) error = nil")
 	}
 }
 
@@ -300,6 +348,11 @@ func validateQualityManifest(root string, manifest qualityManifest) error {
 		paths[source.Path] = struct{}{}
 	}
 
+	adjudication, err := loadQualityAdjudication(root, manifest.HoldoutAdjudication, sources)
+	if err != nil {
+		return err
+	}
+
 	labelKeys := make(map[string]struct{}, len(manifest.LabelSets))
 	for _, reference := range manifest.LabelSets {
 		if !validQualitySplit(reference.Split) || !validQualityLanguage(reference.Language) {
@@ -330,6 +383,112 @@ func validateQualityManifest(root string, manifest qualityManifest) error {
 		}
 		if err := validateQualityJudgments(judgments, sources); err != nil {
 			return err
+		}
+		if reference.Split == "holdout" {
+			if adjudication == nil || manifest.HoldoutAdjudication == nil {
+				return fmt.Errorf("holdout label set %q lacks a blinded adjudication record", reference.Path)
+			}
+			if err := validateHoldoutAdjudicationBinding(judgments, *manifest.HoldoutAdjudication, *adjudication); err != nil {
+				return err
+			}
+		} else if judgments.AdjudicationReview != nil {
+			return fmt.Errorf("calibration label set %q unexpectedly has holdout adjudication metadata", reference.Path)
+		}
+	}
+	return nil
+}
+
+func loadQualityAdjudication(root string, reference *qualityAdjudicationReference, sources map[string]qualitySource) (*qualityAdjudicationRecord, error) {
+	if reference == nil {
+		return nil, nil
+	}
+	assetPath, err := qualityAssetPath(root, reference.Path)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateQualityFileHash(assetPath, reference.SHA256); err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(assetPath)
+	if err != nil {
+		return nil, err
+	}
+	var record qualityAdjudicationRecord
+	if err := json.Unmarshal(data, &record); err != nil {
+		return nil, err
+	}
+	if record.SchemaVersion != 1 || strings.TrimSpace(record.Method) == "" || strings.TrimSpace(record.ReviewedAt) == "" {
+		return nil, fmt.Errorf("holdout adjudication record metadata is incomplete")
+	}
+	for _, grade := range []string{"0", "1", "2"} {
+		if strings.TrimSpace(record.Rubric[grade]) == "" {
+			return nil, fmt.Errorf("holdout adjudication rubric is missing grade %s", grade)
+		}
+	}
+
+	pairCount := 0
+	seenLanguages := make(map[string]struct{}, len(record.Reviews))
+	seenPairs := make(map[string]struct{})
+	for _, review := range record.Reviews {
+		if !validQualityLanguage(review.Language) || strings.TrimSpace(review.Reviewer) == "" {
+			return nil, fmt.Errorf("invalid holdout adjudication reviewer for %q", review.Language)
+		}
+		if _, exists := seenLanguages[review.Language]; exists {
+			return nil, fmt.Errorf("duplicate holdout adjudication language %q", review.Language)
+		}
+		seenLanguages[review.Language] = struct{}{}
+		for _, pair := range review.Pairs {
+			source, sourceOK := sources[pair.SourceID]
+			candidate, candidateOK := sources[pair.CandidateID]
+			if !sourceOK || !candidateOK || source.Split != "holdout" || candidate.Split != "holdout" || source.Language != review.Language || pair.SourceID == pair.CandidateID {
+				return nil, fmt.Errorf("invalid holdout adjudication pair %q -> %q", pair.SourceID, pair.CandidateID)
+			}
+			if pair.Grade < 0 || pair.Grade > 2 || strings.TrimSpace(pair.Rationale) == "" {
+				return nil, fmt.Errorf("incomplete holdout adjudication for %q -> %q", pair.SourceID, pair.CandidateID)
+			}
+			key := pair.SourceID + "\x00" + pair.CandidateID
+			if _, exists := seenPairs[key]; exists {
+				return nil, fmt.Errorf("duplicate holdout adjudication pair %q -> %q", pair.SourceID, pair.CandidateID)
+			}
+			seenPairs[key] = struct{}{}
+			pairCount++
+		}
+	}
+	if pairCount != reference.PairCount || pairCount == 0 {
+		return nil, fmt.Errorf("holdout adjudication pair count = %d, want %d", pairCount, reference.PairCount)
+	}
+	return &record, nil
+}
+
+func validateHoldoutAdjudicationBinding(set qualityJudgmentSet, reference qualityAdjudicationReference, record qualityAdjudicationRecord) error {
+	if set.AdjudicationReview == nil {
+		return fmt.Errorf("holdout %s labels lack adjudication metadata", set.Language)
+	}
+	var review *qualityAdjudicationReview
+	for index := range record.Reviews {
+		if record.Reviews[index].Language == set.Language {
+			review = &record.Reviews[index]
+			break
+		}
+	}
+	if review == nil {
+		return fmt.Errorf("holdout %s labels lack a matching adjudication review", set.Language)
+	}
+	metadata := set.AdjudicationReview
+	if metadata.Reviewer != review.Reviewer || metadata.Record != reference.Path || strings.TrimSpace(metadata.Method) == "" || metadata.ReviewedPairCount != len(review.Pairs) {
+		return fmt.Errorf("holdout %s adjudication metadata does not match its record", set.Language)
+	}
+	grades := make(map[string]int)
+	for _, judgment := range set.Sources {
+		for _, candidate := range judgment.Candidates {
+			grades[judgment.SourceID+"\x00"+candidate.CandidateID] = candidate.Grade
+		}
+	}
+	for _, pair := range review.Pairs {
+		key := pair.SourceID + "\x00" + pair.CandidateID
+		grade, ok := grades[key]
+		if !ok || grade != pair.Grade {
+			return fmt.Errorf("holdout adjudication grade mismatch for %q -> %q", pair.SourceID, pair.CandidateID)
 		}
 	}
 	return nil

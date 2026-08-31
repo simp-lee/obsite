@@ -13,6 +13,12 @@ All articles authored for this repository use `source: original` and
 `license: project-license`. They are not network-scraped. Performance fixtures
 and generated token templates are not accepted as quality sources.
 
+`holdout/review-2026-08-31.json` records the fresh semantic re-adjudication of
+81 corrected holdout pairs. Each language reviewer saw only the two article
+contents and the fixed grade rubric; labels, discovery markers, production
+rankings and scores, metrics, and Git history were withheld. The holdout label
+metadata and manifest hash bind those reviewed grades to the frozen record.
+
 The calibration split may be used only for the frozen 81-tuple parameter grid.
 Holdout source review is permitted before calibration, but holdout rankings,
 pools, labels, and metrics remain unopened until production parameters are

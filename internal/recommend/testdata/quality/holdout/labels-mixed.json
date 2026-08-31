@@ -256,7 +256,7 @@
         },
         {
           "candidateId": "hold-zh-hans-02",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "search"
@@ -347,14 +347,14 @@
         },
         {
           "candidateId": "hold-zh-hans-02",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
         },
         {
           "candidateId": "hold-zh-hans-03",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -477,7 +477,7 @@
         },
         {
           "candidateId": "hold-zh-hant-05",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -499,7 +499,7 @@
       "candidates": [
         {
           "candidateId": "hold-en-04",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "moc",
@@ -508,7 +508,7 @@
         },
         {
           "candidateId": "hold-en-05",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "search"
@@ -531,7 +531,7 @@
         },
         {
           "candidateId": "hold-zh-hans-04",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "moc",
             "search"
@@ -539,7 +539,7 @@
         },
         {
           "candidateId": "hold-zh-hans-05",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -554,7 +554,7 @@
         },
         {
           "candidateId": "hold-zh-hant-05",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -641,7 +641,7 @@
         },
         {
           "candidateId": "hold-mixed-06",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "theme"
@@ -757,7 +757,7 @@
         },
         {
           "candidateId": "hold-en-09",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "search"
           ]
@@ -836,5 +836,11 @@
         }
       ]
     }
-  ]
+  ],
+  "adjudicationReview": {
+    "reviewer": "pi-rank-metric-blind-adjudicator-mixed-20260831",
+    "record": "holdout/review-2026-08-31.json",
+    "method": "article-content-only; labels, ranks, scores, metrics, and Git history withheld",
+    "reviewedPairCount": 19
+  }
 }

@@ -1750,25 +1750,30 @@
       "split": "holdout",
       "language": "en",
       "path": "holdout/labels-en.json",
-      "sha256": "2ff490ec8eeb7f72ede4f6584ce3ebe0b03e5d9ee2d8dbca11a3879bbdb4c23a"
+      "sha256": "e038dcd8f2a408c8f77a109ed61e337c9304046b37329e2bb03f11c375740733"
     },
     {
       "split": "holdout",
       "language": "mixed",
       "path": "holdout/labels-mixed.json",
-      "sha256": "cbc90cccd95f27f6618d678adde7fe5ee2fbf9d6688e3b2ebca32fc14be07378"
+      "sha256": "04cabae218b05eee1000cbdad50076cb893dd058bf4957e88d305a3bbf430917"
     },
     {
       "split": "holdout",
       "language": "zh-hans",
       "path": "holdout/labels-zh-hans.json",
-      "sha256": "c1f789f227d89e3b499275f6a31e3cd260775cbc39cfa3bb78e639934eb71c26"
+      "sha256": "2e7415f5fc329cfa2677c6e6cf97cca1b4f10c7429cf96ca0af2eab2bb272db9"
     },
     {
       "split": "holdout",
       "language": "zh-hant",
       "path": "holdout/labels-zh-hant.json",
-      "sha256": "81c44952bfed26a194c68519deb5742f4e9b36c0ed813eeb1bbd8a8fba786606"
+      "sha256": "1622bcef43a210f9914fccece8b89453dc9d7553fed1831ce295be44efeb461e"
     }
-  ]
+  ],
+  "holdoutAdjudication": {
+    "path": "holdout/review-2026-08-31.json",
+    "sha256": "c4a93184a6929c772fe750e5d6d0d9b008bce6b11aaf73ad0a4fa4255c155b68",
+    "pairCount": 81
+  }
 }

@@ -78,7 +78,7 @@
         },
         {
           "candidateId": "hold-zh-hant-01",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "theme"
@@ -86,7 +86,7 @@
         },
         {
           "candidateId": "hold-zh-hant-02",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "search"
@@ -179,7 +179,7 @@
         },
         {
           "candidateId": "hold-zh-hant-00",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "theme"
@@ -239,7 +239,7 @@
         },
         {
           "candidateId": "hold-mixed-00",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "search"
@@ -296,7 +296,7 @@
         },
         {
           "candidateId": "hold-zh-hant-00",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "search"
@@ -311,7 +311,7 @@
         },
         {
           "candidateId": "hold-zh-hant-03",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "theme"
@@ -378,7 +378,7 @@
         },
         {
           "candidateId": "hold-mixed-03",
-          "grade": 1,
+          "grade": 0,
           "discovery": [
             "search"
           ]
@@ -413,7 +413,7 @@
         },
         {
           "candidateId": "hold-zh-hant-02",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "theme"
@@ -459,7 +459,7 @@
       "candidates": [
         {
           "candidateId": "hold-en-04",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "production-top10",
             "moc",
@@ -499,7 +499,7 @@
         },
         {
           "candidateId": "hold-zh-hans-04",
-          "grade": 1,
+          "grade": 2,
           "discovery": [
             "production-top10",
             "moc",
@@ -558,7 +558,7 @@
         },
         {
           "candidateId": "hold-mixed-04",
-          "grade": 0,
+          "grade": 1,
           "discovery": [
             "moc",
             "search"
@@ -823,5 +823,11 @@
         }
       ]
     }
-  ]
+  ],
+  "adjudicationReview": {
+    "reviewer": "pi-rank-metric-blind-adjudicator-zh-hant-20260831",
+    "record": "holdout/review-2026-08-31.json",
+    "method": "article-content-only; labels, ranks, scores, metrics, and Git history withheld",
+    "reviewedPairCount": 16
+  }
 }
