@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -35,15 +36,30 @@ type ScanResult struct {
 	resourceConflicts map[string][]string
 }
 
-// Scan walks a vault once and returns the Markdown and resource candidates needed
-// by later phases. Hidden entries, node_modules, all .obsidian content except the
-// separately-read app.json, symlinks, and non-regular files are excluded.
-// attachmentFolderPath is preserved as normalized metadata only and does not
-// relax scan boundaries.
+// ScanOptions carries the already-resolved output exclusion shared with build and watch.
+type ScanOptions struct {
+	OutputPath string
+}
+
+// Scan walks a vault once without an output exclusion.
 func Scan(vaultPath string) (ScanResult, error) {
+	return ScanWithOptions(vaultPath, ScanOptions{})
+}
+
+// ScanWithOptions walks a vault once and returns the Markdown and resource
+// candidates needed by later phases. Hidden entries, node_modules, the resolved
+// output, all .obsidian content except the separately-read app.json, symlinks,
+// and non-regular files are excluded. attachmentFolderPath is preserved as
+// normalized metadata only and does not relax scan boundaries.
+func ScanWithOptions(vaultPath string, options ScanOptions) (ScanResult, error) {
 	absVaultPath, err := normalizeVaultPath(vaultPath)
 	if err != nil {
 		return ScanResult{}, err
+	}
+
+	excludedOutput := filepath.Clean(strings.TrimSpace(options.OutputPath))
+	if excludedOutput != "." && !internalfsutil.PathWithinRoot(absVaultPath, excludedOutput) {
+		excludedOutput = ""
 	}
 
 	attachmentFolderPath, err := readAttachmentFolderPath(absVaultPath)
@@ -68,6 +84,12 @@ func Scan(vaultPath string) (ScanResult, error) {
 		}
 		relPath = filepath.ToSlash(relPath)
 		if relPath == "." {
+			return nil
+		}
+		if excludedOutput != "" && filepath.Clean(currentPath) == excludedOutput {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 
@@ -141,49 +163,35 @@ func (r ScanResult) LookupResourcePath(relPath string) model.PathLookupResult {
 }
 
 func normalizeVaultPath(vaultPath string) (string, error) {
-	vaultPath = strings.TrimSpace(vaultPath)
-	if vaultPath == "" {
-		return "", fmt.Errorf("vault path is required")
-	}
-
-	absVaultPath, err := filepath.Abs(vaultPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve vault path %q: %w", vaultPath, err)
-	}
-
-	info, err := os.Stat(absVaultPath)
-	if err != nil {
-		return "", fmt.Errorf("stat vault path %q: %w", absVaultPath, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("vault path %q is not a directory", absVaultPath)
-	}
-
-	return absVaultPath, nil
+	return internalfsutil.ResolveVaultPath(vaultPath)
 }
 
 func readAttachmentFolderPath(vaultPath string) (string, error) {
 	configDirPath := filepath.Join(vaultPath, obsidianConfigDir)
-	hasConfigDir, err := hasValidObsidianConfigDir(configDirPath)
-	if err != nil {
-		return "", err
-	}
-	if !hasConfigDir {
-		return "", nil
-	}
-
-	appConfigPath := filepath.Join(vaultPath, filepath.FromSlash(obsidianAppJSON))
-	if err := validateRegularNonSymlinkPath(appConfigPath); err != nil {
+	if _, _, err := internalfsutil.InspectContainedDirectory(vaultPath, configDirPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		if errors.Is(err, internalfsutil.ErrSymlinkPath) {
+			return "", fmt.Errorf("obsidian config path %q must not be a symbolic link", configDirPath)
+		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
 			return "", nil
 		}
 		return "", err
 	}
 
-	data, err := os.ReadFile(appConfigPath)
+	appConfigPath := filepath.Join(vaultPath, filepath.FromSlash(obsidianAppJSON))
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultPath, appConfigPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", nil
+		}
+		if errors.Is(err, internalfsutil.ErrSymlinkPath) {
+			return "", fmt.Errorf("obsidian config path %q must not be a symbolic link", appConfigPath)
+		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+			return "", fmt.Errorf("obsidian config path %q must be a regular file", appConfigPath)
 		}
 		return "", fmt.Errorf("read %q: %w", appConfigPath, err)
 	}
@@ -200,37 +208,6 @@ func readAttachmentFolderPath(vaultPath string) (string, error) {
 		return "", fmt.Errorf("normalize attachmentFolderPath from %q: %w", appConfigPath, err)
 	}
 	return normalizedPath, nil
-}
-
-func hasValidObsidianConfigDir(configDirPath string) (bool, error) {
-	info, err := os.Lstat(configDirPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		return false, err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return false, fmt.Errorf("obsidian config path %q must not be a symbolic link", configDirPath)
-	}
-	if !info.IsDir() {
-		return false, nil
-	}
-	return true, nil
-}
-
-func validateRegularNonSymlinkPath(filePath string) error {
-	info, err := os.Lstat(filePath)
-	if err != nil {
-		return err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("obsidian config path %q must not be a symbolic link", filePath)
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("obsidian config path %q must be a regular file", filePath)
-	}
-	return nil
 }
 
 func normalizeAttachmentFolderPath(raw string) (string, error) {

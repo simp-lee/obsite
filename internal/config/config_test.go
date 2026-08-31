@@ -10,6 +10,61 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func TestLoadForBuildEnforcesVaultConfigBoundary(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	vaultPath := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	externalPath := filepath.Join(root, "external.yaml")
+	if err := os.WriteFile(externalPath, []byte("title: External\nbaseURL: https://example.com/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadForBuild(externalPath, Overrides{VaultPath: vaultPath})
+	if err == nil || !strings.Contains(err.Error(), "path must stay inside the vault") {
+		t.Fatalf("LoadForBuild(external) error = %v, want vault boundary rejection", err)
+	}
+
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+	if err := os.Symlink(externalPath, configPath); err != nil {
+		if os.IsPermission(err) {
+			t.Skipf("symlink unavailable: %v", err)
+		}
+		t.Fatal(err)
+	}
+	_, err = LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
+	if err == nil || !strings.Contains(err.Error(), "must not contain symbolic links") {
+		t.Fatalf("LoadForBuild(symlink) error = %v, want symlink rejection", err)
+	}
+}
+
+func TestLoadForBuildRejectsExternalThemeRootBoundary(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	vaultPath := filepath.Join(root, "vault")
+	externalTheme := filepath.Join(root, "external-theme")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(externalTheme, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
+	configData := fmt.Sprintf("title: Garden\nbaseURL: https://example.com/\nthemes:\n  external:\n    root: %q\n", externalTheme)
+	if err := os.WriteFile(configPath, []byte(configData), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
+	if err == nil || !strings.Contains(err.Error(), "must stay inside the vault") {
+		t.Fatalf("LoadForBuild() error = %v, want external theme boundary rejection", err)
+	}
+}
+
 func TestLoadParsesExtendedYAML(t *testing.T) {
 	t.Parallel()
 
@@ -1028,8 +1083,7 @@ func TestLoadAutoDetectsCustomCSSInVaultRoot(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	configPath := writeConfigFileAt(t, configDir, `
+	configPath := writeConfigFileAt(t, vaultPath, `
 title: Garden Notes
 baseURL: https://example.com
 `)
@@ -1042,60 +1096,8 @@ baseURL: https://example.com
 	if err != nil {
 		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	cfg := loaded.Config
-	if cfg.CustomCSS != customCSSPath {
-		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
-	}
-}
-
-func TestLoadIgnoresConfigDirCustomCSSWithoutVaultCustomCSS(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-`)
-	customCSSPath := filepath.Join(configDir, defaultCustomCSSName)
-	if err := os.WriteFile(customCSSPath, []byte("body { color: rebeccapurple; }\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
-	}
-
-	loaded, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	if loaded.Config.CustomCSS != "" {
-		t.Fatalf("CustomCSS = %q, want empty string when only config-dir custom.css exists", loaded.Config.CustomCSS)
-	}
-}
-
-func TestLoadIgnoresInvalidConfigDirCustomCSSWhenVaultRootHasCustomCSS(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	configPath := writeConfigFileAt(t, configDir, `
-title: Garden Notes
-baseURL: https://example.com
-`)
-	configCustomCSSPath := filepath.Join(configDir, defaultCustomCSSName)
-	vaultCustomCSSPath := filepath.Join(vaultPath, defaultCustomCSSName)
-	if err := os.Mkdir(configCustomCSSPath, 0o755); err != nil {
-		t.Fatalf("os.Mkdir(%q) error = %v", configCustomCSSPath, err)
-	}
-	if err := os.WriteFile(vaultCustomCSSPath, []byte("body { color: royalblue; }\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", vaultCustomCSSPath, err)
-	}
-
-	loaded, err := LoadForBuild(configPath, Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	cfg := loaded.Config
-	if cfg.CustomCSS != vaultCustomCSSPath {
-		t.Fatalf("CustomCSS = %q, want %q", cfg.CustomCSS, vaultCustomCSSPath)
+	if loaded.Config.CustomCSS != customCSSPath {
+		t.Fatalf("CustomCSS = %q, want %q", loaded.Config.CustomCSS, customCSSPath)
 	}
 }
 
@@ -1103,8 +1105,7 @@ func TestLoadRejectsInvalidAutoDetectedCustomCSSInVaultRoot(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	configPath := writeConfigFileAt(t, configDir, `
+	configPath := writeConfigFileAt(t, vaultPath, `
 title: Garden Notes
 baseURL: https://example.com
 `)

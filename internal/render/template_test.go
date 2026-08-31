@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -730,8 +729,6 @@ func TestThemeRootReusesCachedSnapshotUntilFilesChange(t *testing.T) {
 	baseV1 := themeBaseWithBodyAttribute(t, `data-snapshot-cache="v1"`)
 	writeCompleteThemeRoot(t, templateDir, map[string]string{"base.html": baseV1})
 
-	wantReadsPerSnapshot := len(RequiredHTMLTemplateNames)
-	readCount := trackThemeTemplateFileReadsForRoot(t, templateDir)
 	site := testSiteConfig()
 	site.ActiveThemeName = "feature"
 	site.ThemeRoot = filepath.Join(templateDir, ".")
@@ -740,10 +737,6 @@ func TestThemeRootReusesCachedSnapshotUntilFilesChange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadTemplateSet() error = %v", err)
 	}
-	if got := readCount(); got != wantReadsPerSnapshot {
-		t.Fatalf("theme template reads after first load = %d, want %d", got, wantReadsPerSnapshot)
-	}
-
 	second, err := loadTemplateSet(site)
 	if err != nil {
 		t.Fatalf("loadTemplateSet() second error = %v", err)
@@ -751,10 +744,6 @@ func TestThemeRootReusesCachedSnapshotUntilFilesChange(t *testing.T) {
 	if first != second {
 		t.Fatal("loadTemplateSet() returned different template set instances for unchanged theme snapshot")
 	}
-	if got := readCount(); got != wantReadsPerSnapshot {
-		t.Fatalf("theme template reads after unchanged reload = %d, want %d", got, wantReadsPerSnapshot)
-	}
-
 	baseV2 := baseV1 + "\n"
 	if err := os.WriteFile(overridePath, []byte(baseV2), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
@@ -766,9 +755,6 @@ func TestThemeRootReusesCachedSnapshotUntilFilesChange(t *testing.T) {
 	}
 	if third == second {
 		t.Fatal("loadTemplateSet() returned cached template set after a theme template changed")
-	}
-	if got := readCount(); got != wantReadsPerSnapshot*2 {
-		t.Fatalf("theme template reads after changed reload = %d, want %d", got, wantReadsPerSnapshot*2)
 	}
 }
 
@@ -1726,37 +1712,6 @@ func clearTemplateSetCacheEntriesForThemeRoot(t *testing.T, themeRoot string) {
 		}
 		return true
 	})
-}
-
-func trackThemeTemplateFileReadsForRoot(t *testing.T, themeRoot string) func() int {
-	t.Helper()
-
-	normalizedRoot, err := normalizeThemeRoot(themeRoot)
-	if err != nil {
-		t.Fatalf("normalizeThemeRoot(%q) error = %v", themeRoot, err)
-	}
-
-	var reads atomic.Int64
-	themeTemplateFileReader.mu.Lock()
-	previous := themeTemplateFileReader.read
-	themeTemplateFileReader.read = func(filePath string) ([]byte, error) {
-		data, err := previous(filePath)
-		if strings.HasPrefix(filePath, normalizedRoot+string(filepath.Separator)) {
-			reads.Add(1)
-		}
-		return data, err
-	}
-	themeTemplateFileReader.mu.Unlock()
-
-	t.Cleanup(func() {
-		themeTemplateFileReader.mu.Lock()
-		themeTemplateFileReader.read = previous
-		themeTemplateFileReader.mu.Unlock()
-	})
-
-	return func() int {
-		return int(reads.Load())
-	}
 }
 
 func templateSetCacheKeyMatchesThemeRoot(key any, themeRoot string) bool {

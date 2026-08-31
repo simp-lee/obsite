@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/slug"
 	"gopkg.in/yaml.v3"
@@ -43,15 +43,11 @@ func ParseFrontmatter(scanResult ScanResult, cfg model.SiteConfig) (FrontmatterR
 
 	for _, relPath := range scanResult.MarkdownFiles {
 		sourcePath := pathForScanResult(scanResult, relPath)
-		lastModified, err := sourceLastModified(sourcePath)
-		if err != nil {
-			return FrontmatterResult{}, fmt.Errorf("stat %q: %w", sourcePath, err)
-		}
-
-		content, err := os.ReadFile(sourcePath)
+		_, content, sourceInfo, err := internalfsutil.ReadContainedRegularFile(scanResult.VaultPath, relPath)
 		if err != nil {
 			return FrontmatterResult{}, fmt.Errorf("read %q: %w", sourcePath, err)
 		}
+		lastModified := normalizeFilesystemTime(sourceInfo.ModTime())
 
 		frontmatterData, body, bodyStartLine, hasFrontmatter, err := splitFrontmatter(content)
 		if err != nil {
@@ -461,15 +457,6 @@ func cloneStrings(values []string) []string {
 	cloned := make([]string, len(values))
 	copy(cloned, values)
 	return cloned
-}
-
-func sourceLastModified(filePath string) (time.Time, error) {
-	info, err := os.Stat(filePath)
-	if err != nil {
-		return time.Time{}, err
-	}
-
-	return normalizeFilesystemTime(info.ModTime()), nil
 }
 
 func normalizeFilesystemTime(value time.Time) time.Time {

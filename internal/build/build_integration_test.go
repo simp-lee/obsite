@@ -528,91 +528,18 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	}
 }
 
-func TestBuildIntegrationExternalConfigDirUsesVaultRootCustomCSSAndResolvesRelativePagefindPath(t *testing.T) {
+func TestBuildIntegrationRejectsExternalConfigOutsideVaultBoundary(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
-	configDir := t.TempDir()
-	outputPath := filepath.Join(t.TempDir(), "site")
-	configPath := filepath.Join(configDir, "obsite.yaml")
-	customCSSPath := filepath.Join(vaultPath, "custom.css")
-	expectedPagefindPath := filepath.Join(configDir, "tools", "pagefind_extended")
-
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
-title: Alpha
-date: 2026-04-06
----
-# Alpha
-
-Body.
-`)
-	if err := os.WriteFile(customCSSPath, []byte("body { outline: 2px solid teal; }\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", customCSSPath, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(expectedPagefindPath), 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(expectedPagefindPath), err)
-	}
-	if err := os.WriteFile(configPath, []byte(strings.Join([]string{
-		"title: External Config Site",
-		"baseURL: https://example.com/blog",
-		"search:",
-		"  enabled: true",
-		"  pagefindPath: tools/pagefind_extended",
-		"  pagefindVersion: 1.5.2",
-	}, "\n")+"\n"), 0o644); err != nil {
+	configPath := filepath.Join(t.TempDir(), "obsite.yaml")
+	if err := os.WriteFile(configPath, []byte("title: External Config Site\nbaseURL: https://example.com/blog\n"), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
 	}
 
-	loadedCfg, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
-	if err != nil {
-		t.Fatalf("config.LoadForBuild(%q) error = %v", configPath, err)
-	}
-	cfg := loadedCfg.Config
-	if cfg.CustomCSS != customCSSPath {
-		t.Fatalf("cfg.CustomCSS = %q, want %q", cfg.CustomCSS, customCSSPath)
-	}
-	if cfg.Search.PagefindPath != expectedPagefindPath {
-		t.Fatalf("cfg.Search.PagefindPath = %q, want %q", cfg.Search.PagefindPath, expectedPagefindPath)
-	}
-
-	var lookPathCalls int
-	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
-		pagefindLookPath: func(name string) (string, error) {
-			lookPathCalls++
-			if name != expectedPagefindPath {
-				t.Fatalf("pagefindLookPath() name = %q, want %q", name, expectedPagefindPath)
-			}
-			return expectedPagefindPath, nil
-		},
-		pagefindCommand: func(name string, args ...string) ([]byte, error) {
-			if name != expectedPagefindPath {
-				t.Fatalf("pagefindCommand() name = %q, want %q", name, expectedPagefindPath)
-			}
-			if len(args) == 1 && args[0] == "--version" {
-				return []byte("pagefind_extended 1.5.2\n"), nil
-			}
-			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
-				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
-			}
-			writeMinimalPagefindBundle(t, filepath.Join(args[1], pagefindOutputSubdir))
-			return []byte("Indexed 1 page\n"), nil
-		},
-	}); err != nil {
-		t.Fatalf("buildWithOptions() error = %v", err)
-	}
-	if lookPathCalls != 1 {
-		t.Fatalf("pagefindLookPath() calls = %d, want %d", lookPathCalls, 1)
-	}
-
-	customCSS := readBuildOutputFile(t, outputPath, "assets/custom.css")
-	if !bytes.Contains(customCSS, []byte("outline: 2px solid teal")) {
-		t.Fatalf("assets/custom.css = %q, want copied vault-root custom stylesheet", string(customCSS))
-	}
-	_ = readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json")
-
-	alphaHTML := readBuildOutputFile(t, outputPath, "alpha/index.html")
-	if !containsAny(alphaHTML, `href="../assets/custom.css"`, `href=../assets/custom.css`) {
-		t.Fatalf("note page missing vault-root custom stylesheet link\n%s", alphaHTML)
+	_, err := internalconfig.LoadForBuild(configPath, internalconfig.Overrides{VaultPath: vaultPath})
+	if err == nil || !strings.Contains(err.Error(), "path must stay inside the vault") {
+		t.Fatalf("config.LoadForBuild(%q) error = %v, want vault boundary rejection", configPath, err)
 	}
 }
 

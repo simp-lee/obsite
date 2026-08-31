@@ -258,7 +258,7 @@ func buildTemplateSignature(themeName string, themeRoot string, themeAssets []in
 	cacheHashWriteString(hasher, cleanRoot)
 
 	for _, file := range htmlFiles {
-		data, err := os.ReadFile(file.absPath)
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(cleanRoot, file.absPath)
 		if err != nil {
 			return "", fmt.Errorf("read theme template %q: %w", file.relPath, err)
 		}
@@ -268,7 +268,7 @@ func buildTemplateSignature(themeName string, themeRoot string, themeAssets []in
 	}
 
 	stylePath := filepath.Join(cleanRoot, "style.css")
-	styleData, styleFound, err := readThemeStyleSignatureFile(stylePath)
+	styleData, styleFound, err := readThemeStyleSignatureFile(cleanRoot, stylePath)
 	if err != nil {
 		return "", err
 	}
@@ -278,7 +278,7 @@ func buildTemplateSignature(themeName string, themeRoot string, themeAssets []in
 	}
 
 	for _, asset := range sortThemeStaticAssetsForSignature(themeAssets) {
-		data, err := os.ReadFile(asset.SourcePath)
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(cleanRoot, asset.SourcePath)
 		if err != nil {
 			return "", fmt.Errorf("read theme static asset %q: %w", asset.ThemeRelativePath, err)
 		}
@@ -322,9 +322,9 @@ func listThemeTemplateFilesForSignature(themeRoot string) ([]themeTemplateSignat
 			return nil
 		}
 
-		resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(currentPath)
+		resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(themeRoot, currentPath)
 		if err != nil {
-			if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+			if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) {
 				return fmt.Errorf("theme HTML template %q must be a regular non-symlink file", currentPath)
 			}
 
@@ -348,19 +348,19 @@ func listThemeTemplateFilesForSignature(themeRoot string) ([]themeTemplateSignat
 	return files, nil
 }
 
-func readThemeStyleSignatureFile(stylePath string) ([]byte, bool, error) {
-	resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(stylePath)
+func readThemeStyleSignatureFile(themeRoot string, stylePath string) ([]byte, bool, error) {
+	resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(themeRoot, stylePath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, false, nil
 		}
-		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) {
 			return nil, false, fmt.Errorf("theme stylesheet %q must be a regular non-symlink file", stylePath)
 		}
 		return nil, false, fmt.Errorf("stat theme stylesheet %q: %w", stylePath, err)
 	}
 
-	data, err := os.ReadFile(resolvedPath)
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(themeRoot, resolvedPath)
 	if err != nil {
 		return nil, false, fmt.Errorf("read theme stylesheet %q: %w", resolvedPath, err)
 	}
@@ -625,7 +625,7 @@ func buildNoteHashes(vaultRoot string, idx *model.VaultIndex) (map[string]string
 
 	hashes := make(map[string]string, len(paths))
 	for _, relPath := range paths {
-		data, err := os.ReadFile(filepath.Join(vaultRoot, filepath.FromSlash(relPath)))
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, filepath.FromSlash(relPath))
 		if err != nil {
 			return nil, fmt.Errorf("read note source %q: %w", relPath, err)
 		}

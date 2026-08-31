@@ -67,32 +67,17 @@ func CopyAssetsWithReservedPaths(vaultRoot string, outputRoot string, assets map
 			continue
 		}
 
-		srcAbsPath, info, err := assetSourceInfo(vaultRoot, srcPath)
+		existingHash, destinationExists := written[dstKey]
+		hashValue, duplicate, err := copyContainedAsset(vaultRoot, srcPath, outputRoot, dstPath, existingHash, destinationExists)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errUnsupportedAssetSource) {
 				recordUnavailableAsset(diagCollector, srcPath, dstPath)
 				continue
 			}
-			return fmt.Errorf("inspect asset %q: %w", srcPath, err)
-		}
-
-		hashValue, err := fileHashHex(srcAbsPath)
-		if err != nil {
-			return fmt.Errorf("hash asset %q: %w", srcPath, err)
-		}
-		if existingHash, ok := written[dstKey]; ok {
-			if existingHash == hashValue {
-				continue
-			}
-			return fmt.Errorf("asset destination conflict for %q", dstPath)
-		}
-
-		dstAbsPath := filepath.Join(outputRoot, filepath.FromSlash(dstPath))
-		if err := os.MkdirAll(filepath.Dir(dstAbsPath), 0o755); err != nil {
-			return fmt.Errorf("mkdir asset destination for %q: %w", dstPath, err)
-		}
-		if err := copyFile(srcAbsPath, dstAbsPath, info.Mode().Perm()); err != nil {
 			return fmt.Errorf("copy asset %q -> %q: %w", srcPath, dstPath, err)
+		}
+		if duplicate {
+			continue
 		}
 
 		written[dstKey] = hashValue
@@ -359,17 +344,19 @@ func plainAssetKey(srcPath string) string {
 	return outputSiteKey(plainAssetPath(srcPath))
 }
 
-func assetHash(vaultRoot string, srcPath string) (string, error) {
+func assetHash(vaultRoot string, srcPath string) (hashHex string, err error) {
 	if vaultRoot == "" {
 		return missingAssetHash(srcPath), nil
 	}
 
-	srcAbsPath, _, err := assetSourceInfo(vaultRoot, srcPath)
+	_, file, _, err := openAssetSource(vaultRoot, srcPath)
 	if err != nil {
 		return "", err
 	}
-
-	return fileHashHex(srcAbsPath)
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
+	return fileHashHex(file)
 }
 
 func isVaultRelativeAssetInput(value string) bool {
@@ -420,47 +407,16 @@ func assetSourceInfo(vaultRoot string, srcPath string) (string, os.FileInfo, err
 		return "", nil, os.ErrNotExist
 	}
 
-	rootAbs, err := filepath.Abs(vaultRoot)
+	resolvedPath, info, err := internalfsutil.InspectContainedRegularFile(vaultRoot, filepath.FromSlash(srcPath))
 	if err != nil {
-		return "", nil, err
-	}
-
-	currentPath := rootAbs
-	parts := strings.Split(filepath.FromSlash(srcPath), string(os.PathSeparator))
-	for index, part := range parts {
-		if part == "" || part == "." {
-			continue
-		}
-
-		currentPath = filepath.Join(currentPath, part)
-		info, err := os.Lstat(currentPath)
-		if err != nil {
-			return "", nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) ||
+			errors.Is(err, internalfsutil.ErrPathOutsideRoot) ||
+			errors.Is(err, internalfsutil.ErrSymlinkPath) {
 			return "", nil, errUnsupportedAssetSource
 		}
-
-		isLast := index == len(parts)-1
-		if !isLast {
-			if !info.IsDir() {
-				return "", nil, errUnsupportedAssetSource
-			}
-			continue
-		}
-
-		validatedPath, validatedInfo, validateErr := internalfsutil.InspectRegularNonSymlinkFile(currentPath)
-		if validateErr != nil {
-			if errors.Is(validateErr, internalfsutil.ErrUnsupportedRegularFileSource) {
-				return "", nil, errUnsupportedAssetSource
-			}
-			return "", nil, validateErr
-		}
-
-		return validatedPath, validatedInfo, nil
+		return "", nil, err
 	}
-
-	return "", nil, errUnsupportedAssetSource
+	return resolvedPath, info, nil
 }
 
 func missingAssetHash(srcPath string) string {
@@ -468,35 +424,64 @@ func missingAssetHash(srcPath string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func fileHashHex(filePath string) (hashHex string, err error) {
-	file, err := os.Open(filePath)
+func openAssetSource(vaultRoot string, srcPath string) (string, *os.File, os.FileInfo, error) {
+	resolvedPath, file, info, err := internalfsutil.OpenContainedRegularFile(vaultRoot, filepath.FromSlash(srcPath))
 	if err != nil {
-		return "", err
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) ||
+			errors.Is(err, internalfsutil.ErrPathOutsideRoot) ||
+			errors.Is(err, internalfsutil.ErrSymlinkPath) {
+			return "", nil, nil, errUnsupportedAssetSource
+		}
+		return "", nil, nil, err
+	}
+	return resolvedPath, file, info, nil
+}
+
+func copyContainedAsset(vaultRoot string, srcPath string, outputRoot string, dstPath string, existingHash string, destinationExists bool) (hashHex string, duplicate bool, err error) {
+	_, source, info, err := openAssetSource(vaultRoot, srcPath)
+	if err != nil {
+		return "", false, err
 	}
 	defer func() {
-		err = errors.Join(err, file.Close())
+		err = errors.Join(err, source.Close())
 	}()
 
-	hasher := sha256.New()
-	if _, err = io.Copy(hasher, file); err != nil {
-		return "", err
+	hashHex, err = fileHashHex(source)
+	if err != nil {
+		return "", false, fmt.Errorf("hash source: %w", err)
+	}
+	if destinationExists {
+		if existingHash == hashHex {
+			return hashHex, true, nil
+		}
+		return "", false, fmt.Errorf("asset destination conflict for %q", dstPath)
 	}
 
+	dstAbsPath := filepath.Join(outputRoot, filepath.FromSlash(dstPath))
+	if err := os.MkdirAll(filepath.Dir(dstAbsPath), 0o755); err != nil {
+		return "", false, fmt.Errorf("mkdir destination: %w", err)
+	}
+	if _, err := source.Seek(0, io.SeekStart); err != nil {
+		return "", false, fmt.Errorf("rewind source: %w", err)
+	}
+	if err := copyFile(source, dstAbsPath, info.Mode().Perm()); err != nil {
+		return "", false, err
+	}
+	return hashHex, false, nil
+}
+
+func fileHashHex(reader io.Reader) (string, error) {
+	hasher := sha256.New()
+	if _, err := io.Copy(hasher, reader); err != nil {
+		return "", err
+	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func copyFile(srcPath string, dstPath string, perm os.FileMode) (err error) {
+func copyFile(source io.Reader, dstPath string, perm os.FileMode) (err error) {
 	if perm == 0 {
 		perm = 0o644
 	}
-
-	srcFile, err := os.Open(srcPath)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, srcFile.Close())
-	}()
 
 	dstFile, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
@@ -506,11 +491,8 @@ func copyFile(srcPath string, dstPath string, perm os.FileMode) (err error) {
 		err = errors.Join(err, dstFile.Close())
 	}()
 
-	if _, err = io.Copy(dstFile, srcFile); err != nil {
-		return err
-	}
-
-	return nil
+	_, err = io.Copy(dstFile, source)
+	return err
 }
 
 func recordUnavailableAsset(diagCollector *diag.Collector, srcPath string, dstPath string) {

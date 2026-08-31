@@ -108,6 +108,7 @@ type diagnosticBuildError struct {
 }
 
 type managedOutputDirState struct {
+	info      os.FileInfo
 	exists    bool
 	isDir     bool
 	hasMarker bool
@@ -118,7 +119,8 @@ type stagedOutputPublisher struct {
 	outputPath        string
 	stagingPath       string
 	backupPath        string
-	hasExistingOutput bool
+	createdParentDirs []string
+	initialOutput     managedOutputDirState
 }
 
 var (
@@ -307,28 +309,26 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result, err = finalizeBuild(result, diagnostics, options.diagnosticsWriter, err)
 	}()
 
-	normalizedVaultPath, err := NormalizeVaultPath(vaultPath)
+	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
 		return result, err
 	}
-
-	normalizedOutputPath, err := normalizeBuildOutputPath(outputPath)
-	if err != nil {
-		return result, err
-	}
+	normalizedVaultPath := boundary.VaultPath
+	normalizedOutputPath := boundary.OutputPath
 	result.OutputPath = normalizedOutputPath
 
-	if err := validateManagedOutputPath(normalizedVaultPath, normalizedOutputPath); err != nil {
-		return result, err
-	}
 	normalizedCfg, err := internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
 		return result, fmt.Errorf("validate config: %w", err)
 	}
 	cfg = normalizedCfg
-	cfg.CustomCSS, err = resolveCustomCSSSource(cfg.CustomCSS)
+	cfg.CustomCSS, err = resolveCustomCSSSource(normalizedVaultPath, cfg.CustomCSS)
 	if err != nil {
 		return result, fmt.Errorf("resolve custom CSS: %w", err)
+	}
+	cfg.ThemeRoot, err = resolveThemeRoot(normalizedVaultPath, cfg.ThemeRoot)
+	if err != nil {
+		return result, fmt.Errorf("resolve theme root: %w", err)
 	}
 	themeAssets, err := render.ListThemeStaticAssets(cfg.ThemeRoot)
 	if err != nil {
@@ -383,7 +383,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 	fullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature || previousManifest.ConfigSignature != configSignature || previousManifest.TemplateSignature != templateSignature
 
-	scanResult, err := vault.Scan(normalizedVaultPath)
+	scanResult, err := vault.ScanWithOptions(normalizedVaultPath, vault.ScanOptions{OutputPath: normalizedOutputPath})
 	if err != nil {
 		return result, fmt.Errorf("scan vault: %w", err)
 	}
@@ -511,7 +511,18 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	recentNotes := buildRecentNotes(idx, "index.html", summaryByPath)
 	result.RecentNotes = append([]model.NoteSummary(nil), recentNotes...)
 	siteLastModified := siteLastModified(allPublicNotes(idx))
+	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
+	writeStyleCSS, err := styleCSSDestinationPlanned(cfg)
+	if err != nil {
+		return result, fmt.Errorf("plan site stylesheet: %w", err)
+	}
+	if err := validateOutputDestinations(cfg, idx, folderPages, themeAssets, mergedAssets, writeStyleCSS, !disableCacheReuse); err != nil {
+		return result, fmt.Errorf("plan generated output: %w", err)
+	}
 	stagingOutputPath := publisher.OutputPath()
+	if err := writeManagedOutputMarker(stagingOutputPath); err != nil {
+		return result, err
+	}
 	searchReadyArchivePages := make(map[string]render.RenderedPage)
 
 	writeSitePages := func(searchReady bool, pageDiagnostics *diag.Collector) ([]model.PageData, map[string]string, error) {
@@ -595,11 +606,10 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := render.EmitRuntimeAssets(stagingOutputPath); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
 	}
-	if err := copyCustomCSS(cfg.CustomCSS, stagingOutputPath); err != nil {
+	if err := copyCustomCSS(normalizedVaultPath, cfg.CustomCSS, stagingOutputPath); err != nil {
 		return result, err
 	}
 
-	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
 	result.Assets = mergedAssets
 	if err := internalasset.CopyAssetsWithReservedPaths(scanResult.VaultPath, stagingOutputPath, mergedAssets, diagnostics, reservedAssetOutputPaths); err != nil {
 		return result, fmt.Errorf("copy assets: %w", err)
@@ -1078,65 +1088,12 @@ func formatCommandOutputDetails(output []byte) string {
 	return "\n" + trimmed
 }
 
-func normalizeBuildOutputPath(outputPath string) (string, error) {
-	outputPath = strings.TrimSpace(outputPath)
-	if outputPath == "" {
-		return "", fmt.Errorf("output path is required")
-	}
-
-	absPath, err := filepath.Abs(outputPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve output path %q: %w", outputPath, err)
-	}
-	return absPath, nil
-}
-
-// NormalizeVaultPath validates the vault path and returns its absolute form.
-func NormalizeVaultPath(vaultPath string) (string, error) {
-	vaultPath = strings.TrimSpace(vaultPath)
-	if vaultPath == "" {
-		return "", fmt.Errorf("vault path is required")
-	}
-
-	absPath, err := filepath.Abs(vaultPath)
-	if err != nil {
-		return "", fmt.Errorf("resolve vault path %q: %w", vaultPath, err)
-	}
-
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return "", fmt.Errorf("stat vault path %q: %w", absPath, err)
-	}
-	if !info.IsDir() {
-		return "", fmt.Errorf("vault path %q is not a directory", absPath)
-	}
-
-	return absPath, nil
-}
-
-func validateManagedOutputPath(vaultPath string, outputPath string) error {
-	resolvedOutputPath, err := resolveValidatedManagedOutputPath(vaultPath, outputPath)
-	if err != nil {
-		return err
-	}
-
-	relPath, err := filepath.Rel(vaultPath, resolvedOutputPath)
-	if err != nil {
-		return fmt.Errorf("compare output path %q against vault %q: %w", outputPath, vaultPath, err)
-	}
-	if relPath == "." {
-		return fmt.Errorf("output path %q must not equal the vault root %q", outputPath, vaultPath)
-	}
-	if pathContainsPath(resolvedOutputPath, vaultPath) {
-		return fmt.Errorf("output path %q must not contain the vault %q", outputPath, vaultPath)
-	}
-	return nil
-}
-
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
-	if _, err := resolveValidatedManagedOutputPath(vaultPath, outputPath); err != nil {
+	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
+	if err != nil {
 		return nil, err
 	}
+	outputPath = boundary.OutputPath
 
 	state, err := validateManagedOutputDir(outputPath)
 	if err != nil {
@@ -1144,38 +1101,40 @@ func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedO
 	}
 
 	publisher := &stagedOutputPublisher{
-		outputPath:        outputPath,
-		hasExistingOutput: state.exists,
+		outputPath:    outputPath,
+		initialOutput: state,
 	}
-	if pathContainsPath(vaultPath, outputPath) && state.exists {
-		backupPath, err := reserveManagedOutputPath(outputPath, "backup")
-		if err != nil {
-			return nil, err
-		}
-		if err := os.Rename(outputPath, backupPath); err != nil {
-			return nil, fmt.Errorf("hide managed output %q before scan: %w", outputPath, err)
-		}
-		publisher.backupPath = backupPath
-	}
-
-	stagingPath, err := os.MkdirTemp(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "stage"))
+	stagingParent, err := nearestExistingOutputAncestor(outputPath)
 	if err != nil {
-		rollbackErr := publisher.rollback()
-		if rollbackErr != nil {
-			return nil, errors.Join(fmt.Errorf("create staged output for %q: %w", outputPath, err), rollbackErr)
-		}
+		return nil, err
+	}
+	stagingPath, err := os.MkdirTemp(stagingParent, managedOutputTempPattern(outputPath, "stage"))
+	if err != nil {
 		return nil, fmt.Errorf("create staged output for %q: %w", outputPath, err)
 	}
 	publisher.stagingPath = stagingPath
-	if err := writeManagedOutputMarker(stagingPath); err != nil {
-		rollbackErr := publisher.rollback()
-		if rollbackErr != nil {
-			return nil, errors.Join(err, rollbackErr)
-		}
-		return nil, err
-	}
-
 	return publisher, nil
+}
+
+func nearestExistingOutputAncestor(outputPath string) (string, error) {
+	current := filepath.Dir(outputPath)
+	for {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return "", fmt.Errorf("output parent path %q must be a non-symlink directory", current)
+			}
+			return current, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat output parent path %q: %w", current, err)
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve output parent for %q: reached missing filesystem root", outputPath)
+		}
+		current = parent
+	}
 }
 
 func validateManagedOutputDir(outputPath string) (managedOutputDirState, error) {
@@ -1192,54 +1151,6 @@ func validateManagedOutputDir(outputPath string) (managedOutputDirState, error) 
 		}
 	}
 	return state, nil
-}
-
-func resolveValidatedManagedOutputPath(vaultPath string, outputPath string) (string, error) {
-	resolvedOutputPath, hasSymlinkAncestor, err := resolveManagedOutputPathAncestors(outputPath)
-	if err != nil {
-		return "", err
-	}
-	if hasSymlinkAncestor && pathContainsPath(vaultPath, resolvedOutputPath) {
-		return "", fmt.Errorf("output path %q resolves through a symbolic link ancestor into the vault %q", outputPath, vaultPath)
-	}
-	return resolvedOutputPath, nil
-}
-
-func resolveManagedOutputPathAncestors(outputPath string) (string, bool, error) {
-	resolvedParentPath, hasSymlinkAncestor, err := resolvePathThroughExistingAncestors(filepath.Dir(outputPath))
-	if err != nil {
-		return "", false, fmt.Errorf("resolve output path %q: %w", outputPath, err)
-	}
-	return filepath.Join(resolvedParentPath, filepath.Base(outputPath)), hasSymlinkAncestor, nil
-}
-
-func resolvePathThroughExistingAncestors(path string) (string, bool, error) {
-	currentPath := filepath.Clean(path)
-	var pendingComponents []string
-
-	for {
-		if _, err := os.Lstat(currentPath); err == nil {
-			resolvedPath, err := filepath.EvalSymlinks(currentPath)
-			if err != nil {
-				return "", false, fmt.Errorf("resolve path %q: %w", currentPath, err)
-			}
-
-			hasSymlinkAncestor := filepath.Clean(resolvedPath) != currentPath
-			for index := len(pendingComponents) - 1; index >= 0; index-- {
-				resolvedPath = filepath.Join(resolvedPath, pendingComponents[index])
-			}
-			return resolvedPath, hasSymlinkAncestor, nil
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return "", false, fmt.Errorf("stat path %q: %w", currentPath, err)
-		}
-
-		parentPath := filepath.Dir(currentPath)
-		if parentPath == currentPath {
-			return "", false, fmt.Errorf("resolve path %q: reached missing filesystem root", path)
-		}
-		pendingComponents = append(pendingComponents, filepath.Base(currentPath))
-		currentPath = parentPath
-	}
 }
 
 func writeManagedOutputMarker(outputPath string) error {
@@ -1299,7 +1210,13 @@ func (publisher *stagedOutputPublisher) publish() error {
 	if publisher == nil || publisher.stagingPath == "" {
 		return nil
 	}
-	if publisher.backupPath == "" && publisher.hasExistingOutput {
+	if err := publisher.revalidateOutput(); err != nil {
+		return err
+	}
+	if err := publisher.createMissingOutputParents(); err != nil {
+		return err
+	}
+	if publisher.backupPath == "" && publisher.initialOutput.exists {
 		backupPath, err := reserveManagedOutputPath(publisher.outputPath, "backup")
 		if err != nil {
 			return err
@@ -1313,6 +1230,7 @@ func (publisher *stagedOutputPublisher) publish() error {
 		return fmt.Errorf("publish staged output %q -> %q: %w", publisher.stagingPath, publisher.outputPath, err)
 	}
 	publisher.stagingPath = ""
+	publisher.createdParentDirs = nil
 	if publisher.backupPath != "" {
 		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
 			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
@@ -1322,12 +1240,79 @@ func (publisher *stagedOutputPublisher) publish() error {
 	return nil
 }
 
-func (publisher *stagedOutputPublisher) rollback() error {
+func (publisher *stagedOutputPublisher) revalidateOutput() error {
+	current, err := inspectManagedOutputDir(publisher.outputPath)
+	if err != nil {
+		return err
+	}
+	initial := publisher.initialOutput
+	if initial.exists != current.exists {
+		return fmt.Errorf("output path %q changed while the site was being staged", publisher.outputPath)
+	}
+	if !initial.exists {
+		return nil
+	}
+	if initial.info == nil || current.info == nil || !os.SameFile(initial.info, current.info) {
+		return fmt.Errorf("output path %q was replaced while the site was being staged", publisher.outputPath)
+	}
+	if initial.empty && !current.empty {
+		return fmt.Errorf("empty output path %q gained content while the site was being staged", publisher.outputPath)
+	}
+	if initial.hasMarker && !current.hasMarker {
+		return fmt.Errorf("managed output path %q lost its marker while the site was being staged", publisher.outputPath)
+	}
+	return nil
+}
+
+func (publisher *stagedOutputPublisher) createMissingOutputParents() error {
+	parent := filepath.Dir(publisher.outputPath)
+	missing := make([]string, 0, 2)
+	for current := parent; ; current = filepath.Dir(current) {
+		info, err := os.Lstat(current)
+		if err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("output parent path %q must be a non-symlink directory", current)
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat output parent path %q: %w", current, err)
+		}
+		missing = append(missing, current)
+		if next := filepath.Dir(current); next == current {
+			return fmt.Errorf("create output parent for %q: reached missing filesystem root", publisher.outputPath)
+		}
+	}
+
+	for index := len(missing) - 1; index >= 0; index-- {
+		if err := os.Mkdir(missing[index], 0o755); err != nil {
+			cleanupErr := publisher.removeCreatedOutputParents()
+			return errors.Join(fmt.Errorf("create output parent %q: %w", missing[index], err), cleanupErr)
+		}
+		publisher.createdParentDirs = append(publisher.createdParentDirs, missing[index])
+	}
+	return nil
+}
+
+func (publisher *stagedOutputPublisher) removeCreatedOutputParents() error {
+	var cleanupErr error
+	for index := len(publisher.createdParentDirs) - 1; index >= 0; index-- {
+		if err := os.Remove(publisher.createdParentDirs[index]); err != nil && !errors.Is(err, os.ErrNotExist) {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove created output parent %q: %w", publisher.createdParentDirs[index], err))
+		}
+	}
+	publisher.createdParentDirs = nil
+	return cleanupErr
+}
+
+func (publisher *stagedOutputPublisher) rollback() (cleanupErr error) {
 	if publisher == nil {
 		return nil
 	}
+	defer func() {
+		cleanupErr = errors.Join(cleanupErr, publisher.removeCreatedOutputParents())
+	}()
 
-	var cleanupErr error
 	if publisher.stagingPath != "" {
 		if err := stagedOutputRemoveAll(publisher.stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove staged output %q: %w", publisher.stagingPath, err))
@@ -1378,7 +1363,7 @@ func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
 		return managedOutputDirState{}, fmt.Errorf("output path %q must not be a symbolic link", outputPath)
 	}
 
-	state := managedOutputDirState{exists: true, isDir: info.IsDir()}
+	state := managedOutputDirState{info: info, exists: true, isDir: info.IsDir()}
 	if !state.isDir {
 		return state, nil
 	}
@@ -1396,17 +1381,6 @@ func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
 	}
 
 	return state, nil
-}
-
-func pathContainsPath(rootPath string, candidatePath string) bool {
-	relPath, err := filepath.Rel(rootPath, candidatePath)
-	if err != nil {
-		return false
-	}
-	if relPath == "." {
-		return true
-	}
-	return relPath != ".." && !strings.HasPrefix(relPath, ".."+string(filepath.Separator))
 }
 
 func previousManagedOutputPath(publisher *stagedOutputPublisher) string {
@@ -2752,19 +2726,22 @@ func buildReservedAssetOutputPaths(customCSSPath string, themeAssets []render.Th
 	return reserved
 }
 
-func resolveCustomCSSSource(customCSSPath string) (string, error) {
+func resolveCustomCSSSource(vaultRoot string, customCSSPath string) (string, error) {
 	trimmedPath := strings.TrimSpace(customCSSPath)
 	if trimmedPath == "" {
 		return "", nil
 	}
 
-	resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(trimmedPath)
+	resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(vaultRoot, trimmedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return "", fmt.Errorf("custom CSS %q does not exist", trimmedPath)
 		}
-		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
-			return "", fmt.Errorf("custom CSS %q must be a regular non-symlink file", trimmedPath)
+		if errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
+			return "", fmt.Errorf("custom CSS %q must stay inside the vault", trimmedPath)
+		}
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) {
+			return "", fmt.Errorf("custom CSS %q must be a regular non-symlink file inside the vault", trimmedPath)
 		}
 		return "", fmt.Errorf("inspect custom CSS %q: %w", trimmedPath, err)
 	}
@@ -2772,13 +2749,32 @@ func resolveCustomCSSSource(customCSSPath string) (string, error) {
 	return resolvedPath, nil
 }
 
-func copyCustomCSS(customCSSPath string, outputRoot string) error {
+func resolveThemeRoot(vaultRoot string, themeRoot string) (string, error) {
+	trimmedRoot := strings.TrimSpace(themeRoot)
+	if trimmedRoot == "" {
+		return "", nil
+	}
+
+	resolvedRoot, _, err := internalfsutil.InspectContainedDirectory(vaultRoot, trimmedRoot)
+	if err != nil {
+		if errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
+			return "", fmt.Errorf("theme root %q must stay inside the vault", trimmedRoot)
+		}
+		if errors.Is(err, internalfsutil.ErrSymlinkPath) {
+			return "", fmt.Errorf("theme root %q must not contain symbolic links", trimmedRoot)
+		}
+		return "", fmt.Errorf("inspect theme root %q: %w", trimmedRoot, err)
+	}
+	return resolvedRoot, nil
+}
+
+func copyCustomCSS(vaultRoot string, customCSSPath string, outputRoot string) error {
 	trimmedPath := strings.TrimSpace(customCSSPath)
 	if trimmedPath == "" {
 		return nil
 	}
 
-	data, err := os.ReadFile(trimmedPath)
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, trimmedPath)
 	if err != nil {
 		return fmt.Errorf("read custom CSS %q: %w", trimmedPath, err)
 	}

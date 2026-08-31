@@ -8,6 +8,7 @@ import (
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/spf13/cobra"
 )
 
@@ -31,22 +32,22 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			normalizedVaultPath, err := internalbuild.NormalizeVaultPath(trimmedVaultPath)
+			boundary, err := internalfsutil.ResolveVaultOutput(trimmedVaultPath, trimmedOutputPath)
 			if err != nil {
 				return err
 			}
 
-			resolvedConfigPath, err := resolveBuildConfigPath(normalizedVaultPath, configPath)
+			resolvedConfigPath, err := resolveBuildConfigPath(boundary.VaultPath, configPath)
 			if err != nil {
 				return err
 			}
 
-			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: normalizedVaultPath, Theme: theme})
+			input, err := deps.loadSiteInput(resolvedConfigPath, internalconfig.Overrides{VaultPath: boundary.VaultPath, Theme: theme})
 			if err != nil {
 				return fmt.Errorf("load config: %w", err)
 			}
 
-			if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, trimmedOutputPath, internalbuild.Options{Force: force, DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
+			if _, err := deps.buildSiteWithOptions(input, boundary.VaultPath, boundary.OutputPath, internalbuild.Options{Force: force, DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 				return fmt.Errorf("build site: %w", err)
 			}
 

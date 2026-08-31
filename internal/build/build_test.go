@@ -491,7 +491,7 @@ func TestBuildAppliesCompleteThemeRootOverridesAndStyleReplacement(t *testing.T)
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 	writeBuildTestFile(t, vaultPath, "notes/guide.md", `---
 title: Guide
@@ -558,7 +558,7 @@ func TestBuildCompleteThemeRootWithoutStyleCSSSkipsStyleOutput(t *testing.T) {
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 	writeBuildTestFile(t, vaultPath, "notes/guide.md", `---
 title: Guide
@@ -613,7 +613,7 @@ func TestBuildReloadsCompleteThemeRootWithinSameProcess(t *testing.T) {
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 	basePath := filepath.Join(templateDir, "base.html")
 	baseV1 := buildThemeBaseWithBodyAttribute(t, `data-build-live-base="v1"`)
 	baseV2 := buildThemeBaseWithBodyAttribute(t, `data-build-live-base="v2"`)
@@ -688,7 +688,7 @@ Rendered note body.
 func TestBuildTemplateChangesInvalidateCachedArchivePages(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 	baseV1 := buildThemeBaseWithBodyAttribute(t, `data-build-live-base="v1"`)
 	baseV2 := buildThemeBaseWithBodyAttribute(t, `data-build-live-base="v2"`)
 
@@ -832,7 +832,7 @@ func TestBuildAppliesAllowedSinglePageTemplateOverridesWithinCompleteTheme(t *te
 
 			vaultPath := t.TempDir()
 			outputPath := filepath.Join(t.TempDir(), "site")
-			templateDir := t.TempDir()
+			templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 			writeBuildTestFile(t, vaultPath, "journal/guide.md", `---
 title: Guide
@@ -2753,7 +2753,7 @@ func TestBuildCopiesAutoDetectedVaultRootCustomCSS(t *testing.T) {
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	configPath := filepath.Join(t.TempDir(), "obsite.yaml")
+	configPath := filepath.Join(vaultPath, "obsite.yaml")
 	customCSSContent := "body { background: linen; }\n"
 	customCSSPath := filepath.Join(vaultPath, "custom.css")
 
@@ -4262,8 +4262,11 @@ New note that must not publish on failure.
 			if !bytes.Contains(stagedBetaHTML, []byte("New note that must not publish on failure.")) {
 				t.Fatalf("staged beta page missing updated content\n%s", stagedBetaHTML)
 			}
-			if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("os.Stat(%q) error = %v, want published output hidden while staged build is running", outputPath, statErr)
+			if got := readBuildOutputFile(t, outputPath, "index.html"); !bytes.Equal(got, previousIndex) {
+				t.Fatalf("published index changed while staged build is running\nwant:\n%s\n\ngot:\n%s", previousIndex, got)
+			}
+			if got := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Equal(got, previousAlpha) {
+				t.Fatalf("published alpha page changed while staged build is running\nwant:\n%s\n\ngot:\n%s", previousAlpha, got)
 			}
 
 			return []byte("indexing exploded\n"), errors.New("exit status 1")
@@ -4690,7 +4693,7 @@ Body.
 	}
 }
 
-func TestBuildRejectsOutputPathWhenParentSymlinkResolvesIntoVault(t *testing.T) {
+func TestBuildResolvesOutputParentSymlinkToVaultDescendant(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
@@ -4715,38 +4718,20 @@ Body.
 	}
 	writeBuildSymlinkOrSkip(t, vaultPath, symlinkParentPath)
 
-	_, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{
 		diagnosticsWriter: io.Discard,
 	})
-	if err == nil {
-		t.Fatal("buildWithOptions() error = nil, want parent-symlink-to-vault rejection")
+	if err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), "symbolic link ancestor into the vault") {
-		t.Fatalf("buildWithOptions() error = %v, want parent-symlink-to-vault rejection", err)
+	if result.OutputPath != targetOutputPath {
+		t.Fatalf("result.OutputPath = %q, want resolved path %q", result.OutputPath, targetOutputPath)
 	}
-
-	if got := readBuildOutputFile(t, targetOutputPath, "index.html"); string(got) != "previous output" {
-		t.Fatalf("target index.html = %q, want %q", string(got), "previous output")
+	if got := readBuildOutputFile(t, targetOutputPath, "alpha/index.html"); !bytes.Contains(got, []byte("Body.")) {
+		t.Fatalf("target alpha page missing generated content\n%s", got)
 	}
 	if _, err := os.Stat(filepath.Join(targetOutputPath, managedOutputMarkerFilename)); err != nil {
-		t.Fatalf("os.Stat(output marker) error = %v, want managed output marker preserved after rejection", err)
-	}
-	if _, err := os.Stat(filepath.Join(targetOutputPath, "alpha", "index.html")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(target alpha/index.html) error = %v, want %v after rejection", err, os.ErrNotExist)
-	}
-	stagePaths, err := filepath.Glob(filepath.Join(vaultPath, managedOutputTempPattern(outputPath, "stage")))
-	if err != nil {
-		t.Fatalf("filepath.Glob(stage pattern) error = %v", err)
-	}
-	if len(stagePaths) != 0 {
-		t.Fatalf("stage paths = %#v, want no staged output created for parent-symlink rejection", stagePaths)
-	}
-	backupPaths, err := filepath.Glob(filepath.Join(vaultPath, managedOutputTempPattern(outputPath, "backup")))
-	if err != nil {
-		t.Fatalf("filepath.Glob(backup pattern) error = %v", err)
-	}
-	if len(backupPaths) != 0 {
-		t.Fatalf("backup paths = %#v, want no backup path reserved for parent-symlink rejection", backupPaths)
+		t.Fatalf("os.Stat(output marker) error = %v", err)
 	}
 	if got, readErr := os.ReadFile(filepath.Join(vaultPath, "notes", "alpha.md")); readErr != nil {
 		t.Fatalf("os.ReadFile(notes/alpha.md) error = %v, want source note preserved", readErr)
@@ -5482,7 +5467,7 @@ Body.
 func TestBuildDefaultTemplateSignalDoesNotInvalidateCacheWithCompleteThemeRoot(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 	writeBuildTestFile(t, vaultPath, "notes/guide.md", `---
 title: Guide
@@ -5745,7 +5730,7 @@ Body.
 func TestBuildStyleOverrideChangesInvalidateCachedPages(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 	writeBuildTestFile(t, vaultPath, "journal/guide.md", `---
 title: Guide
@@ -5802,7 +5787,7 @@ Body.
 func TestBuildSelectedThemeNameChangeForcesFullDirtyAndDisablesArchiveAndPagefindReuse(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	templateDir := t.TempDir()
+	templateDir := filepath.Join(vaultPath, ".obsite", "theme")
 
 	writeBuildTestFile(t, vaultPath, "journal/guide.md", `---
 title: Guide
@@ -5905,8 +5890,8 @@ Rendered note body.
 func TestBuildSelectedThemeRootChangeForcesFullDirtyAndDisablesArchiveAndPagefindReuse(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	firstThemeRoot := t.TempDir()
-	secondThemeRoot := t.TempDir()
+	firstThemeRoot := filepath.Join(vaultPath, ".obsite", "themes", "first")
+	secondThemeRoot := filepath.Join(vaultPath, ".obsite", "themes", "second")
 
 	writeBuildTestFile(t, vaultPath, "journal/guide.md", `---
 title: Guide

@@ -90,13 +90,6 @@ var (
 	themeTemplateSnapshotCache sync.Map
 )
 
-var themeTemplateFileReader = struct {
-	mu   sync.RWMutex
-	read func(string) ([]byte, error)
-}{
-	read: os.ReadFile,
-}
-
 type themeIdentity struct {
 	activeThemeName string
 	themeRoot       string
@@ -126,6 +119,7 @@ type themeTemplateFileState struct {
 	size            int64
 	modTimeUnixNano int64
 	changeToken     string
+	contents        string
 }
 
 type themeTemplateState struct {
@@ -1003,6 +997,7 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 
 // ThemeStaticAsset describes one regular file owned by the selected theme root.
 type ThemeStaticAsset struct {
+	rootPath          string
 	SourcePath        string
 	ThemeRelativePath string
 	OutputPath        string
@@ -1063,12 +1058,14 @@ func ListThemeStaticAssets(themeRoot string) ([]ThemeStaticAsset, error) {
 		if isThemeHTMLTemplatePath(relPath) {
 			return nil
 		}
-		if !entry.Type().IsRegular() {
-			return fmt.Errorf("theme static asset %q must be a regular non-symlink file", currentPath)
+		resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(normalizedRoot, currentPath)
+		if err != nil {
+			return fmt.Errorf("theme static asset %q must be a regular non-symlink file: %w", currentPath, err)
 		}
 
 		assets = append(assets, ThemeStaticAsset{
-			SourcePath:        currentPath,
+			rootPath:          normalizedRoot,
+			SourcePath:        resolvedPath,
 			ThemeRelativePath: relPath,
 			OutputPath:        path.Join("assets", "theme", relPath),
 		})
@@ -1088,7 +1085,7 @@ func EmitThemeStaticAssets(outputRoot string, assets []ThemeStaticAsset) error {
 	}
 
 	for _, asset := range assets {
-		data, err := os.ReadFile(asset.SourcePath)
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(asset.rootPath, asset.SourcePath)
 		if err != nil {
 			return fmt.Errorf("emit theme static assets: read %q: %w", asset.SourcePath, err)
 		}
@@ -1426,17 +1423,13 @@ func scanThemeTemplateSnapshotFromState(state themeTemplateState) (themeTemplate
 			return themeTemplateSnapshot{}, fmt.Errorf("missing required theme template %q in %q", name, state.identity.themeRoot)
 		}
 
-		data, err := readThemeTemplateContents(fileState.path)
-		if err != nil {
-			return themeTemplateSnapshot{}, fmt.Errorf("read theme template %q: %w", fileState.path, err)
-		}
 		_, _ = hasher.Write([]byte{0, 1})
-		_, _ = hasher.Write(data)
+		_, _ = hasher.Write([]byte(fileState.contents))
 		_, _ = hasher.Write([]byte{0})
 
 		files = append(files, themeTemplateFile{
 			path:     fileState.path,
-			contents: string(data),
+			contents: fileState.contents,
 		})
 	}
 
@@ -1445,14 +1438,6 @@ func scanThemeTemplateSnapshotFromState(state themeTemplateState) (themeTemplate
 		files:     files,
 		signature: hex.EncodeToString(hasher.Sum(nil)),
 	}, nil
-}
-
-func readThemeTemplateContents(filePath string) ([]byte, error) {
-	themeTemplateFileReader.mu.RLock()
-	reader := themeTemplateFileReader.read
-	themeTemplateFileReader.mu.RUnlock()
-
-	return reader(filePath)
 }
 
 func parseTemplateSet(snapshot themeTemplateSnapshot) (*template.Template, error) {
@@ -1501,7 +1486,7 @@ func readStyleAsset(site model.SiteConfig) ([]byte, bool, error) {
 		return nil, false, nil
 	}
 
-	data, err := os.ReadFile(stylePath)
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(themeRoot, stylePath)
 	if err != nil {
 		return nil, false, fmt.Errorf("read theme style %q: %w", stylePath, err)
 	}
@@ -1525,12 +1510,12 @@ func resolveThemeTemplateFileStateInRoot(themeRoot string, name string) (themeTe
 	}
 
 	themePath := filepath.Join(themeRoot, filepath.FromSlash(name))
-	resolvedPath, info, err := internalfsutil.InspectRegularNonSymlinkFile(themePath)
+	resolvedPath, contents, info, err := internalfsutil.ReadContainedRegularFile(themeRoot, themePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return state, nil
 		}
-		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) {
+		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) || errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
 			return themeTemplateFileState{}, fmt.Errorf("theme file %q must be a regular non-symlink file", themePath)
 		}
 
@@ -1542,6 +1527,7 @@ func resolveThemeTemplateFileStateInRoot(themeRoot string, name string) (themeTe
 	state.size = info.Size()
 	state.modTimeUnixNano = info.ModTime().UnixNano()
 	state.changeToken = themeTemplateFileChangeToken(info)
+	state.contents = string(contents)
 
 	return state, nil
 }

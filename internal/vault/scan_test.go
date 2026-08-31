@@ -71,6 +71,32 @@ func TestScanCollectsMarkdownAndResourceCandidates(t *testing.T) {
 	}
 }
 
+func TestScanExcludesResolvedOutputAndInternalInputDirectories(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(vaultPath, "public")
+	writeVaultFile(t, vaultPath, "notes/kept.md", "# Kept")
+	writeVaultFile(t, vaultPath, "assets/kept.png", "kept")
+	writeVaultFile(t, vaultPath, "public/generated.md", "# Generated")
+	writeVaultFile(t, vaultPath, "public/assets/generated.png", "generated")
+	writeVaultFile(t, vaultPath, ".obsite/theme/theme.css", "body{}")
+	writeVaultFile(t, vaultPath, ".obsidian/workspace.json", "{}")
+	writeVaultFile(t, vaultPath, "node_modules/pkg/index.md", "# Dependency")
+	writeVaultFile(t, vaultPath, ".hidden/private.md", "# Hidden")
+
+	got, err := ScanWithOptions(vaultPath, ScanOptions{OutputPath: outputPath})
+	if err != nil {
+		t.Fatalf("ScanWithOptions() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.MarkdownFiles, []string{"notes/kept.md"}) {
+		t.Fatalf("MarkdownFiles = %#v, want only notes/kept.md", got.MarkdownFiles)
+	}
+	if !reflect.DeepEqual(got.ResourceFiles, []string{"assets/kept.png"}) {
+		t.Fatalf("ResourceFiles = %#v, want only assets/kept.png", got.ResourceFiles)
+	}
+}
+
 func TestScanLookupResourcePathRefusesCanonicalUnicodeCollisions(t *testing.T) {
 	t.Parallel()
 

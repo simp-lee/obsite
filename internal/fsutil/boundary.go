@@ -1,0 +1,269 @@
+package fsutil
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// ErrPathOutsideRoot indicates that a configured input does not belong to its vault.
+var ErrPathOutsideRoot = errors.New("path must stay inside the vault")
+
+// ErrSymlinkPath indicates that an input path contains a symbolic-link component.
+var ErrSymlinkPath = errors.New("path must not contain symbolic links")
+
+// VaultOutputBoundary is the canonical filesystem identity used by scan, build, and watch.
+type VaultOutputBoundary struct {
+	VaultPath  string
+	OutputPath string
+}
+
+// ResolveVaultPath resolves the filesystem identity of an existing vault directory.
+func ResolveVaultPath(vaultPath string) (string, error) {
+	trimmed := strings.TrimSpace(vaultPath)
+	if trimmed == "" {
+		return "", errors.New("vault path is required")
+	}
+
+	absolute, err := filepath.Abs(trimmed)
+	if err != nil {
+		return "", fmt.Errorf("resolve vault path %q: %w", trimmed, err)
+	}
+	resolved, err := filepath.EvalSymlinks(absolute)
+	if err != nil {
+		return "", fmt.Errorf("resolve vault path %q: %w", absolute, err)
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolve vault path %q: %w", absolute, err)
+	}
+	resolved = filepath.Clean(resolved)
+
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("stat vault path %q: %w", resolved, err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("vault path %q is not a directory", resolved)
+	}
+	return resolved, nil
+}
+
+// ResolveVaultOutput resolves a vault and every existing output ancestor once,
+// rejects a symlink final output, and validates their safe relationship.
+func ResolveVaultOutput(vaultPath string, outputPath string) (VaultOutputBoundary, error) {
+	vaultRoot, err := ResolveVaultPath(vaultPath)
+	if err != nil {
+		return VaultOutputBoundary{}, err
+	}
+
+	trimmedOutput := strings.TrimSpace(outputPath)
+	if trimmedOutput == "" {
+		return VaultOutputBoundary{}, errors.New("output path is required")
+	}
+	absoluteOutput, err := filepath.Abs(trimmedOutput)
+	if err != nil {
+		return VaultOutputBoundary{}, fmt.Errorf("resolve output path %q: %w", trimmedOutput, err)
+	}
+	absoluteOutput = filepath.Clean(absoluteOutput)
+
+	if info, lstatErr := os.Lstat(absoluteOutput); lstatErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			return VaultOutputBoundary{}, fmt.Errorf("output path %q must not be a symbolic link", absoluteOutput)
+		}
+	} else if !errors.Is(lstatErr, os.ErrNotExist) {
+		return VaultOutputBoundary{}, fmt.Errorf("stat output path %q: %w", absoluteOutput, lstatErr)
+	}
+
+	resolvedOutput, err := resolveThroughExistingAncestors(absoluteOutput)
+	if err != nil {
+		return VaultOutputBoundary{}, fmt.Errorf("resolve output path %q: %w", absoluteOutput, err)
+	}
+
+	if samePath(vaultRoot, resolvedOutput) {
+		return VaultOutputBoundary{}, fmt.Errorf("output path %q must not equal the vault root %q", absoluteOutput, vaultRoot)
+	}
+	if PathWithinRoot(resolvedOutput, vaultRoot) {
+		return VaultOutputBoundary{}, fmt.Errorf("output path %q must not contain the vault %q", absoluteOutput, vaultRoot)
+	}
+
+	return VaultOutputBoundary{
+		VaultPath:  vaultRoot,
+		OutputPath: resolvedOutput,
+	}, nil
+}
+
+// PathWithinRoot reports whether candidate is root or one of its descendants.
+func PathWithinRoot(root string, candidate string) bool {
+	cleanRoot := filepath.Clean(root)
+	cleanCandidate := filepath.Clean(candidate)
+	relative, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err != nil {
+		return false
+	}
+	return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func resolveThroughExistingAncestors(candidate string) (string, error) {
+	current := filepath.Clean(candidate)
+	pending := make([]string, 0, 4)
+
+	for {
+		if _, err := os.Lstat(current); err == nil {
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", fmt.Errorf("resolve path %q: %w", current, err)
+			}
+			resolved, err = filepath.Abs(resolved)
+			if err != nil {
+				return "", fmt.Errorf("resolve path %q: %w", current, err)
+			}
+			for index := len(pending) - 1; index >= 0; index-- {
+				resolved = filepath.Join(resolved, pending[index])
+			}
+			return filepath.Clean(resolved), nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("stat path %q: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("reached missing filesystem root from %q", candidate)
+		}
+		pending = append(pending, filepath.Base(current))
+		current = parent
+	}
+}
+
+// InspectContainedRegularFile validates every component from vaultRoot to
+// candidate and returns an absolute regular-file path with no symlink component.
+func InspectContainedRegularFile(vaultRoot string, candidate string) (string, os.FileInfo, error) {
+	return inspectContainedPath(vaultRoot, candidate, false)
+}
+
+// InspectContainedDirectory validates every component from vaultRoot to
+// candidate and returns an absolute directory path with no symlink component.
+func InspectContainedDirectory(vaultRoot string, candidate string) (string, os.FileInfo, error) {
+	return inspectContainedPath(vaultRoot, candidate, true)
+}
+
+func inspectContainedPath(vaultRoot string, candidate string, wantDirectory bool) (string, os.FileInfo, error) {
+	root := strings.TrimSpace(vaultRoot)
+	if root == "" {
+		return "", nil, errors.New("vault path is required")
+	}
+	var err error
+	root, err = filepath.Abs(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("resolve vault path %q: %w", vaultRoot, err)
+	}
+	root = filepath.Clean(root)
+	rootInfo, err := os.Lstat(root)
+	if err != nil {
+		return "", nil, fmt.Errorf("stat vault path %q: %w", root, err)
+	}
+	if rootInfo.Mode()&os.ModeSymlink != 0 || !rootInfo.IsDir() {
+		return "", nil, fmt.Errorf("vault path %q must be a resolved directory", root)
+	}
+
+	trimmed := strings.TrimSpace(candidate)
+	if trimmed == "" {
+		return "", nil, os.ErrNotExist
+	}
+
+	absolute := trimmed
+	if !filepath.IsAbs(absolute) {
+		absolute = filepath.Join(root, absolute)
+	}
+	absolute, err = filepath.Abs(absolute)
+	if err != nil {
+		return "", nil, err
+	}
+	absolute = filepath.Clean(absolute)
+
+	relative, err := filepath.Rel(root, absolute)
+	if err != nil || relative == "." || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", nil, fmt.Errorf("%w: %q", ErrPathOutsideRoot, absolute)
+	}
+
+	current := root
+	parts := strings.Split(relative, string(filepath.Separator))
+	for index, part := range parts {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return "", nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return "", nil, fmt.Errorf("%w: %q", ErrSymlinkPath, current)
+		}
+
+		last := index == len(parts)-1
+		if !last {
+			if !info.IsDir() {
+				return "", nil, ErrUnsupportedRegularFileSource
+			}
+			continue
+		}
+		if wantDirectory {
+			if !info.IsDir() {
+				return "", nil, ErrUnsupportedRegularFileSource
+			}
+		} else if !info.Mode().IsRegular() {
+			return "", nil, ErrUnsupportedRegularFileSource
+		}
+		return current, info, nil
+	}
+
+	return "", nil, os.ErrNotExist
+}
+
+// OpenContainedRegularFile opens a validated vault file and verifies that the
+// opened object is the same file that was inspected. The caller must close it.
+func OpenContainedRegularFile(vaultRoot string, candidate string) (string, *os.File, os.FileInfo, error) {
+	resolvedPath, inspected, err := InspectContainedRegularFile(vaultRoot, candidate)
+	if err != nil {
+		return "", nil, nil, err
+	}
+
+	file, err := os.Open(resolvedPath)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	opened, err := file.Stat()
+	if err != nil {
+		return "", nil, nil, errors.Join(err, file.Close())
+	}
+	if !os.SameFile(inspected, opened) || !opened.Mode().IsRegular() {
+		return "", nil, nil, errors.Join(ErrUnsupportedRegularFileSource, file.Close())
+	}
+	return resolvedPath, file, opened, nil
+}
+
+// ReadContainedRegularFile reads a validated vault file.
+func ReadContainedRegularFile(vaultRoot string, candidate string) (resolvedPath string, data []byte, info os.FileInfo, err error) {
+	resolvedPath, file, info, err := OpenContainedRegularFile(vaultRoot, candidate)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
+
+	data, err = io.ReadAll(file)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	return resolvedPath, data, info, nil
+}
+
+func samePath(left string, right string) bool {
+	relative, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
+	return err == nil && relative == "."
+}

@@ -442,7 +442,7 @@ func TestServeCommandWatchUsesThemeOverrideOnRebuild(t *testing.T) {
 	}
 }
 
-func TestServeCommandWatchRecoversAfterConfigSelectsMissingThemeRoot(t *testing.T) {
+func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRoot(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -459,29 +459,16 @@ func TestServeCommandWatchRecoversAfterConfigSelectsMissingThemeRoot(t *testing.
 			vaultPath := t.TempDir()
 			configPath := filepath.Join(vaultPath, defaultConfigFilename)
 			outputPath := filepath.Join(t.TempDir(), "site")
-			initialThemeRoot := filepath.Join(t.TempDir(), "themes-initial", "feature")
+			initialThemeRoot := filepath.Join(vaultPath, ".obsite", "themes-initial", "feature")
 			writeServeWatchThemeTemplates(t, initialThemeRoot)
 
 			var nextThemeRootValue string
-			var nextThemeRootPath string
-			var recoveryEventDirs []string
 			var recoveryWatchDir string
 			if tt.hiddenInVault {
 				nextThemeRootValue = filepath.ToSlash(filepath.Join(".obsidian", "themes", "experiments", "feature"))
-				nextThemeRootPath = filepath.Join(vaultPath, filepath.FromSlash(nextThemeRootValue))
-				recoveryEventDirs = []string{
-					filepath.Join(vaultPath, ".obsidian"),
-					filepath.Join(vaultPath, ".obsidian", "themes"),
-					filepath.Join(vaultPath, ".obsidian", "themes", "experiments"),
-				}
 			} else {
 				recoveryWatchDir = t.TempDir()
-				nextThemeRootPath = filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
-				nextThemeRootValue = nextThemeRootPath
-				recoveryEventDirs = []string{
-					filepath.Join(recoveryWatchDir, "themes-next"),
-					filepath.Join(recoveryWatchDir, "themes-next", "nested"),
-				}
+				nextThemeRootValue = filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
 			}
 
 			writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
@@ -532,39 +519,23 @@ func TestServeCommandWatchRecoversAfterConfigSelectsMissingThemeRoot(t *testing.
 			writeServeWatchThemeConfig(t, configPath, nextThemeRootValue)
 			watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 			waitForLockedBufferContainsWithin(t, &stderrBuf, "watch: load config:", 900*time.Millisecond)
-			if recoveryWatchDir != "" {
-				waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
+			if recoveryWatchDir != "" && watcher.countAddCalls(recoveryWatchDir) != 0 {
+				t.Fatalf("external recovery directory %q was watched after rejected config", recoveryWatchDir)
 			}
-			waitForServeWatchRemoveCount(t, watcher, initialThemeRoot, 1)
+			if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+				t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
+			}
 			select {
 			case <-buildSignal:
-				t.Fatal("missing selected theme root config unexpectedly completed a rebuild")
+				t.Fatal("rejected selected theme root config unexpectedly completed a rebuild")
 			default:
 			}
-
-			for _, dirPath := range recoveryEventDirs {
-				mkdirServeWatchDir(t, dirPath)
-				sendServeWatchCreateFromWatchedParent(t, watcher, dirPath)
-				waitForServeWatchAddCount(t, watcher, dirPath, 1)
-			}
-
-			mkdirServeWatchDir(t, nextThemeRootPath)
-			writeServeWatchThemeTemplates(t, nextThemeRootPath)
-			sendServeWatchCreateFromWatchedParent(t, watcher, nextThemeRootPath)
-			waitForServeWatchAddCount(t, watcher, nextThemeRootPath, 1)
-			waitForServeWatchSignalWithin(t, buildSignal, "recovered selected theme root rebuild", 900*time.Millisecond)
 
 			builtThemeRootsMu.Lock()
 			gotBuiltThemeRoots := append([]string(nil), builtThemeRoots...)
 			builtThemeRootsMu.Unlock()
-			if len(gotBuiltThemeRoots) != 2 {
-				t.Fatalf("successful builds used theme roots %#v, want initial and recovered roots", gotBuiltThemeRoots)
-			}
-			if gotBuiltThemeRoots[0] != initialThemeRoot {
-				t.Fatalf("initial build theme root = %q, want %q", gotBuiltThemeRoots[0], initialThemeRoot)
-			}
-			if gotBuiltThemeRoots[1] != nextThemeRootPath {
-				t.Fatalf("recovered build theme root = %q, want %q", gotBuiltThemeRoots[1], nextThemeRootPath)
+			if !reflect.DeepEqual(gotBuiltThemeRoots, []string{initialThemeRoot}) {
+				t.Fatalf("successful builds used theme roots %#v, want only %q", gotBuiltThemeRoots, initialThemeRoot)
 			}
 
 			close(listenBlock)
@@ -578,19 +549,17 @@ func TestServeCommandWatchRecoversAfterConfigSelectsMissingThemeRoot(t *testing.
 	}
 }
 
-func TestServeCommandWatchRecoversAfterOneShotDeepRecreationOfSelectedThemeRoot(t *testing.T) {
+func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(t.TempDir(), "site")
-	initialThemeRoot := filepath.Join(t.TempDir(), "themes-initial", "feature")
+	initialThemeRoot := filepath.Join(vaultPath, ".obsite", "themes-initial", "feature")
 	writeServeWatchThemeTemplates(t, initialThemeRoot)
 
 	recoveryWatchDir := t.TempDir()
 	nextThemeRootPath := filepath.Join(recoveryWatchDir, "themes-next", "nested", "feature")
-	brokenThemeTopDir := filepath.Join(recoveryWatchDir, "themes-next")
-	brokenThemeParent := filepath.Join(recoveryWatchDir, "themes-next", "nested")
 	writeServeWatchThemeConfig(t, configPath, initialThemeRoot)
 
 	deps := testCommandDependencies()
@@ -639,8 +608,12 @@ func TestServeCommandWatchRecoversAfterOneShotDeepRecreationOfSelectedThemeRoot(
 	writeServeWatchThemeConfig(t, configPath, nextThemeRootPath)
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForLockedBufferContainsWithin(t, &stderrBuf, "watch: load config:", 900*time.Millisecond)
-	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
-	waitForServeWatchRemoveCount(t, watcher, initialThemeRoot, 1)
+	if watcher.countAddCalls(recoveryWatchDir) != 0 {
+		t.Fatalf("external recovery directory %q was watched after rejected config", recoveryWatchDir)
+	}
+	if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+		t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
+	}
 	select {
 	case <-buildSignal:
 		t.Fatal("missing selected theme root config unexpectedly completed a rebuild")
@@ -648,22 +621,18 @@ func TestServeCommandWatchRecoversAfterOneShotDeepRecreationOfSelectedThemeRoot(
 	}
 
 	writeServeWatchThemeTemplates(t, nextThemeRootPath)
-	sendServeWatchCreateFromWatchedParent(t, watcher, brokenThemeTopDir)
-	waitForServeWatchAddCount(t, watcher, brokenThemeParent, 1)
-	waitForServeWatchAddCount(t, watcher, nextThemeRootPath, 1)
-	waitForServeWatchSignalWithin(t, buildSignal, "one-shot recovered selected theme root rebuild", 900*time.Millisecond)
+	if watcher.countAddCalls(recoveryWatchDir) != 0 || watcher.countAddCalls(nextThemeRootPath) != 0 {
+		t.Fatalf("rejected external theme root %q or its recovery directory was watched", nextThemeRootPath)
+	}
+	if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+		t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
+	}
 
 	builtThemeRootsMu.Lock()
 	gotBuiltThemeRoots := append([]string(nil), builtThemeRoots...)
 	builtThemeRootsMu.Unlock()
-	if len(gotBuiltThemeRoots) != 2 {
-		t.Fatalf("successful builds used theme roots %#v, want initial and recovered roots", gotBuiltThemeRoots)
-	}
-	if gotBuiltThemeRoots[0] != initialThemeRoot {
-		t.Fatalf("initial build theme root = %q, want %q", gotBuiltThemeRoots[0], initialThemeRoot)
-	}
-	if gotBuiltThemeRoots[1] != nextThemeRootPath {
-		t.Fatalf("recovered build theme root = %q, want %q", gotBuiltThemeRoots[1], nextThemeRootPath)
+	if !reflect.DeepEqual(gotBuiltThemeRoots, []string{initialThemeRoot}) {
+		t.Fatalf("successful builds used theme roots %#v, want only %q", gotBuiltThemeRoots, initialThemeRoot)
 	}
 
 	close(listenBlock)

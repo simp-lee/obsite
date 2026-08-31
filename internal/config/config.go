@@ -114,7 +114,18 @@ func LoadForBuild(path string, overrides Overrides) (LoadedSiteConfig, error) {
 	paths := resolveLoadPaths(path, overrides)
 
 	if path != "" {
-		data, err := os.ReadFile(path)
+		var data []byte
+		var err error
+		if paths.vaultRoot != "" {
+			var resolvedPath string
+			resolvedPath, data, _, err = internalfsutil.ReadContainedRegularFile(paths.vaultRoot, path)
+			if err == nil {
+				path = resolvedPath
+				paths.configDir = filepath.Dir(resolvedPath)
+			}
+		} else {
+			data, err = os.ReadFile(path)
+		}
 		if err != nil {
 			return LoadedSiteConfig{}, fmt.Errorf("read config %q: %w", path, err)
 		}
@@ -503,6 +514,13 @@ func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths, selectedTheme 
 			resolvedThemes[name] = model.ThemeConfig{Root: resolveConfiguredPath(theme.Root, paths.configDir)}
 		}
 		cfg.Themes = resolvedThemes
+		if paths.vaultRoot != "" {
+			var err error
+			cfg.Themes, err = containConfiguredThemeRoots(paths.vaultRoot, cfg.Themes)
+			if err != nil {
+				return LoadedSiteConfig{}, err
+			}
+		}
 	}
 	cfg.Search.PagefindPath = resolvePagefindPath(cfg.Search.PagefindPath, baseDir)
 
@@ -532,6 +550,37 @@ func applyLoadPathDefaults(cfg model.SiteConfig, paths loadPaths, selectedTheme 
 	}
 
 	return LoadedSiteConfig{Config: cfg}, nil
+}
+
+func containConfiguredThemeRoots(vaultRoot string, themes map[string]model.ThemeConfig) (map[string]model.ThemeConfig, error) {
+	names := make([]string, 0, len(themes))
+	for name := range themes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	contained := make(map[string]model.ThemeConfig, len(themes))
+	for _, name := range names {
+		root := strings.TrimSpace(themes[name].Root)
+		if root == "" {
+			return nil, fmt.Errorf("theme %q root must not be empty", name)
+		}
+		resolved, _, err := internalfsutil.InspectContainedDirectory(vaultRoot, root)
+		if err != nil {
+			switch {
+			case errors.Is(err, internalfsutil.ErrPathOutsideRoot):
+				return nil, fmt.Errorf("theme %q root %q must stay inside the vault", name, root)
+			case errors.Is(err, internalfsutil.ErrSymlinkPath):
+				return nil, fmt.Errorf("theme %q root %q must not contain symbolic links", name, root)
+			case errors.Is(err, os.ErrNotExist):
+				return nil, fmt.Errorf("theme %q root %q does not exist", name, root)
+			default:
+				return nil, fmt.Errorf("inspect theme %q root %q: %w", name, root, err)
+			}
+		}
+		contained[name] = model.ThemeConfig{Root: resolved}
+	}
+	return contained, nil
 }
 
 func resolveConfiguredPath(raw string, baseDir string) string {
@@ -581,7 +630,7 @@ func detectCustomCSS(roots ...string) (string, error) {
 		seen[cleanRoot] = struct{}{}
 
 		candidate := filepath.Join(cleanRoot, defaultCustomCSSName)
-		resolvedPath, _, err := internalfsutil.InspectRegularNonSymlinkFile(candidate)
+		resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(cleanRoot, candidate)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
