@@ -10,7 +10,6 @@ import (
 )
 
 func TestExecuteShowsRootHelp(t *testing.T) {
-	t.Parallel()
 
 	stdout, stderr, err := executeForTest(t, testCommandDependencies(), nil)
 	if err != nil {
@@ -20,15 +19,33 @@ func TestExecuteShowsRootHelp(t *testing.T) {
 		t.Fatalf("stderr = %q, want empty stderr", stderr)
 	}
 
-	for _, want := range []string{"build", "serve", "init"} {
+	for _, want := range []string{"build", "serve", "init", "version"} {
 		if !strings.Contains(stdout, want) {
 			t.Fatalf("stdout missing %q\n%s", want, stdout)
 		}
 	}
 }
 
+func TestExecuteVersionFormsMatch(t *testing.T) {
+
+	var outputs []string
+	for _, args := range [][]string{{"version"}, {"--version"}} {
+		stdout, _, err := executeForTest(t, testCommandDependencies(), args)
+		if err != nil {
+			t.Fatalf("executeForTest(%v) error = %v", args, err)
+		}
+		outputs = append(outputs, stdout)
+	}
+	if outputs[0] != outputs[1] || outputs[0] != "obsite dev\n" {
+		t.Fatalf("version outputs = %#v", outputs)
+	}
+	_, _, err := executeForTest(t, testCommandDependencies(), []string{"version", "extra"})
+	if err == nil {
+		t.Fatal("version extra error = nil")
+	}
+}
+
 func TestExecuteRejectsUnknownCommand(t *testing.T) {
-	t.Parallel()
 
 	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{"foo"})
 	if err == nil {
@@ -42,6 +59,15 @@ func TestExecuteRejectsUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), `unknown command "foo" for "obsite"`) {
 		t.Fatalf("error = %q, want unknown command message", err.Error())
+	}
+}
+
+func TestExecuteRejectsUnknownRootFlagAndExtraArgs(t *testing.T) {
+	for _, args := range [][]string{{"--unknown"}, {"extra", "arg"}} {
+		_, _, err := executeForTest(t, testCommandDependencies(), args)
+		if err == nil {
+			t.Fatalf("executeForTest(%v) error = nil", args)
+		}
 	}
 }
 

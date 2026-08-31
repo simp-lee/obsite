@@ -443,6 +443,9 @@ func TestBuildIntegrationInitCommandGeneratesParseableCommentedConfig(t *testing
 	t.Parallel()
 
 	vaultPath := filepath.Join(t.TempDir(), "fresh-vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	runObsiteCLI(t, "init", "--vault", vaultPath)
 
 	configPath := filepath.Join(vaultPath, "obsite.yaml")

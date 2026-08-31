@@ -10,11 +10,15 @@ import (
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
 )
 
-const defaultConfigFilename = internalconfig.Filename
+const (
+	defaultConfigFilename = internalconfig.Filename
+	developmentVersion    = "dev"
+)
 
 type previewServer interface {
 	ListenAndServe() error
@@ -68,22 +72,48 @@ func newRootCommand(deps commandDependencies) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
+		Version: developmentVersion,
 	}
+	cmd.SetVersionTemplate("obsite {{.Version}}\n")
 
 	cmd.AddCommand(
 		newBuildCommand(deps),
 		newServeCommand(deps),
 		newInitCommand(),
+		newVersionCommand(),
 	)
 
 	return cmd
 }
 
-func requiredPathFlag(name string, value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return "", fmt.Errorf("--%s is required", name)
+func newVersionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the Obsite version",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			_, err := fmt.Fprintf(cmd.OutOrStdout(), "obsite %s\n", developmentVersion)
+			return err
+		},
 	}
+}
 
-	return filepath.Clean(trimmed), nil
+func resolveVaultPath(value string) (string, error) {
+	vaultPath := strings.TrimSpace(value)
+	if vaultPath == "" {
+		vaultPath = "."
+	}
+	return internalfsutil.ResolveVaultPath(filepath.Clean(vaultPath))
+}
+
+func resolveVaultOutputPaths(vaultValue string, outputValue string) (internalfsutil.VaultOutputBoundary, error) {
+	vaultPath, err := resolveVaultPath(vaultValue)
+	if err != nil {
+		return internalfsutil.VaultOutputBoundary{}, err
+	}
+	outputPath := strings.TrimSpace(outputValue)
+	if outputPath == "" {
+		outputPath = filepath.Join(vaultPath, "public")
+	}
+	return internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 }

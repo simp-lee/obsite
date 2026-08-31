@@ -9,18 +9,30 @@ import (
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 )
 
-func TestInitCommandRequiresVaultFlag(t *testing.T) {
-	t.Parallel()
-	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init"})
-	if err == nil || !strings.Contains(err.Error(), `required flag(s) "vault" not set`) {
+func TestInitCommandDefaultsToCurrentVault(t *testing.T) {
+	vaultPath := t.TempDir()
+	t.Chdir(vaultPath)
+	stdout, _, err := executeForTest(t, testCommandDependencies(), []string{"init"})
+	if err != nil {
 		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if !strings.Contains(stdout, "Replace baseURL") {
+		t.Fatalf("stdout = %q", stdout)
+	}
+	if _, err := os.Stat(filepath.Join(vaultPath, defaultConfigFilename)); err != nil {
+		t.Fatalf("os.Stat(config) error = %v", err)
+	}
+	if _, _, err := executeForTest(t, defaultCommandDependencies(), []string{"build"}); err != nil {
+		t.Fatalf("default build after init error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(vaultPath, "public", "index.html")); err != nil {
+		t.Fatalf("os.Stat(public/index.html) error = %v", err)
 	}
 }
 
 func TestInitCommandWritesStrictBuildableConfig(t *testing.T) {
-	t.Parallel()
 
-	vaultPath := filepath.Join(t.TempDir(), "nested", "vault")
+	vaultPath := t.TempDir()
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", vaultPath})
 	if err != nil {
 		t.Fatalf("executeForTest() error = %v", err)
@@ -52,8 +64,19 @@ func TestInitCommandWritesStrictBuildableConfig(t *testing.T) {
 	}
 }
 
+func TestInitCommandRejectsMissingVault(t *testing.T) {
+
+	vaultPath := filepath.Join(t.TempDir(), "missing")
+	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", vaultPath})
+	if err == nil || !strings.Contains(err.Error(), "no such file") {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if _, statErr := os.Stat(vaultPath); !os.IsNotExist(statErr) {
+		t.Fatalf("os.Stat(missing vault) error = %v", statErr)
+	}
+}
+
 func TestInitCommandRejectsExistingConfigFile(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)

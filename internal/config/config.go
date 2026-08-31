@@ -19,13 +19,14 @@ import (
 const (
 	// Filename is the only supported site configuration filename.
 	Filename = "obsite.yaml"
+	// CustomCSSFilename and ThemeDirRelPath are the fixed optional vault inputs.
+	CustomCSSFilename = "custom.css"
+	ThemeDirRelPath   = ".obsite/theme"
 
 	defaultLanguage           = "en"
 	defaultPaginationPageSize = 20
 	defaultRelatedCount       = 5
 	defaultTimelinePath       = "notes"
-	defaultCustomCSSName      = "custom.css"
-	defaultThemeDir           = ".obsite/theme"
 
 	defaultKaTeXCSSURL        = "assets/obsite-runtime/katex.min.css"
 	defaultKaTeXJSURL         = "assets/obsite-runtime/katex.min.js"
@@ -163,11 +164,11 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
 	}
 
-	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, defaultCustomCSSName, "custom CSS")
+	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
 	if err != nil {
 		return model.SiteConfig{}, err
 	}
-	cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, defaultThemeDir, "theme directory")
+	cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, ThemeDirRelPath, "theme directory")
 	if err != nil {
 		return model.SiteConfig{}, err
 	}

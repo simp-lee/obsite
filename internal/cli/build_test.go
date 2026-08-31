@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -11,26 +12,31 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestBuildCommandRequiresFlags(t *testing.T) {
-	t.Parallel()
+func TestBuildCommandDefaultsToCurrentVaultAndPublicOutput(t *testing.T) {
+	vaultPath := t.TempDir()
+	t.Chdir(vaultPath)
+	writeCLIConfig(t, vaultPath)
 
-	tests := []struct {
-		args []string
-		want string
-	}{
-		{args: []string{"build", "--output", filepath.Join(t.TempDir(), "site")}, want: `required flag(s) "vault" not set`},
-		{args: []string{"build", "--vault", t.TempDir()}, want: `required flag(s) "output" not set`},
+	deps := testCommandDependencies()
+	var loadedVault, builtOutput string
+	deps.loadSiteInput = func(vault string) (internalbuild.SiteInput, error) {
+		loadedVault = vault
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}, nil
 	}
-	for _, tt := range tests {
-		_, _, err := executeForTest(t, testCommandDependencies(), tt.args)
-		if err == nil || !strings.Contains(err.Error(), tt.want) {
-			t.Fatalf("executeForTest() error = %v, want %q", err, tt.want)
-		}
+	deps.buildSiteWithOptions = func(_ internalbuild.SiteInput, _ string, output string, _ internalbuild.Options) (*internalbuild.BuildResult, error) {
+		builtOutput = output
+		return &internalbuild.BuildResult{}, nil
+	}
+	_, _, err := executeForTest(t, deps, []string{"build"})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if loadedVault != vaultPath || builtOutput != filepath.Join(vaultPath, "public") {
+		t.Fatalf("paths = vault %q, output %q", loadedVault, builtOutput)
 	}
 }
 
 func TestBuildCommandLoadsOnlyResolvedVaultAndCallsBuild(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
@@ -60,16 +66,48 @@ func TestBuildCommandLoadsOnlyResolvedVaultAndCallsBuild(t *testing.T) {
 	}
 }
 
+func TestBuildCommandDefaultOutputUsesResolvedVault(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation may require elevated privileges")
+	}
+	root := t.TempDir()
+	vaultPath := filepath.Join(root, "vault")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeCLIConfig(t, vaultPath)
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(vaultPath, alias); err != nil {
+		t.Fatal(err)
+	}
+	deps := testCommandDependencies()
+	deps.loadSiteInput = func(vault string) (internalbuild.SiteInput, error) {
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}, nil
+	}
+	var output string
+	deps.buildSiteWithOptions = func(_ internalbuild.SiteInput, _ string, got string, _ internalbuild.Options) (*internalbuild.BuildResult, error) {
+		output = got
+		return &internalbuild.BuildResult{}, nil
+	}
+	if _, _, err := executeForTest(t, deps, []string{"build", "--vault", alias}); err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	if output != filepath.Join(vaultPath, "public") {
+		t.Fatalf("output = %q", output)
+	}
+}
+
 func TestBuildCommandRejectsRemovedConfigAndThemeFlags(t *testing.T) {
-	t.Parallel()
 
 	for _, tt := range []struct {
 		name string
 		args []string
 		want string
 	}{
-		{name: "config", args: []string{"--config", "other.yaml"}, want: "--config has been removed"},
-		{name: "theme", args: []string{"--theme", "feature"}, want: "--theme has been removed"},
+		{name: "config", args: []string{"--config", "other.yaml"}, want: "unknown flag: --config"},
+		{name: "config empty", args: []string{"--config="}, want: "unknown flag: --config"},
+		{name: "theme", args: []string{"--theme", "feature"}, want: "unknown flag: --theme"},
+		{name: "theme empty", args: []string{"--theme="}, want: "unknown flag: --theme"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			args := append([]string{"build", "--vault", t.TempDir(), "--output", filepath.Join(t.TempDir(), "site")}, tt.args...)
@@ -82,7 +120,6 @@ func TestBuildCommandRejectsRemovedConfigAndThemeFlags(t *testing.T) {
 }
 
 func TestBuildCommandReturnsVaultPathErrorBeforeConfigRead(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(vaultPath, []byte("content"), 0o644); err != nil {
@@ -95,7 +132,6 @@ func TestBuildCommandReturnsVaultPathErrorBeforeConfigRead(t *testing.T) {
 }
 
 func TestBuildCommandPropagatesBuildFailureAndForce(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	writeCLIConfig(t, vaultPath)
@@ -116,7 +152,6 @@ func TestBuildCommandPropagatesBuildFailureAndForce(t *testing.T) {
 }
 
 func TestBuildCommandRoutesRealBuildWarningsToInjectedStderr(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")

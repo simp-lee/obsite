@@ -12,6 +12,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
+	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
@@ -68,8 +69,6 @@ type serveWatchLoop struct {
 func newServeCommand(deps commandDependencies) *cobra.Command {
 	var outputPath string
 	var vaultPath string
-	var configPath string
-	var theme string
 	var port int
 	var watch bool
 
@@ -78,20 +77,15 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 		Short: "Serve a generated site for local preview",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			trimmedOutputPath, err := requiredPathFlag("output", outputPath)
+			boundary, err := resolveVaultOutputPaths(vaultPath, outputPath)
 			if err != nil {
 				return err
 			}
-			trimmedTheme := strings.TrimSpace(theme)
-
 			if watch {
-				return runServeWatchMode(cmd, deps, trimmedOutputPath, vaultPath, configPath, trimmedTheme, port)
-			}
-			if trimmedTheme != "" {
-				return fmt.Errorf("--theme can only be used together with --watch")
+				return runServeWatchMode(cmd, deps, boundary.VaultPath, boundary.OutputPath, port)
 			}
 
-			srv, err := deps.newPreviewServer(trimmedOutputPath, port)
+			srv, err := deps.newPreviewServer(boundary.OutputPath, port)
 			if err != nil {
 				return fmt.Errorf("create preview server: %w", err)
 			}
@@ -105,36 +99,15 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&outputPath, "output", "", "Path to the generated site output")
-	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault (required when --watch is enabled)")
-	flags.StringVar(&configPath, "config", "", "Path to obsite.yaml (defaults to <vault>/obsite.yaml when --watch is enabled)")
-	flags.StringVar(&theme, "theme", "", "Named theme to select while rebuilding in --watch mode")
+	flags.StringVar(&outputPath, "output", "", "Path to the generated site output (default <vault>/public)")
+	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault (default current directory)")
 	flags.IntVar(&port, "port", 0, fmt.Sprintf("Port for the local preview server (default %d)", internalserver.DefaultPort))
 	flags.BoolVar(&watch, "watch", false, "Rebuild on vault/config changes and live-reload connected browsers")
-	_ = cmd.MarkFlagRequired("output")
 
 	return cmd
 }
 
-func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath string, vaultPath string, configPath string, theme string, port int) error {
-	if strings.TrimSpace(configPath) != "" {
-		return fmt.Errorf("--config has been removed; Obsite reads <vault>/%s", defaultConfigFilename)
-	}
-	if strings.TrimSpace(theme) != "" {
-		return fmt.Errorf("--theme has been removed")
-	}
-	trimmedVaultPath := strings.TrimSpace(vaultPath)
-	if trimmedVaultPath == "" {
-		return fmt.Errorf("--vault is required when --watch is enabled")
-	}
-
-	boundary, err := internalfsutil.ResolveVaultOutput(trimmedVaultPath, outputPath)
-	if err != nil {
-		return err
-	}
-	normalizedVaultPath := boundary.VaultPath
-	resolvedOutputPath := boundary.OutputPath
-
+func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedVaultPath string, resolvedOutputPath string, port int) error {
 	resolvedConfigPath := filepath.Join(normalizedVaultPath, defaultConfigFilename)
 
 	var currentExtraWatchInputs []serveWatchInput
@@ -145,19 +118,10 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, outputPath 
 		if err != nil {
 			return fmt.Errorf("load config: %w", err)
 		}
-		cfg := input.Config
-
-		nextExtraWatchInputs := collectServeWatchInputs(cfg.ThemeRoot, cfg.CustomCSS, normalizedVaultPath)
-		nextThemeRoots := make([]string, 0, len(cfg.Themes)+1)
-		for _, themeCfg := range cfg.Themes {
-			if trimmedRoot := strings.TrimSpace(themeCfg.Root); trimmedRoot != "" {
-				nextThemeRoots = append(nextThemeRoots, trimmedRoot)
-			}
-		}
-		if trimmedRoot := strings.TrimSpace(cfg.ThemeRoot); trimmedRoot != "" {
-			nextThemeRoots = append(nextThemeRoots, trimmedRoot)
-		}
-		nextThemeRoots = normalizeServeWatchPaths(nextThemeRoots)
+		themeDir := filepath.Join(normalizedVaultPath, filepath.FromSlash(internalconfig.ThemeDirRelPath))
+		customCSS := filepath.Join(normalizedVaultPath, internalconfig.CustomCSSFilename)
+		nextExtraWatchInputs := collectServeWatchInputs(themeDir, customCSS, normalizedVaultPath)
+		nextThemeRoots := []string{themeDir}
 
 		if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, resolvedOutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 			return fmt.Errorf("build site: %w", err)
@@ -527,8 +491,14 @@ func (loop *serveWatchLoop) addNewDirectoryWatch(path string) error {
 		return nil
 	}
 
-	info, err := os.Stat(cleanPath)
-	if err != nil || !info.IsDir() {
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		return nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("watch directory %q must not be a symbolic link", cleanPath)
+	}
+	if !info.IsDir() {
 		return nil
 	}
 	if loop.pathWithinSelectedThemeRoot(cleanPath) {
@@ -550,8 +520,14 @@ func (loop *serveWatchLoop) recoverExplicitInputWatches(path string, op fsnotify
 	}
 
 	cleanPath := filepath.Clean(path)
-	info, err := os.Stat(cleanPath)
-	if err != nil || !info.IsDir() {
+	info, err := os.Lstat(cleanPath)
+	if err != nil {
+		return false, nil
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return false, fmt.Errorf("watch directory %q must not be a symbolic link", cleanPath)
+	}
+	if !info.IsDir() {
 		return false, nil
 	}
 
@@ -946,14 +922,22 @@ func (loop *serveWatchLoop) recursiveWatchDirs(root string) (map[string]struct{}
 		return nil, nil
 	}
 
-	info, err := os.Stat(cleanRoot)
+	if pathWithinRoot(loop.vaultPath, cleanRoot) {
+		if _, _, err := internalfsutil.InspectContainedDirectory(loop.vaultPath, cleanRoot); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("inspect watch tree %q: %w", cleanRoot, err)
+		}
+	}
+	info, err := os.Lstat(cleanRoot)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("stat watch tree %q: %w", cleanRoot, err)
 	}
-	if !info.IsDir() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, nil
 	}
 

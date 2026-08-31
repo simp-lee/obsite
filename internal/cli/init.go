@@ -19,27 +19,22 @@ func newInitCommand() *cobra.Command {
 		Short: "Create an obsite.yaml template in a vault directory",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			trimmedVaultPath, err := requiredPathFlag("vault", vaultPath)
+			resolvedVault, err := resolveVaultPath(vaultPath)
 			if err != nil {
 				return err
 			}
 
-			if err := os.MkdirAll(trimmedVaultPath, 0o755); err != nil {
-				return fmt.Errorf("create vault directory %q: %w", trimmedVaultPath, err)
-			}
-
-			configPath := filepath.Join(trimmedVaultPath, defaultConfigFilename)
+			configPath := filepath.Join(resolvedVault, defaultConfigFilename)
 			if err := writeInitConfig(configPath); err != nil {
 				return err
 			}
-
-			return nil
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "Created %s. Replace baseURL before publishing.\n", configPath)
+			return err
 		},
 	}
 
 	flags := cmd.Flags()
-	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault")
-	_ = cmd.MarkFlagRequired("vault")
+	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault (default current directory)")
 
 	return cmd
 }

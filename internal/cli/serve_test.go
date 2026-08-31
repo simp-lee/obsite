@@ -20,26 +20,26 @@ import (
 	internalrender "github.com/simp-lee/obsite/internal/render"
 )
 
-func TestServeCommandRequiresOutputFlag(t *testing.T) {
-	t.Parallel()
-
-	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{"serve"})
-	if err == nil {
-		t.Fatal("executeForTest() error = nil, want missing output flag error")
+func TestServeCommandDefaultsToCurrentVaultPublicOutput(t *testing.T) {
+	vaultPath := t.TempDir()
+	t.Chdir(vaultPath)
+	deps := testCommandDependencies()
+	server := &fakePreviewServer{}
+	var gotOutput string
+	deps.newPreviewServer = func(output string, port int) (previewServer, error) {
+		gotOutput = output
+		return server, nil
 	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	_, _, err := executeForTest(t, deps, []string{"serve"})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty stderr", stderr)
-	}
-	if !strings.Contains(err.Error(), `required flag(s) "output" not set`) {
-		t.Fatalf("error = %q, want required output flag message", err.Error())
+	if gotOutput != filepath.Join(vaultPath, "public") {
+		t.Fatalf("output = %q", gotOutput)
 	}
 }
 
 func TestServeCommandUsesServerDefaultPortWhenOmitted(t *testing.T) {
-	t.Parallel()
 
 	outputPath := filepath.Join(t.TempDir(), "site")
 	deps := testCommandDependencies()
@@ -68,7 +68,6 @@ func TestServeCommandUsesServerDefaultPortWhenOmitted(t *testing.T) {
 }
 
 func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -149,7 +148,6 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 }
 
 func TestServeCommandPassesExplicitPortToPreviewServer(t *testing.T) {
-	t.Parallel()
 
 	outputPath := filepath.Join(t.TempDir(), "site")
 	deps := testCommandDependencies()
@@ -184,7 +182,6 @@ func TestServeCommandPassesExplicitPortToPreviewServer(t *testing.T) {
 }
 
 func TestServeCommandPropagatesListenFailure(t *testing.T) {
-	t.Parallel()
 
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{listenErr: errors.New("bind failed")}
@@ -205,7 +202,6 @@ func TestServeCommandPropagatesListenFailure(t *testing.T) {
 }
 
 func TestServeCommandDoesNotEnableLiveReloadWithoutWatch(t *testing.T) {
-	t.Parallel()
 
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
@@ -222,48 +218,57 @@ func TestServeCommandDoesNotEnableLiveReloadWithoutWatch(t *testing.T) {
 	}
 }
 
-func TestServeCommandWatchRequiresVaultFlag(t *testing.T) {
-	t.Parallel()
+func TestServeCommandRejectsRemovedFlags(t *testing.T) {
 
-	stdOut, stdErr, err := executeForTest(t, testCommandDependencies(), []string{"serve", "--output", filepath.Join(t.TempDir(), "site"), "--watch"})
-	if err == nil {
-		t.Fatal("executeForTest() error = nil, want missing watch vault error")
-	}
-	if stdOut != "" {
-		t.Fatalf("stdout = %q, want empty stdout", stdOut)
-	}
-	if stdErr != "" {
-		t.Fatalf("stderr = %q, want empty stderr", stdErr)
-	}
-	if err.Error() != "--vault is required when --watch is enabled" {
-		t.Fatalf("error = %q, want watch vault guidance", err.Error())
+	for _, flag := range []string{"--config=other.yaml", "--theme=feature"} {
+		_, _, err := executeForTest(t, testCommandDependencies(), []string{"serve", flag})
+		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Fatalf("serve %s error = %v", flag, err)
+		}
 	}
 }
 
-func TestServeCommandRejectsThemeWithoutWatch(t *testing.T) {
-	t.Parallel()
+func TestServeCommandReportsMissingDefaultOutput(t *testing.T) {
+	vaultPath := t.TempDir()
+	t.Chdir(vaultPath)
+	_, _, err := executeForTest(t, defaultCommandDependencies(), []string{"serve"})
+	if err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+}
 
-	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{
-		"serve",
-		"--output", filepath.Join(t.TempDir(), "site"),
-		"--theme", "feature",
-	})
-	if err == nil {
-		t.Fatal("executeForTest() error = nil, want invalid --theme combination")
+func TestServeCommandWatchDefaultsToCurrentVaultAndPublicOutput(t *testing.T) {
+	vaultPath := t.TempDir()
+	t.Chdir(vaultPath)
+	writeCLIConfig(t, vaultPath)
+	deps := testCommandDependencies()
+	deps.loadSiteInput = func(vault string) (internalbuild.SiteInput, error) {
+		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}, nil
 	}
-	if stdout != "" {
-		t.Fatalf("stdout = %q, want empty stdout", stdout)
+	var builtVault, builtOutput, servedOutput string
+	deps.buildSiteWithOptions = func(_ internalbuild.SiteInput, vault string, output string, _ internalbuild.Options) (*internalbuild.BuildResult, error) {
+		builtVault, builtOutput = vault, output
+		if err := os.MkdirAll(output, 0o755); err != nil {
+			return nil, err
+		}
+		return &internalbuild.BuildResult{}, nil
 	}
-	if stderr != "" {
-		t.Fatalf("stderr = %q, want empty stderr", stderr)
+	server := &fakePreviewServer{}
+	deps.newPreviewServer = func(output string, _ int) (previewServer, error) {
+		servedOutput = output
+		return server, nil
 	}
-	if err.Error() != "--theme can only be used together with --watch" {
-		t.Fatalf("error = %q, want explicit --theme watch-only guidance", err.Error())
+	deps.newFileWatcher = func() (fileWatcher, error) { return newFakeFileWatcher(), nil }
+	if _, _, err := executeForTest(t, deps, []string{"serve", "--watch"}); err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	wantOutput := filepath.Join(vaultPath, "public")
+	if builtVault != vaultPath || builtOutput != wantOutput || servedOutput != wantOutput {
+		t.Fatalf("paths = vault %q, build %q, serve %q", builtVault, builtOutput, servedOutput)
 	}
 }
 
 func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -332,7 +337,6 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 }
 
 func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -412,7 +416,6 @@ func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 }
 
 func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRoot(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -429,6 +432,7 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 			configPath := filepath.Join(vaultPath, defaultConfigFilename)
 			outputPath := filepath.Join(t.TempDir(), "site")
 			initialThemeRoot := filepath.Join(vaultPath, ".obsite", "themes-initial", "feature")
+			fixedThemeRoot := filepath.Join(vaultPath, ".obsite", "theme")
 			writeServeWatchThemeTemplates(t, initialThemeRoot)
 
 			var nextThemeRootValue string
@@ -492,7 +496,6 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 			}
 			waitForServeWatchSignal(t, buildSignal, "initial build")
 			waitForServeWatchAddCount(t, watcher, vaultPath, 1)
-			waitForServeWatchAddCount(t, watcher, initialThemeRoot, 1)
 
 			writeServeWatchThemeConfig(t, configPath, nextThemeRootValue)
 			watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
@@ -500,7 +503,7 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 			if recoveryWatchDir != "" && watcher.countAddCalls(recoveryWatchDir) != 0 {
 				t.Fatalf("external recovery directory %q was watched after rejected config", recoveryWatchDir)
 			}
-			if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+			if watcher.countRemoveCalls(fixedThemeRoot) != 0 {
 				t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
 			}
 			select {
@@ -528,12 +531,12 @@ func TestServeCommandWatchKeepsSuccessfulInputsAfterConfigSelectsRejectedThemeRo
 }
 
 func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(t.TempDir(), "site")
 	initialThemeRoot := filepath.Join(vaultPath, ".obsite", "themes-initial", "feature")
+	fixedThemeRoot := filepath.Join(vaultPath, ".obsite", "theme")
 	writeServeWatchThemeTemplates(t, initialThemeRoot)
 
 	recoveryWatchDir := t.TempDir()
@@ -590,7 +593,6 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 	}
 	waitForServeWatchSignal(t, buildSignal, "initial build")
 	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
-	waitForServeWatchAddCount(t, watcher, initialThemeRoot, 1)
 
 	writeServeWatchThemeConfig(t, configPath, nextThemeRootPath)
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
@@ -598,7 +600,7 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 	if watcher.countAddCalls(recoveryWatchDir) != 0 {
 		t.Fatalf("external recovery directory %q was watched after rejected config", recoveryWatchDir)
 	}
-	if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+	if watcher.countRemoveCalls(fixedThemeRoot) != 0 {
 		t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
 	}
 	select {
@@ -611,7 +613,7 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 	if watcher.countAddCalls(recoveryWatchDir) != 0 || watcher.countAddCalls(nextThemeRootPath) != 0 {
 		t.Fatalf("rejected external theme root %q or its recovery directory was watched", nextThemeRootPath)
 	}
-	if watcher.countRemoveCalls(initialThemeRoot) != 0 {
+	if watcher.countRemoveCalls(fixedThemeRoot) != 0 {
 		t.Fatalf("successful theme root %q was removed after rejected config", initialThemeRoot)
 	}
 
@@ -635,7 +637,6 @@ func TestServeCommandWatchDoesNotFollowRejectedThemeRootRecreation(t *testing.T)
 }
 
 func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "alpha.md")
@@ -711,7 +712,6 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 }
 
 func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -817,7 +817,6 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {
 }
 
 func TestStartServeWatchLoopTreatsMissingPathChmodAsRemove(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "guide.md")
@@ -870,7 +869,6 @@ func TestStartServeWatchLoopTreatsMissingPathChmodAsRemove(t *testing.T) {
 }
 
 func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "guide.md")
@@ -930,7 +928,6 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 }
 
 func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFile(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	attachmentPath := filepath.Join(vaultPath, "files", "manual.pdf")
@@ -1044,7 +1041,6 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 }
 
 func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -1132,7 +1128,6 @@ func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *
 }
 
 func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFromOneShotDeepCreation(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -1216,7 +1211,6 @@ func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFrom
 }
 
 func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalInputs(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(vaultPath, "public")
@@ -1249,7 +1243,6 @@ func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalIn
 }
 
 func TestStartServeWatchLoopRebuildsForDeepNestedExternalThemeRootFile(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	themeRoot := filepath.Join(t.TempDir(), "themes", "feature")
@@ -1307,7 +1300,6 @@ func TestStartServeWatchLoopRebuildsForDeepNestedExternalThemeRootFile(t *testin
 }
 
 func TestStartServeWatchLoopRecoversExternalExtraWatchRootAfterFailedRebuild(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -1400,7 +1392,6 @@ func TestStartServeWatchLoopRecoversExternalExtraWatchRootAfterFailedRebuild(t *
 }
 
 func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalExtraWatchRoot(t *testing.T) {
-	t.Parallel()
 
 	tests := []struct {
 		name          string
@@ -1510,7 +1501,6 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedExternalExtraWatchRoot(t *test
 }
 
 func TestStartServeWatchLoopAddsRecursiveWatchesForNewDeepDirectoriesInsideSelectedThemeRoot(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	themeRoot := filepath.Join(t.TempDir(), "themes", "feature")
@@ -1576,7 +1566,6 @@ func TestStartServeWatchLoopAddsRecursiveWatchesForNewDeepDirectoriesInsideSelec
 }
 
 func TestStartServeWatchLoopRebuildsForDeepNestedHiddenInVaultThemeRootFile(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	hiddenThemeRoot := filepath.Join(vaultPath, ".obsidian", "themes", "feature")
@@ -1633,7 +1622,6 @@ func TestStartServeWatchLoopRebuildsForDeepNestedHiddenInVaultThemeRootFile(t *t
 }
 
 func TestStartServeWatchLoopIgnoresUnselectedThemeRootChanges(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	selectedThemeRoot := filepath.Join(vaultPath, "themes", "feature")
@@ -1697,7 +1685,6 @@ func TestStartServeWatchLoopIgnoresUnselectedThemeRootChanges(t *testing.T) {
 }
 
 func TestStartServeWatchLoopIgnoresNestedUnselectedThemeRootInsideSelectedThemeTree(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	selectedThemeRoot := filepath.Join(vaultPath, "themes")
@@ -1806,7 +1793,6 @@ func TestStartServeWatchLoopIgnoresNestedUnselectedThemeRootInsideSelectedThemeT
 }
 
 func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenThemeRootIsRemoved(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	rootNotePath := filepath.Join(vaultPath, "root-note.md")
@@ -1871,7 +1857,6 @@ func TestStartServeWatchLoopRetainsVaultRootWatchWhenMissingHiddenThemeRootIsRem
 }
 
 func TestStartServeWatchLoopReportsWatcherCloseErrors(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -1920,7 +1905,6 @@ func TestStartServeWatchLoopReportsWatcherCloseErrors(t *testing.T) {
 }
 
 func TestStartServeWatchLoopRefreshesSelectedThemeRootWatchesAfterRebuild(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -1993,7 +1977,6 @@ func TestStartServeWatchLoopRefreshesSelectedThemeRootWatchesAfterRebuild(t *tes
 }
 
 func TestStartServeWatchLoopIgnoresStaleInVaultThemeRootAfterRefresh(t *testing.T) {
-	t.Parallel()
 
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
