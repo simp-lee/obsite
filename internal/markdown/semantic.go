@@ -3,7 +3,7 @@ package markdown
 import (
 	"strings"
 
-	"github.com/simp-lee/obsite/internal/markdown/math"
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	gast "github.com/yuin/goldmark/ast"
 	gmhashtag "go.abhg.dev/goldmark/hashtag"
 	gmwikilink "go.abhg.dev/goldmark/wikilink"
@@ -73,7 +73,7 @@ func appendRelatedHeadingText(collector *headingTextCollector, node gast.Node, s
 		collector.appendText(relatedWikilinkText(current, source, true))
 	case *gast.RawHTML:
 		collector.applyRawHTML(string(current.Segments.Value(source)))
-	case *math.InlineMath, *math.DisplayMath:
+	case *passthrough.PassthroughInline, *passthrough.PassthroughBlock:
 		return
 	default:
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
@@ -90,7 +90,7 @@ func appendRelatedBodyText(collector *headingTextCollector, node gast.Node, sour
 	switch current := node.(type) {
 	case *gast.Heading, *gast.CodeBlock, *gast.FencedCodeBlock, *gast.HTMLBlock, *gast.LinkReferenceDefinition:
 		return
-	case *math.InlineMath, *math.DisplayMath, *gmhashtag.Node:
+	case *passthrough.PassthroughInline, *passthrough.PassthroughBlock, *gmhashtag.Node:
 		return
 	case *gast.Text:
 		appendRelatedSourceText(collector, current, source)

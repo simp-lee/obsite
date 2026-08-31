@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	"github.com/simp-lee/obsite/internal/diag"
-	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
@@ -253,61 +253,51 @@ func newMathTrackingExtender(note *model.Note) goldmark.Extender {
 
 func (e *mathTrackingExtender) Extend(md goldmark.Markdown) {
 	md.Renderer().AddOptions(renderer.WithNodeRenderers(
-		util.Prioritized(newMathTrackingHTMLRenderer(e.note), 499),
+		util.Prioritized(newMathTrackingHTMLRenderer(e.note), 50),
 	))
 }
 
-type mathTrackingHTMLRenderer struct {
-	note        *model.Note
-	inlineFunc  renderer.NodeRendererFunc
-	displayFunc renderer.NodeRendererFunc
-}
+type mathTrackingHTMLRenderer struct{ note *model.Note }
 
 func newMathTrackingHTMLRenderer(note *model.Note) *mathTrackingHTMLRenderer {
-	fallback := math.NewHTMLRenderer()
-	fallbackRegisterer := newNodeRendererFuncRegisterer()
-	fallback.RegisterFuncs(fallbackRegisterer)
-
-	return &mathTrackingHTMLRenderer{
-		note:        note,
-		inlineFunc:  fallbackRegisterer.funcFor(math.KindInlineMath),
-		displayFunc: fallbackRegisterer.funcFor(math.KindDisplayMath),
-	}
+	return &mathTrackingHTMLRenderer{note: note}
 }
 
 func (r *mathTrackingHTMLRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
-	reg.Register(math.KindInlineMath, r.renderInlineMath)
-	reg.Register(math.KindDisplayMath, r.renderDisplayMath)
+	reg.Register(passthrough.KindPassthroughInline, r.renderInlineMath)
+	reg.Register(passthrough.KindPassthroughBlock, r.renderDisplayMath)
 }
 
-func (r *mathTrackingHTMLRenderer) renderInlineMath(
-	w util.BufWriter,
-	source []byte,
-	node gast.Node,
-	entering bool,
-) (gast.WalkStatus, error) {
-	if entering && r.note != nil {
-		r.note.HasMath = true
-	}
-	if r.inlineFunc == nil {
+func (r *mathTrackingHTMLRenderer) renderInlineMath(w util.BufWriter, source []byte, node gast.Node, entering bool) (gast.WalkStatus, error) {
+	if !entering {
 		return gast.WalkContinue, nil
 	}
-	return r.inlineFunc(w, source, node, entering)
+	if r.note != nil {
+		r.note.HasMath = true
+	}
+	mathNode := node.(*passthrough.PassthroughInline)
+	_, _ = w.WriteString(html.EscapeString(string(mathNode.Segment.Value(source))))
+	return gast.WalkContinue, nil
 }
 
-func (r *mathTrackingHTMLRenderer) renderDisplayMath(
-	w util.BufWriter,
-	source []byte,
-	node gast.Node,
-	entering bool,
-) (gast.WalkStatus, error) {
-	if entering && r.note != nil {
-		r.note.HasMath = true
-	}
-	if r.displayFunc == nil {
+func (r *mathTrackingHTMLRenderer) renderDisplayMath(w util.BufWriter, source []byte, node gast.Node, entering bool) (gast.WalkStatus, error) {
+	if !entering {
 		return gast.WalkContinue, nil
 	}
-	return r.displayFunc(w, source, node, entering)
+	if r.note != nil {
+		r.note.HasMath = true
+	}
+	for i := 0; i < node.Lines().Len(); i++ {
+		segment := node.Lines().At(i)
+		line := string(segment.Value(source))
+		line = strings.TrimPrefix(line, "> ")
+		line = strings.TrimPrefix(line, ">")
+		line = strings.ReplaceAll(line, "\n> ", "\n")
+		line = strings.ReplaceAll(line, "\n>", "\n")
+		_, _ = w.WriteString(html.EscapeString(line))
+	}
+	_, _ = w.WriteString("\n")
+	return gast.WalkSkipChildren, nil
 }
 
 func newCodeBlockExtender(note *model.Note, diagCollector *diag.Collector) goldmark.Extender {

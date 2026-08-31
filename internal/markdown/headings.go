@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	"github.com/simp-lee/obsite/internal/markdown/headingid"
-	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
@@ -116,10 +116,13 @@ func appendVisibleHeadingInlineText(collector *headingTextCollector, node gast.N
 		collector.appendText(visibleHeadingWikilinkText(current, source))
 	case *gast.RawHTML:
 		collector.applyRawHTML(string(current.Segments.Value(source)))
-	case *math.InlineMath:
-		collector.appendText(string(current.Literal))
-	case *math.DisplayMath:
-		collector.appendText(string(current.Literal))
+	case *passthrough.PassthroughInline:
+		collector.appendText(string(current.Segment.Value(source)))
+	case *passthrough.PassthroughBlock:
+		for i := 0; i < current.Lines().Len(); i++ {
+			segment := current.Lines().At(i)
+			collector.appendText(string(segment.Value(source)))
+		}
 		collector.space()
 	default:
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {

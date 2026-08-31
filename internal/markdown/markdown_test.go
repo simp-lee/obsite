@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/callout"
 	internalhighlight "github.com/simp-lee/obsite/internal/markdown/highlight"
-	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -47,7 +47,7 @@ func TestNewParserParsesCoreCustomNodes(t *testing.T) {
 			calloutCount++
 		}
 
-		if math.IsMathNode(node) {
+		if node.Kind() == passthrough.KindPassthroughInline || node.Kind() == passthrough.KindPassthroughBlock {
 			mathCount++
 		}
 
@@ -392,8 +392,8 @@ func TestNewMarkdownRendersLeadingCalloutDisplayMathAndTracksHasMath(t *testing.
 	if !strings.Contains(html, `<div class="callout callout-note">`) {
 		t.Fatalf("HTML = %q, want callout container", html)
 	}
-	if !strings.Contains(html, "<div class=\"math math-display\">$$\nx^2\n$$</div>") {
-		t.Fatalf("HTML = %q, want leading callout body paragraph rewritten as display math", html)
+	if !strings.Contains(html, "$$\nx^2\n$$") || strings.Contains(html, "\n> x^2") {
+		t.Fatalf("HTML = %q, want clean passthrough display math inside the callout", html)
 	}
 	if renderResult == nil || !renderResult.HasMath() {
 		t.Fatal("renderResult.HasMath() = false, want true for callout display math")

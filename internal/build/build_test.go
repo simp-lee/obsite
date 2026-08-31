@@ -3928,15 +3928,15 @@ func TestBuildUsesLoadedConfigDefaultsForMinimalConfig(t *testing.T) {
 			t.Fatalf("direct build page missing runtime default %q\n%s", want, noteHTML)
 		}
 	}
-	escapedMermaidURL := strings.ReplaceAll("../"+expectedInput.Config.MermaidJSURL, "/", `\/`)
-	if !bytes.Contains(noteHTML, []byte(escapedMermaidURL)) {
-		t.Fatalf("direct build page missing runtime default %q\n%s", escapedMermaidURL, noteHTML)
+	mermaidURL := "../" + expectedInput.Config.MermaidJSURL
+	if !bytes.Contains(noteHTML, []byte(mermaidURL)) {
+		t.Fatalf("direct build page missing runtime default %q\n%s", mermaidURL, noteHTML)
 	}
 	if !bytes.Contains(noteHTML, []byte("renderMathInElement")) {
 		t.Fatalf("direct build page missing KaTeX runtime bootstrap\n%s", noteHTML)
 	}
-	if !bytes.Contains(noteHTML, []byte("import mermaid from")) {
-		t.Fatalf("direct build page missing Mermaid module loader\n%s", noteHTML)
+	if !bytes.Contains(noteHTML, []byte("window.mermaid.initialize")) {
+		t.Fatalf("direct build page missing Mermaid initializer\n%s", noteHTML)
 	}
 	if bytes.Contains(noteHTML, []byte("cdn.jsdelivr.net")) {
 		t.Fatalf("direct build page unexpectedly references external CDN\n%s", noteHTML)

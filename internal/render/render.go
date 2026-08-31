@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/url"
 	"os"
 	"path"
@@ -43,10 +44,6 @@ var embeddedTemplateAssetNames = []string{
 	"timeline.html",
 	"404.html",
 	"style.css",
-	"katex.min.css",
-	"katex.min.js",
-	"auto-render.min.js",
-	"mermaid.esm.min.mjs",
 }
 
 var embeddedHTMLTemplateNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
@@ -75,12 +72,19 @@ type embeddedOutputAsset struct {
 	outputPath string
 }
 
-var runtimeTemplateAssets = []embeddedOutputAsset{
-	{name: "katex.min.css", outputPath: "assets/obsite-runtime/katex.min.css"},
-	{name: "katex.min.js", outputPath: "assets/obsite-runtime/katex.min.js"},
-	{name: "auto-render.min.js", outputPath: "assets/obsite-runtime/auto-render.min.js"},
-	{name: "mermaid.esm.min.mjs", outputPath: "assets/obsite-runtime/mermaid.esm.min.mjs"},
-}
+var runtimeTemplateAssets = func() []embeddedOutputAsset {
+	assets := []embeddedOutputAsset{
+		{name: "vendor/katex/katex.min.css", outputPath: "assets/obsite-runtime/katex.min.css"},
+		{name: "vendor/katex/katex.min.js", outputPath: "assets/obsite-runtime/katex.min.js"},
+		{name: "vendor/katex/contrib/auto-render.min.js", outputPath: "assets/obsite-runtime/auto-render.min.js"},
+		{name: "vendor/mermaid/mermaid.min.js", outputPath: "assets/obsite-runtime/mermaid.min.js"},
+	}
+	fonts, _ := fs.Glob(embeddedSiteFS, "vendor/katex/fonts/*")
+	for _, name := range fonts {
+		assets = append(assets, embeddedOutputAsset{name: name, outputPath: path.Join("assets/obsite-runtime/fonts", path.Base(name))})
+	}
+	return assets
+}()
 
 var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 	return parseEmbeddedTemplates()
@@ -1053,7 +1057,11 @@ func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
 }
 
 func readEmbeddedAsset(name string) ([]byte, error) {
-	data, err := embeddedSiteFS.ReadFile(embeddedSiteAssetPath(name))
+	assetPath := name
+	if !strings.HasPrefix(assetPath, "vendor/") {
+		assetPath = embeddedSiteAssetPath(name)
+	}
+	data, err := embeddedSiteFS.ReadFile(assetPath)
 	if err != nil {
 		return nil, fmt.Errorf("read embedded asset %q: %w", name, err)
 	}

@@ -37,7 +37,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 					Language:           "en",
 					KaTeXCSSURL:        "https://cdn.example.test/katex.css",
 					KaTeXJSURL:         "https://cdn.example.test/katex.js",
-					MermaidJSURL:       "https://cdn.example.test/mermaid.esm.min.mjs",
+					MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
 					DefaultImg:         "images/default-og.png",
 					BaseURL:            "https://example.com/",
 					KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
@@ -90,10 +90,9 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"<link rel=\"stylesheet\" href=\"https://cdn.example.test/katex.css\">",
 				"<script defer src=\"https://cdn.example.test/katex.js\"></script>",
 				"<script defer src=\"https://cdn.example.test/auto-render.js\"></script>",
-				"<script type=\"module\">",
-				"import mermaid from \"https:\\/\\/cdn.example.test\\/mermaid.esm.min.mjs\";",
-				"mermaid.initialize({",
-				"startOnLoad: true,",
+				"<script defer src=\"https://cdn.example.test/mermaid.min.js\"></script>",
+				"window.mermaid.initialize",
+				"startOnLoad: true",
 				"theme: \"neutral\"",
 				"securityLevel: \"loose\"",
 				"<script type=\"application/ld+json\">[{\"@context\":\"https://schema.org\",\"@type\":\"Article\"}]</script>",
@@ -282,46 +281,14 @@ func TestDefaultTemplatesExposeStableObsiteLandmarks(t *testing.T) {
 	}
 }
 
-func TestDefaultTemplatesUseModuleSafeMermaidLoader(t *testing.T) {
+func TestDefaultTemplatesLoadOfficialMermaidBundle(t *testing.T) {
 	t.Parallel()
-
 	tmpl := parseDefaultTemplateSet(t)
-	site := model.SiteConfig{
-		Title:              "Field Notes",
-		BaseURL:            "https://example.com/",
-		Language:           "en",
-		KaTeXCSSURL:        "assets/obsite-runtime/katex.min.css",
-		KaTeXJSURL:         "assets/obsite-runtime/katex.min.js",
-		KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js",
-		MermaidJSURL:       "assets/obsite-runtime/mermaid.esm.min.mjs",
-	}
-	if !strings.HasSuffix(site.MermaidJSURL, "mermaid.esm.min.mjs") {
-		t.Fatalf("default MermaidJSURL = %q, want ESM .mjs asset contract", site.MermaidJSURL)
-	}
-	escapedMermaidURL := strings.ReplaceAll("../"+site.MermaidJSURL, "/", `\/`)
-
-	got := renderTemplate(t, tmpl, model.PageData{
-		Kind:        model.PageNote,
-		SiteRootRel: "../",
-		Site:        site,
-		Title:       "Mermaid Note",
-		Content:     template.HTML("<div class=\"math math-display\">$$E = mc^2$$</div><pre class=\"mermaid\">graph TD;A-->B</pre>"),
-		HasMath:     true,
-		HasMermaid:  true,
-	})
-
-	assertContains(t, got, "<script type=\"module\">")
-	assertContains(t, got, "<link rel=\"stylesheet\" href=\"../"+site.KaTeXCSSURL+"\">")
-	assertContains(t, got, "<script defer src=\"../"+site.KaTeXJSURL+"\"></script>")
-	assertContains(t, got, "<script defer src=\"../"+site.KaTeXAutoRenderURL+"\"></script>")
-	assertContains(t, got, "import mermaid from \""+escapedMermaidURL+"\";")
-	assertContains(t, got, "mermaid.initialize({")
-	assertContains(t, got, "startOnLoad: true,")
-	assertContains(t, got, "theme: \"neutral\"")
-	assertContains(t, got, "securityLevel: \"loose\"")
+	site := model.SiteConfig{Title: "Field Notes", BaseURL: "https://example.com/", Language: "en", KaTeXCSSURL: "assets/obsite-runtime/katex.min.css", KaTeXJSURL: "assets/obsite-runtime/katex.min.js", KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js", MermaidJSURL: "assets/obsite-runtime/mermaid.min.js"}
+	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, SiteRootRel: "../", Site: site, Title: "Mermaid Note", Content: template.HTML(`<pre class="mermaid">graph TD;A-->B</pre>`), HasMermaid: true})
+	assertContains(t, got, `<script defer src="../assets/obsite-runtime/mermaid.min.js"></script>`)
+	assertContains(t, got, "window.mermaid.initialize")
 	assertNotContains(t, got, "cdn.jsdelivr.net")
-	assertNotContains(t, got, "window.mermaid")
-	assertNotContains(t, got, "<script defer src=\""+site.MermaidJSURL+"\"></script>")
 }
 
 func TestDefaultTemplatesIncludeThemeToggleAndThemeScript(t *testing.T) {
@@ -381,7 +348,7 @@ func TestDefaultTemplatesInitializeThemeToggleWithoutDOMContentLoaded(t *testing
 			KaTeXCSSURL:        "https://cdn.example.test/katex.css",
 			KaTeXJSURL:         "https://cdn.example.test/katex.js",
 			KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
-			MermaidJSURL:       "https://cdn.example.test/mermaid.esm.min.mjs",
+			MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
 		},
 		Title:      "Sequenced Theme Toggle",
 		Content:    template.HTML("<p>Rendered note body.</p>"),

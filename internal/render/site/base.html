@@ -178,13 +178,12 @@
   {{end}}
 
   {{if and .HasMermaid .Site.MermaidJSURL}}
-  <script type="module">
-    import mermaid from "{{pageAssetURL .SiteRootRel .Site.MermaidJSURL}}";
-
-    mermaid.initialize({
-      startOnLoad: true,
-      theme: "neutral",
-      securityLevel: "loose"
+  <script defer src="{{pageAssetURL .SiteRootRel .Site.MermaidJSURL}}"></script>
+  <script>
+    document.addEventListener("DOMContentLoaded", function () {
+      if (window.mermaid) {
+        window.mermaid.initialize({startOnLoad: true, theme: "neutral", securityLevel: "loose"});
+      }
     });
   </script>
   {{end}}

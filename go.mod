@@ -24,6 +24,7 @@ require (
 	github.com/dlclark/regexp2 v1.12.0 // indirect
 	github.com/forPelevin/gomoji v1.4.1 // indirect
 	github.com/go-sourcemap/sourcemap v2.1.4+incompatible // indirect
+	github.com/gohugoio/hugo-goldmark-extensions/passthrough v0.5.0 // indirect
 	github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect

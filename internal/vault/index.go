@@ -9,10 +9,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/markdown/comment"
-	"github.com/simp-lee/obsite/internal/markdown/math"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/simp-lee/obsite/internal/slug"
@@ -374,7 +374,7 @@ func extractNoteMetadata(
 			if isMermaidFence(current.Language(source)) {
 				note.HasMermaid = true
 			}
-		case *math.InlineMath, *math.DisplayMath:
+		case *passthrough.PassthroughInline, *passthrough.PassthroughBlock:
 			note.HasMath = true
 		}
 

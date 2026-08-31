@@ -31,7 +31,7 @@ const (
 	defaultKaTeXCSSURL        = "assets/obsite-runtime/katex.min.css"
 	defaultKaTeXJSURL         = "assets/obsite-runtime/katex.min.js"
 	defaultKaTeXAutoRenderURL = "assets/obsite-runtime/auto-render.min.js"
-	defaultMermaidJSURL       = "assets/obsite-runtime/mermaid.esm.min.mjs"
+	defaultMermaidJSURL       = "assets/obsite-runtime/mermaid.min.js"
 )
 
 type fileConfig struct {

@@ -6,12 +6,12 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	figure "github.com/mangoumbrella/goldmark-figure"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/callout"
 	internalembed "github.com/simp-lee/obsite/internal/markdown/embed"
 	internalhighlight "github.com/simp-lee/obsite/internal/markdown/highlight"
-	"github.com/simp-lee/obsite/internal/markdown/math"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/yuin/goldmark"
@@ -214,7 +214,10 @@ func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmh
 		&gmwikilink.Extender{Resolver: wikilinkResolver},
 		callout.New(),
 		internalhighlight.New(),
-		math.New(),
+		passthrough.New(passthrough.Config{
+			InlineDelimiters: []passthrough.Delimiters{{Open: "$", Close: "$"}, {Open: `\\(`, Close: `\\)`}},
+			BlockDelimiters:  []passthrough.Delimiters{{Open: "$$", Close: "$$"}, {Open: `\\[`, Close: `\\]`}},
+		}),
 	}
 }
 

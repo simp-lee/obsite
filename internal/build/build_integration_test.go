@@ -111,7 +111,7 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 		"assets/obsite-runtime/katex.min.css",
 		"assets/obsite-runtime/katex.min.js",
 		"assets/obsite-runtime/auto-render.min.js",
-		"assets/obsite-runtime/mermaid.esm.min.mjs",
+		"assets/obsite-runtime/mermaid.min.js",
 	} {
 		_ = readBuildOutputFile(t, outputPath, relPath)
 	}
@@ -161,7 +161,7 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 		{`href="../assets/obsite-runtime/katex.min.css"`, `href=../assets/obsite-runtime/katex.min.css`},
 		{`src="../assets/obsite-runtime/katex.min.js"`, `src=../assets/obsite-runtime/katex.min.js`},
 		{`src="../assets/obsite-runtime/auto-render.min.js"`, `src=../assets/obsite-runtime/auto-render.min.js`},
-		{`..\/assets\/obsite-runtime\/mermaid.esm.min.mjs`},
+		{`src="../assets/obsite-runtime/mermaid.min.js"`, `src=../assets/obsite-runtime/mermaid.min.js`},
 	} {
 		if !containsAny(landingHTML, expected...) {
 			t.Fatalf("launch-pad page missing local runtime asset reference %q\n%s", expected[0], landingHTML)
@@ -177,8 +177,8 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 			t.Fatalf("katex runtime JS missing %q\n%s", want, runtimeKatexJS)
 		}
 	}
-	runtimeMermaidJS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/mermaid.esm.min.mjs")
-	for _, want := range [][]byte{[]byte("http://www.w3.org/2000/svg"), []byte("mermaid-node"), []byte("mermaid-edge")} {
+	runtimeMermaidJS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/mermaid.min.js")
+	for _, want := range [][]byte{[]byte("http://www.w3.org/2000/svg"), []byte("11.17.2"), []byte(`globalThis["mermaid"]`)} {
 		if !bytes.Contains(runtimeMermaidJS, want) {
 			t.Fatalf("mermaid runtime JS missing %q\n%s", want, runtimeMermaidJS)
 		}
@@ -240,17 +240,11 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 	if bytes.Contains(landingHTML, []byte("hidden comment")) || bytes.Contains(landingHTML, []byte("Ignore Me")) {
 		t.Fatalf("launch-pad page leaked stripped comment text\n%s", landingHTML)
 	}
-	if !containsAny(landingHTML,
-		`class="math math-inline"`,
-		`class=math math-inline`,
-	) {
-		t.Fatalf("launch-pad page missing inline math output\n%s", landingHTML)
+	if !bytes.Contains(landingHTML, []byte(`$a^2+b^2=c^2$`)) {
+		t.Fatalf("launch-pad page missing inline math source\n%s", landingHTML)
 	}
-	if !containsAny(landingHTML,
-		`class="math math-display"`,
-		`class=math math-display`,
-	) {
-		t.Fatalf("launch-pad page missing display math output\n%s", landingHTML)
+	if !bytes.Contains(landingHTML, []byte(`E = mc^2`)) {
+		t.Fatalf("launch-pad page missing display math source\n%s", landingHTML)
 	}
 	if !containsAny(landingHTML,
 		`<pre class="mermaid">`,
@@ -388,7 +382,7 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/katex.min.css", http.StatusOK, "")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/katex.min.js", http.StatusOK, "")
 	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/auto-render.min.js", http.StatusOK, "")
-	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/mermaid.esm.min.mjs", http.StatusOK, "")
+	mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite-runtime/mermaid.min.js", http.StatusOK, "")
 	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/hero.png", http.StatusOK, ""), 1200, 630, "hero.png")
 	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/photo.png", http.StatusOK, ""), 960, 640, "photo.png")
 	assertPNGConfig(t, mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/diagram.png", http.StatusOK, ""), 960, 540, "diagram.png")

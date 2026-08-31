@@ -1735,15 +1735,16 @@ func TestEmitRuntimeAssetsWritesEmbeddedFiles(t *testing.T) {
 		t.Fatalf("EmitRuntimeAssets() error = %v", err)
 	}
 
-	for _, relPath := range RuntimeAssetOutputPaths() {
+	for _, asset := range runtimeTemplateAssets {
+		relPath := asset.outputPath
 		got, err := os.ReadFile(filepath.Join(outputDir, filepath.FromSlash(relPath)))
 		if err != nil {
 			t.Fatalf("os.ReadFile(%q) error = %v", relPath, err)
 		}
 
-		want, err := readEmbeddedAsset(filepath.Base(relPath))
+		want, err := readEmbeddedAsset(asset.name)
 		if err != nil {
-			t.Fatalf("readEmbeddedAsset(%q) error = %v", filepath.Base(relPath), err)
+			t.Fatalf("readEmbeddedAsset(%q) error = %v", asset.name, err)
 		}
 		if !bytes.Equal(got, want) {
 			t.Fatalf("EmitRuntimeAssets() wrote unexpected content for %q", relPath)
@@ -1765,6 +1766,6 @@ func testSiteConfig() model.SiteConfig {
 		KaTeXCSSURL:        "https://cdn.example.test/katex.css",
 		KaTeXJSURL:         "https://cdn.example.test/katex.js",
 		KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
-		MermaidJSURL:       "https://cdn.example.test/mermaid.esm.min.mjs",
+		MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
 	}
 }
