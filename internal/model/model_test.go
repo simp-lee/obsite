@@ -137,7 +137,6 @@ func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
 				IsActive: true,
 			}},
 		}},
-		HasSearch:    true,
 		HasCustomCSS: true,
 		HasRSS:       true,
 		FolderPath:   "notes/backend",
@@ -180,8 +179,8 @@ func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
 	if got := page.TimelineNotes[0].Summary; got != "Timeline summary" {
 		t.Fatalf("TimelineNotes[0].Summary = %q, want %q", got, "Timeline summary")
 	}
-	if !page.HasSearch || !page.HasCustomCSS || !page.HasRSS {
-		t.Fatalf("feature flags = (%t, %t, %t), want all true", page.HasSearch, page.HasCustomCSS, page.HasRSS)
+	if !page.HasCustomCSS || !page.HasRSS {
+		t.Fatalf("feature flags = (%t, %t), want both true", page.HasCustomCSS, page.HasRSS)
 	}
 }
 
@@ -195,16 +194,11 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 		ActiveThemeName: "serif",
 		ThemeRoot:       "/tmp/themes/serif",
 		CustomCSS:       "assets/custom.css",
-		Search: SearchConfig{
-			Enabled:         true,
-			PagefindPath:    "pagefind_extended",
-			PagefindVersion: "1.5.2",
-		},
-		Pagination: PaginationConfig{PageSize: 30},
-		Sidebar:    SidebarConfig{Enabled: true},
-		Popover:    PopoverConfig{Enabled: true},
-		Related:    RelatedConfig{Enabled: true, Count: 6},
-		RSS:        RSSConfig{Enabled: true},
+		Pagination:      PaginationConfig{PageSize: 30},
+		Sidebar:         SidebarConfig{Enabled: true},
+		Popover:         PopoverConfig{Enabled: true},
+		Related:         RelatedConfig{Enabled: true, Count: 6},
+		RSS:             RSSConfig{Enabled: true},
 		Timeline: TimelineConfig{
 			Enabled:    true,
 			AsHomepage: true,
@@ -225,9 +219,6 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	}
 	if cfg.ThemeRoot != "/tmp/themes/serif" {
 		t.Fatalf("ThemeRoot = %q, want %q", cfg.ThemeRoot, "/tmp/themes/serif")
-	}
-	if !cfg.Search.Enabled || cfg.Search.PagefindPath != "pagefind_extended" {
-		t.Fatalf("Search = %#v, want enabled pagefind config", cfg.Search)
 	}
 	if cfg.Pagination.PageSize != 30 {
 		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 30)

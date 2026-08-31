@@ -2,9 +2,7 @@ package build
 
 import (
 	"bytes"
-	"crypto/sha256"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -48,11 +46,7 @@ type e06ProbeReport struct {
 	NoOp           e06BuildObservation `json:"noOp"`
 	Mutation       e06BuildObservation `json:"mutation"`
 	ArtifactChecks struct {
-		PagefindEntryStableAfterNoOp      bool `json:"pagefindEntryStableAfterNoOp"`
-		PagefindUIStableAfterNoOp         bool `json:"pagefindUIStableAfterNoOp"`
-		CustomCSSStableAfterMutation      bool `json:"customCSSStableAfterMutation"`
-		PagefindEntryChangedAfterMutation bool `json:"pagefindEntryChangedAfterMutation"`
-		PagefindUIStableAfterMutation     bool `json:"pagefindUIStableAfterMutation"`
+		CustomCSSStableAfterMutation bool `json:"customCSSStableAfterMutation"`
 	} `json:"artifactChecks"`
 	ContentChecks struct {
 		ArchiveHasProbe               bool `json:"archiveHasProbe"`
@@ -153,8 +147,6 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 	allSnapshotFiles := append([]string{
 		"archive/index.html",
 		"assets/custom.css",
-		"_pagefind/pagefind-entry.json",
-		"_pagefind/pagefind-ui.js",
 	}, noOpStableFiles...)
 	baselineFiles := snapshotOutputFiles(t, outputPath, allSnapshotFiles)
 
@@ -208,8 +200,6 @@ func TestScopeE06FeatureVaultProbe(t *testing.T) {
 			FileChanged:     changedFiles,
 			FileStable:      stableFiles,
 		}
-		report.ArtifactChecks.PagefindEntryStableAfterNoOp = bytes.Equal(readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json"), baselineFiles["_pagefind/pagefind-entry.json"])
-		report.ArtifactChecks.PagefindUIStableAfterNoOp = bytes.Equal(readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js"), baselineFiles["_pagefind/pagefind-ui.js"])
 	})
 
 	mutationPath := filepath.Join(vaultPath, "notes", "archive.md")
@@ -271,8 +261,6 @@ Archive entry captures a focused incremental rebuild probe with lighthouse ledge
 		notesPageThreeHTML := readBuildOutputFile(t, outputPath, "notes/page/3/index.html")
 
 		report.ArtifactChecks.CustomCSSStableAfterMutation = bytes.Equal(readBuildOutputFile(t, outputPath, "assets/custom.css"), baselineFiles["assets/custom.css"])
-		report.ArtifactChecks.PagefindEntryChangedAfterMutation = !bytes.Equal(readBuildOutputFile(t, outputPath, "_pagefind/pagefind-entry.json"), baselineFiles["_pagefind/pagefind-entry.json"])
-		report.ArtifactChecks.PagefindUIStableAfterMutation = bytes.Equal(readBuildOutputFile(t, outputPath, "_pagefind/pagefind-ui.js"), baselineFiles["_pagefind/pagefind-ui.js"])
 		report.ContentChecks.ArchiveHasProbe = bytes.Contains(archiveHTML, []byte("focused incremental rebuild probe"))
 		report.ContentChecks.PageThreeHasProbe = bytes.Contains(pageThreeHTML, []byte("focused incremental rebuild probe"))
 		report.ContentChecks.NotesPageThreeHasFolderMarker = bytesContainsAny(notesPageThreeHTML, []byte(`data-e2e-custom-folder="notes"`), []byte(`data-e2e-custom-folder=notes`))
@@ -286,88 +274,9 @@ Archive entry captures a focused incremental rebuild probe with lighthouse ledge
 	}
 }
 
-func e06FeatureVaultBuildOptions(t *testing.T, cfg model.SiteConfig, diagnosticsWriter io.Writer) buildOptions {
+func e06FeatureVaultBuildOptions(t *testing.T, _ model.SiteConfig, diagnosticsWriter io.Writer) buildOptions {
 	t.Helper()
-
-	return buildOptions{
-		concurrency:       2,
-		diagnosticsWriter: diagnosticsWriter,
-		pagefindLookPath: func(name string) (string, error) {
-			if name != cfg.Search.PagefindPath {
-				t.Fatalf("pagefindLookPath() name = %q, want %q", name, cfg.Search.PagefindPath)
-			}
-			return "/usr/local/bin/pagefind_extended", nil
-		},
-		pagefindCommand: func(name string, args ...string) ([]byte, error) {
-			if name != "/usr/local/bin/pagefind_extended" {
-				t.Fatalf("pagefindCommand() name = %q, want %q", name, "/usr/local/bin/pagefind_extended")
-			}
-			if len(args) == 1 && args[0] == "--version" {
-				return []byte("pagefind_extended 1.5.2\n"), nil
-			}
-			if len(args) != 4 || args[0] != "--site" || args[2] != "--output-subdir" || args[3] != pagefindOutputSubdir {
-				t.Fatalf("pagefindCommand() args = %#v, want [--site <path> --output-subdir %s]", args, pagefindOutputSubdir)
-			}
-
-			bundlePath := filepath.Join(args[1], pagefindOutputSubdir)
-			writeMinimalPagefindBundle(t, bundlePath)
-			writeBuildTestFile(t, bundlePath, "pagefind-entry.json", fmt.Sprintf(
-				`{"version":"1.5.2","e06Digest":"%s","languages":{"en":{"hash":"en-test","page_count":1}}}`,
-				e06PagefindContentDigest(t, args[1]),
-			))
-			return []byte("Indexed 10 pages\n"), nil
-		},
-	}
-}
-
-func e06PagefindContentDigest(t *testing.T, sitePath string) string {
-	t.Helper()
-
-	hasher := sha256.New()
-	relPaths := make([]string, 0, 16)
-	pagefindRoot := filepath.Join(sitePath, pagefindOutputSubdir)
-	err := filepath.Walk(sitePath, func(currentPath string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info == nil {
-			return nil
-		}
-		if info.IsDir() {
-			if filepath.Clean(currentPath) == filepath.Clean(pagefindRoot) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !strings.EqualFold(filepath.Ext(currentPath), ".html") {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(sitePath, currentPath)
-		if err != nil {
-			return err
-		}
-		relPaths = append(relPaths, filepath.ToSlash(relPath))
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("filepath.Walk(%q) error = %v", sitePath, err)
-	}
-
-	sort.Strings(relPaths)
-	for _, relPath := range relPaths {
-		absPath := filepath.Join(sitePath, filepath.FromSlash(relPath))
-		data, err := os.ReadFile(absPath)
-		if err != nil {
-			t.Fatalf("os.ReadFile(%q) error = %v", absPath, err)
-		}
-		_, _ = hasher.Write([]byte(relPath))
-		_, _ = hasher.Write([]byte{0})
-		_, _ = hasher.Write(data)
-		_, _ = hasher.Write([]byte{0})
-	}
-
-	return fmt.Sprintf("%x", hasher.Sum(nil))
+	return buildOptions{concurrency: 2, diagnosticsWriter: diagnosticsWriter}
 }
 
 func runE06ThemeSwitchProbe(t *testing.T, workRoot string) e06ThemeSwitchProbeReport {

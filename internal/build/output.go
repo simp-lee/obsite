@@ -29,7 +29,6 @@ const (
 	outputOwnerSitemap    outputOwner = "sitemap"
 	outputOwnerRobots     outputOwner = "robots"
 	outputOwnerRSS        outputOwner = "RSS"
-	outputOwnerPagefind   outputOwner = "Pagefind"
 	outputOwnerCache      outputOwner = "build cache"
 )
 
@@ -42,7 +41,6 @@ type outputClaim struct {
 type outputDestinationNode struct {
 	children map[string]*outputDestinationNode
 	file     *outputClaim
-	prefix   *outputClaim
 	first    *outputClaim
 }
 
@@ -55,14 +53,6 @@ func newOutputDestinationPlan() *outputDestinationPlan {
 }
 
 func (plan *outputDestinationPlan) claimFile(relPath string, owner outputOwner, source string) error {
-	return plan.claim(relPath, owner, source, false)
-}
-
-func (plan *outputDestinationPlan) claimPrefix(relPath string, owner outputOwner, source string) error {
-	return plan.claim(relPath, owner, source, true)
-}
-
-func (plan *outputDestinationPlan) claim(relPath string, owner outputOwner, source string, prefix bool) error {
 	claim, key, err := normalizedOutputClaim(relPath, owner, source)
 	if err != nil {
 		return err
@@ -73,9 +63,6 @@ func (plan *outputDestinationPlan) claim(relPath string, owner outputOwner, sour
 	for _, segment := range strings.Split(key, "/") {
 		if node.file != nil {
 			return outputClaimConflict(*node.file, claim)
-		}
-		if node.prefix != nil {
-			return outputClaimConflict(*node.prefix, claim)
 		}
 		if node.children == nil {
 			node.children = make(map[string]*outputDestinationNode)
@@ -90,27 +77,17 @@ func (plan *outputDestinationPlan) claim(relPath string, owner outputOwner, sour
 	}
 
 	if node.file != nil {
-		if !prefix && node.file.owner == claim.owner && node.file.path == claim.path && node.file.source == claim.source {
+		if node.file.owner == claim.owner && node.file.path == claim.path && node.file.source == claim.source {
 			return nil
 		}
 		return outputClaimConflict(*node.file, claim)
-	}
-	if node.prefix != nil {
-		if prefix && node.prefix.owner == claim.owner && node.prefix.path == claim.path && node.prefix.source == claim.source {
-			return nil
-		}
-		return outputClaimConflict(*node.prefix, claim)
 	}
 	if node.first != nil {
 		return outputClaimConflict(*node.first, claim)
 	}
 
 	stored := claim
-	if prefix {
-		node.prefix = &stored
-	} else {
-		node.file = &stored
-	}
+	node.file = &stored
 	for _, ancestor := range lineage {
 		if ancestor.first == nil {
 			ancestor.first = &stored
@@ -239,11 +216,6 @@ func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, fol
 	}
 	if cfg.RSS.Enabled {
 		if err := plan.claimFile("index.xml", outputOwnerRSS, "recent notes"); err != nil {
-			return err
-		}
-	}
-	if cfg.Search.Enabled {
-		if err := plan.claimPrefix(pagefindOutputSubdir, outputOwnerPagefind, "search index"); err != nil {
 			return err
 		}
 	}

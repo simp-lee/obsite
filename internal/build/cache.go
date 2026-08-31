@@ -32,7 +32,7 @@ import (
 const (
 	cacheManifestDir             = ".obsite-cache"
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion         = 2
+	cacheManifestVersion         = 3
 	defaultTemplateSigKey        = "default"
 	missingTemplateSigKey        = "missing"
 	cacheSignatureSaltKey        = "phase-21-step-50"
@@ -102,14 +102,13 @@ type Options struct {
 
 // CacheManifest stores the incremental-build state that can be safely reused on the next run.
 type CacheManifest struct {
-	Version              int                          `json:"version"`
-	BuildABISignature    string                       `json:"buildABISignature"`
-	ConfigSignature      string                       `json:"configSignature"`
-	TemplateSignature    string                       `json:"templateSignature"`
-	SearchIndexSignature string                       `json:"searchIndexSignature,omitempty"`
-	Graph                model.LinkGraph              `json:"graph"`
-	Pages                map[string]string            `json:"pages,omitempty"`
-	Notes                map[string]cacheManifestNote `json:"notes"`
+	Version           int                          `json:"version"`
+	BuildABISignature string                       `json:"buildABISignature"`
+	ConfigSignature   string                       `json:"configSignature"`
+	TemplateSignature string                       `json:"templateSignature"`
+	Graph             model.LinkGraph              `json:"graph"`
+	Pages             map[string]string            `json:"pages,omitempty"`
+	Notes             map[string]cacheManifestNote `json:"notes"`
 }
 
 type cacheManifestNote struct {
@@ -559,56 +558,6 @@ func buildInputSignature(value any) (string, error) {
 
 	hasher := newCacheSignatureHasher("input")
 	cacheHashWriteString(hasher, string(data))
-	return hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func buildSearchIndexInputSignature(outputRoot string) (string, error) {
-	trimmedRoot := strings.TrimSpace(outputRoot)
-	if trimmedRoot == "" {
-		return "", fmt.Errorf("search index output root is required")
-	}
-
-	hasher := newCacheSignatureHasher("search-index")
-	err := filepath.Walk(trimmedRoot, func(currentPath string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if currentPath == trimmedRoot {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(trimmedRoot, currentPath)
-		if err != nil {
-			return err
-		}
-		relPath = filepath.ToSlash(relPath)
-
-		if info.IsDir() {
-			switch relPath {
-			case cacheManifestDir, pagefindOutputSubdir:
-				return filepath.SkipDir
-			}
-			return nil
-		}
-
-		if !strings.EqualFold(filepath.Ext(relPath), ".html") {
-			return nil
-		}
-
-		data, err := os.ReadFile(currentPath)
-		if err != nil {
-			return err
-		}
-		data = normalizeHTMLForSearchSignature(data)
-
-		cacheHashWriteString(hasher, relPath)
-		cacheHashWriteString(hasher, string(data))
-		return nil
-	})
-	if err != nil {
-		return "", fmt.Errorf("walk search index inputs in %q: %w", trimmedRoot, err)
-	}
-
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
@@ -1245,16 +1194,15 @@ func cacheSeverityOrder(severity diag.Severity) int {
 	}
 }
 
-func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string, searchIndexSignature string) *CacheManifest {
+func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
 	manifest := &CacheManifest{
-		Version:              cacheManifestVersion,
-		BuildABISignature:    strings.TrimSpace(buildABISignature),
-		ConfigSignature:      configSignature,
-		TemplateSignature:    templateSignature,
-		SearchIndexSignature: strings.TrimSpace(searchIndexSignature),
-		Graph:                cloneLinkGraph(graph),
-		Pages:                cloneSignatureMap(pageSignatures),
-		Notes:                make(map[string]cacheManifestNote, len(noteStates)),
+		Version:           cacheManifestVersion,
+		BuildABISignature: strings.TrimSpace(buildABISignature),
+		ConfigSignature:   configSignature,
+		TemplateSignature: templateSignature,
+		Graph:             cloneLinkGraph(graph),
+		Pages:             cloneSignatureMap(pageSignatures),
+		Notes:             make(map[string]cacheManifestNote, len(noteStates)),
 	}
 
 	for _, relPath := range sortedNoteBuildStatePaths(noteStates) {

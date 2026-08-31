@@ -45,15 +45,6 @@ func TestOutputOwnerRegistryRejectsCrossOwnerAndAncestorCollisions(t *testing.T)
 				return plan.claimFile("style.css", outputOwnerStyle, "site stylesheet")
 			},
 		},
-		{
-			name: "owned prefix",
-			claims: func(plan *outputDestinationPlan) error {
-				if err := plan.claimPrefix("_pagefind", outputOwnerPagefind, "search index"); err != nil {
-					return err
-				}
-				return plan.claimFile("_pagefind/index.html", outputOwnerPage, "note")
-			},
-		},
 	}
 
 	for _, tt := range tests {

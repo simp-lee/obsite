@@ -158,7 +158,6 @@ type NotePageInput struct {
 	RelatedArticles []model.RelatedArticle
 	Breadcrumbs     []model.Breadcrumb
 	SidebarTree     []model.SidebarNode
-	HasSearch       bool
 }
 
 // TagPageInput supplies the data needed to render a tag archive page.
@@ -172,7 +171,6 @@ type TagPageInput struct {
 	RelPath      string
 	Pagination   *model.PaginationData
 	SidebarTree  []model.SidebarNode
-	HasSearch    bool
 }
 
 // FolderPageInput supplies the data needed to render a folder listing page.
@@ -185,7 +183,6 @@ type FolderPageInput struct {
 	RelPath      string
 	Pagination   *model.PaginationData
 	SidebarTree  []model.SidebarNode
-	HasSearch    bool
 }
 
 // TimelinePageInput supplies the data needed to render a recent-notes timeline page.
@@ -198,7 +195,6 @@ type TimelinePageInput struct {
 	RelPath      string
 	Pagination   *model.PaginationData
 	SidebarTree  []model.SidebarNode
-	HasSearch    bool
 }
 
 // IndexPageInput supplies the data needed to render the index page.
@@ -209,7 +205,6 @@ type IndexPageInput struct {
 	RelPath      string
 	Pagination   *model.PaginationData
 	SidebarTree  []model.SidebarNode
-	HasSearch    bool
 }
 
 // NotFoundPageInput supplies the data needed to render the 404 page.
@@ -218,7 +213,6 @@ type NotFoundPageInput struct {
 	RecentNotes  []model.NoteSummary
 	LastModified time.Time
 	SidebarTree  []model.SidebarNode
-	HasSearch    bool
 }
 
 // RenderNote renders a note page to HTML using the embedded default templates.
@@ -266,7 +260,6 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 		RelatedArticles: cloneRelatedArticles(input.RelatedArticles),
 		HasMath:         input.Note.HasMath,
 		HasMermaid:      input.Note.HasMermaid,
-		HasSearch:       input.HasSearch,
 		HasCustomCSS:    hasCustomCSS(input.Site),
 		Breadcrumbs:     defaultNoteBreadcrumbs(input.Breadcrumbs, relPath, input.Note, displayTitle),
 		SidebarTree:     cloneSidebarTree(input.SidebarTree),
@@ -881,7 +874,6 @@ func RenderTagPage(input TagPageInput) (RenderedPage, error) {
 		ChildTags:    cloneTagLinks(input.ChildTags),
 		LastModified: input.LastModified,
 		Pagination:   clonePagination(input.Pagination),
-		HasSearch:    input.HasSearch,
 		HasCustomCSS: hasCustomCSS(input.Site),
 		Breadcrumbs:  defaultTagBreadcrumbs(input.Breadcrumbs, relPath, input.Tag),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
@@ -914,7 +906,6 @@ func RenderFolderPage(input FolderPageInput) (RenderedPage, error) {
 		FolderChildren: cloneNoteSummaries(input.Children),
 		LastModified:   input.LastModified,
 		Pagination:     clonePagination(input.Pagination),
-		HasSearch:      input.HasSearch,
 		HasCustomCSS:   hasCustomCSS(input.Site),
 		Breadcrumbs:    defaultFolderBreadcrumbs(input.Breadcrumbs, relPath, folderPath, title),
 		SidebarTree:    cloneSidebarTree(input.SidebarTree),
@@ -946,7 +937,6 @@ func RenderTimelinePage(input TimelinePageInput) (RenderedPage, error) {
 		TimelineNotes: cloneNoteSummaries(input.Notes),
 		LastModified:  input.LastModified,
 		Pagination:    clonePagination(input.Pagination),
-		HasSearch:     input.HasSearch,
 		HasCustomCSS:  hasCustomCSS(input.Site),
 		Breadcrumbs:   defaultTimelineBreadcrumbs(relPath, input.AsHomepage),
 		SidebarTree:   cloneSidebarTree(input.SidebarTree),
@@ -968,7 +958,6 @@ func RenderIndex(input IndexPageInput) (RenderedPage, error) {
 		RecentNotes:  cloneNoteSummaries(input.RecentNotes),
 		LastModified: input.LastModified,
 		Pagination:   clonePagination(input.Pagination),
-		HasSearch:    input.HasSearch,
 		HasCustomCSS: hasCustomCSS(input.Site),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
@@ -987,7 +976,6 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 		RelPath:      notFoundOutputPath,
 		RecentNotes:  cloneNoteSummaries(input.RecentNotes),
 		LastModified: input.LastModified,
-		HasSearch:    input.HasSearch,
 		HasCustomCSS: hasCustomCSS(input.Site),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}

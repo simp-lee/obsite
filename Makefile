@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := check
 
-.PHONY: fmt fmt-check lint test check install-pagefind
+.PHONY: fmt fmt-check lint test check
 
 GO ?= go
 GO_ENV_GOBIN := $(strip $(shell $(GO) env GOBIN 2>/dev/null))
@@ -15,7 +15,6 @@ PKGS ?= ./...
 GOLANGCI_LINT ?= golangci-lint
 GOFUMPT ?= gofumpt
 GOIMPORTS ?= goimports
-PROJECT_DIR ?= .
 
 fmt:
 	@command -v $(GOIMPORTS) >/dev/null 2>&1 || { echo "$(GOIMPORTS) not found; install with: go install golang.org/x/tools/cmd/goimports@latest"; exit 1; }
@@ -39,8 +38,5 @@ lint:
 
 test:
 	$(GO) test $(PKGS)
-
-install-pagefind:
-	sh scripts/install-pagefind.sh "$(PROJECT_DIR)"
 
 check: fmt-check lint test

@@ -155,7 +155,6 @@
   </script>
 
   <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
-  {{if .HasSearch}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.css" data-obsite-search-ui="true">{{end}}
   {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
 
   {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
@@ -221,11 +220,6 @@
         </div>
         {{with .Site.Description}}<p class="site-description">{{.}}</p>{{end}}
         {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}
-        {{if .HasSearch}}
-        <div class="site-search" data-obsite-search-ui="true">
-          <div id="obsite-search-root"></div>
-        </div>
-        {{end}}
       </div>
     </header>
 
@@ -860,12 +854,6 @@
   </script>
   {{end}}
 
-  {{if .HasSearch}}
-  <script src="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>
-  <script data-obsite-search-ui="true">
-    new PagefindUI({ element: "#obsite-search-root" });
-  </script>
-  {{end}}
 </body>
 </html>
 {{end}}

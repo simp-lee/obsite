@@ -141,39 +141,6 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"cdn.jsdelivr.net",
 				"renderMathInElement",
 				"window.mermaid",
-				"pagefind-ui.css",
-				"pagefind-ui.js",
-				`data-obsite-search-ui="true"`,
-				`<div id="obsite-search-root"></div>`,
-			},
-		},
-		{
-			name: "note page with search ready",
-			data: model.PageData{
-				Kind:        model.PageNote,
-				SiteRootRel: "../../",
-				Site: model.SiteConfig{
-					Title:    "Field Notes",
-					Language: "en",
-					Search: model.SearchConfig{
-						Enabled: true,
-					},
-				},
-				Title:     "Searchable Note",
-				Content:   template.HTML("<p>Rendered note body.</p>"),
-				HasSearch: true,
-			},
-			want: []string{
-				`<link rel="stylesheet" href="../../_pagefind/pagefind-ui.css" data-obsite-search-ui="true">`,
-				`<div class="site-search" data-obsite-search-ui="true">`,
-				`<div id="obsite-search-root"></div>`,
-				`<script src="../../_pagefind/pagefind-ui.js" data-obsite-search-ui="true"></script>`,
-				`<script data-obsite-search-ui="true">`,
-				`new PagefindUI({ element: "#obsite-search-root" });`,
-			},
-			wantAbsent: []string{
-				`showSubResults`,
-				`DOMContentLoaded`,
 			},
 		},
 		{
@@ -304,40 +271,6 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				assertNotContains(t, got, wantAbsent)
 			}
 		})
-	}
-}
-
-func TestRenderIndexKeepsSearchDisabledUntilReady(t *testing.T) {
-	t.Parallel()
-
-	got, err := RenderIndex(IndexPageInput{
-		Site: model.SiteConfig{
-			Title: "Field Notes",
-			Search: model.SearchConfig{
-				Enabled: true,
-			},
-		},
-		RecentNotes: []model.NoteSummary{{
-			Title: "Guide",
-			URL:   "guide/",
-		}},
-	})
-	if err != nil {
-		t.Fatalf("RenderIndex() error = %v", err)
-	}
-	if got.Page.HasSearch {
-		t.Fatalf("RenderIndex().Page.HasSearch = %t, want false before Pagefind succeeds", got.Page.HasSearch)
-	}
-	for _, forbidden := range [][]byte{
-		[]byte(`pagefind-ui.css`),
-		[]byte(`pagefind-ui.js`),
-		[]byte(`data-obsite-search-ui`),
-		[]byte(`id="obsite-search-root"`),
-		[]byte(`PagefindUI`),
-	} {
-		if bytes.Contains(got.HTML, forbidden) {
-			t.Fatalf("RenderIndex() HTML unexpectedly exposes search before readiness\n%s", got.HTML)
-		}
 	}
 }
 

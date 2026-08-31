@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -63,8 +62,6 @@ type buildOptions struct {
 	diagnosticsWriter io.Writer
 	force             bool
 	minifier          *minify.M
-	pagefindLookPath  func(string) (string, error)
-	pagefindCommand   func(string, ...string) ([]byte, error)
 	testNotePageHook  func(render.NotePageInput)
 }
 
@@ -172,12 +169,9 @@ const (
 	managedOutputMarkerFilename = ".obsite-output"
 	managedOutputMarkerContents = "managed by obsite\n"
 	customCSSOutputPath         = "assets/custom.css"
-	pagefindOutputSubdir        = "_pagefind"
 )
 
 var paginationGeneratedHrefPattern = regexp.MustCompile(`(<(?:link\b[^>]*\brel=(?:"(?:prev|next)"|(?:prev|next))\b[^>]*|a\b[^>]*\bclass=(?:"[^"]*\bpagination-(?:link|page)\b[^"]*"|'[^']*\bpagination-(?:link|page)\b[^']*'|[^\s>]*pagination-(?:link|page)[^\s>]*)[^>]*?)\bhref=)(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
-
-var pagefindVersionPattern = regexp.MustCompile(`\bv?(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?)\b`)
 
 var minimalSiteLastModified = time.Unix(0, 0).UTC()
 
@@ -523,19 +517,17 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := writeManagedOutputMarker(stagingOutputPath); err != nil {
 		return result, err
 	}
-	searchReadyArchivePages := make(map[string]render.RenderedPage)
-
-	writeSitePages := func(searchReady bool, pageDiagnostics *diag.Collector) ([]model.PageData, map[string]string, error) {
+	writeSitePages := func(pageDiagnostics *diag.Collector) ([]model.PageData, map[string]string, error) {
 		sitemapPages := make([]model.PageData, 0, len(noteStatesByPath)+len(idx.Tags)+len(folderPages)+2)
 		pageSignatures := make(map[string]string)
 
-		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, sidebarTree, searchReady, notePageDirty, noteStatesByPath, relatedArticlesByPath, options.testNotePageHook)
+		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, sidebarTree, notePageDirty, noteStatesByPath, relatedArticlesByPath, options.testNotePageHook)
 		if err != nil {
 			return nil, nil, err
 		}
 		sitemapPages = append(sitemapPages, notePages...)
 
-		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
+		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -543,14 +535,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result.TagPages = len(tagPages)
 		sitemapPages = append(sitemapPages, tagPages...)
 
-		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
+		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
 		mergePageSignatures(pageSignatures, folderSignatures)
 		sitemapPages = append(sitemapPages, renderedFolderPages...)
 
-		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
+		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -558,7 +550,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages = append(sitemapPages, timelinePages...)
 
 		if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
-			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, searchReady, fullDirty, searchReadyArchivePages)
+			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, fullDirty)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -571,7 +563,6 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			RecentNotes:  append([]model.NoteSummary(nil), recentNotes...),
 			LastModified: siteLastModified,
 			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
-			HasSearch:    searchReady,
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("render 404 page: %w", err)
@@ -583,7 +574,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return sitemapPages, pageSignatures, nil
 	}
 
-	sitemapPages, pageSignatures, err := writeSitePages(false, diagnostics)
+	sitemapPages, pageSignatures, err := writeSitePages(diagnostics)
 	if err != nil {
 		return result, err
 	}
@@ -637,29 +628,8 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}
 
-	searchIndexSignature := ""
-	if cfg.Search.Enabled {
-		searchIndexSignature, err = buildSearchIndexInputSignature(stagingOutputPath)
-		if err != nil {
-			return result, fmt.Errorf("compute search index signature: %w", err)
-		}
-
-		reusedSearchIndex, err := tryReuseSearchIndex(previousManifest, previousOutputPath, stagingOutputPath, searchIndexSignature, cfg.ActiveThemeName, fullDirty)
-		if err != nil {
-			return result, fmt.Errorf("reuse search index bundle: %w", err)
-		}
-		if !reusedSearchIndex {
-			if err := runPagefindIndex(stagingOutputPath, cfg.Search, cfg.ActiveThemeName, options); err != nil {
-				return result, fmt.Errorf("build search index: %w", err)
-			}
-		}
-		if _, pageSignatures, err = writeSitePages(true, nil); err != nil {
-			return result, err
-		}
-	}
-
 	if !disableCacheReuse {
-		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, result.Graph, noteStatesByPath, pageSignatures, searchIndexSignature)
+		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, result.Graph, noteStatesByPath, pageSignatures)
 		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
 			return result, err
 		}
@@ -676,416 +646,7 @@ func normalizeBuildOptions(options buildOptions) buildOptions {
 	if options.minifier == nil {
 		options.minifier = newSiteMinifier()
 	}
-	if options.pagefindLookPath == nil {
-		options.pagefindLookPath = exec.LookPath
-	}
-	if options.pagefindCommand == nil {
-		options.pagefindCommand = func(name string, args ...string) ([]byte, error) {
-			return exec.Command(name, args...).CombinedOutput()
-		}
-	}
 	return options
-}
-
-func runPagefindIndex(outputPath string, searchCfg model.SearchConfig, activeThemeName string, options buildOptions) error {
-	binaryPath, err := options.pagefindLookPath(searchCfg.PagefindPath)
-	if err != nil {
-		return fmt.Errorf(
-			"pagefind binary %q not found; install Pagefind Extended %s or update search.pagefindPath: %w",
-			searchCfg.PagefindPath,
-			normalizePagefindVersion(searchCfg.PagefindVersion),
-			err,
-		)
-	}
-
-	reportedVersion, err := pagefindBinaryVersion(binaryPath, options.pagefindCommand)
-	if err != nil {
-		return err
-	}
-
-	expectedVersion := normalizePagefindVersion(searchCfg.PagefindVersion)
-	if reportedVersion != expectedVersion {
-		return fmt.Errorf("pagefind binary %q reported version %q; want %q", binaryPath, reportedVersion, expectedVersion)
-	}
-
-	output, err := options.pagefindCommand(binaryPath, "--site", outputPath, "--output-subdir", pagefindOutputSubdir)
-	if err != nil {
-		return fmt.Errorf("pagefind indexing failed for %q: %w%s", binaryPath, err, formatCommandOutputDetails(output))
-	}
-	if err := finalizePagefindOutput(outputPath, activeThemeName); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func tryReuseSearchIndex(previous *CacheManifest, previousOutputPath string, outputPath string, currentSignature string, activeThemeName string, fullDirty bool) (bool, error) {
-	if fullDirty || previous == nil {
-		return false, nil
-	}
-	if strings.TrimSpace(currentSignature) == "" || strings.TrimSpace(previous.SearchIndexSignature) == "" {
-		return false, nil
-	}
-	if previous.SearchIndexSignature != currentSignature {
-		return false, nil
-	}
-
-	copied, err := copyDirectoryFromPreviousOutput(previousOutputPath, outputPath, pagefindOutputSubdir)
-	if err != nil {
-		return false, err
-	}
-	if !copied {
-		return false, nil
-	}
-	if err := finalizePagefindOutput(outputPath, activeThemeName); err != nil {
-		_ = os.RemoveAll(filepath.Join(outputPath, pagefindOutputSubdir))
-		return false, nil
-	}
-
-	return true, nil
-}
-
-func copyDirectoryFromPreviousOutput(previousOutputPath string, outputPath string, relDir string) (bool, error) {
-	if strings.TrimSpace(previousOutputPath) == "" {
-		return false, nil
-	}
-
-	sourceRoot := filepath.Join(previousOutputPath, filepath.FromSlash(relDir))
-	info, err := os.Stat(sourceRoot)
-	if err != nil || !info.IsDir() {
-		return false, nil
-	}
-
-	var writeErr error
-	copied := false
-	err = filepath.Walk(sourceRoot, func(currentPath string, info os.FileInfo, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if info.IsDir() {
-			return nil
-		}
-
-		relPath, err := filepath.Rel(sourceRoot, currentPath)
-		if err != nil {
-			return err
-		}
-
-		data, err := os.ReadFile(currentPath)
-		if err != nil {
-			return err
-		}
-
-		targetRelPath := path.Join(relDir, filepath.ToSlash(relPath))
-		if err := writeOutputFile(outputPath, targetRelPath, data); err != nil {
-			writeErr = err
-			return err
-		}
-
-		copied = true
-		return nil
-	})
-	if err != nil {
-		_ = os.RemoveAll(filepath.Join(outputPath, filepath.FromSlash(relDir)))
-		if writeErr != nil {
-			return false, writeErr
-		}
-		return false, nil
-	}
-
-	return copied, nil
-}
-
-func pagefindBinaryVersion(binaryPath string, runCommand func(string, ...string) ([]byte, error)) (string, error) {
-	output, err := runCommand(binaryPath, "--version")
-	if err != nil {
-		return "", fmt.Errorf("check Pagefind version with %q --version: %w%s", binaryPath, err, formatCommandOutputDetails(output))
-	}
-
-	reportedVersion := extractPagefindVersion(output)
-	if reportedVersion == "" {
-		return "", fmt.Errorf("pagefind binary %q returned an unreadable version string: %q", binaryPath, strings.TrimSpace(string(output)))
-	}
-
-	return reportedVersion, nil
-}
-
-func extractPagefindVersion(output []byte) string {
-	matches := pagefindVersionPattern.FindSubmatch(output)
-	if len(matches) != 2 {
-		return ""
-	}
-
-	return normalizePagefindVersion(string(matches[1]))
-}
-
-func normalizePagefindVersion(value string) string {
-	trimmed := strings.TrimSpace(value)
-	trimmed = strings.TrimPrefix(trimmed, "v")
-	trimmed = strings.TrimPrefix(trimmed, "V")
-	return trimmed
-}
-
-type pagefindEntryManifest struct {
-	Languages map[string]pagefindEntryLanguage `json:"languages"`
-}
-
-type pagefindEntryLanguage struct {
-	Hash string `json:"hash"`
-	Wasm string `json:"wasm"`
-}
-
-func validatePagefindOutput(outputPath string) error {
-	entryRelPath := filepath.Join(pagefindOutputSubdir, "pagefind-entry.json")
-	for _, relPath := range []string{
-		entryRelPath,
-		filepath.Join(pagefindOutputSubdir, "pagefind.js"),
-		filepath.Join(pagefindOutputSubdir, "wasm.unknown.pagefind"),
-		filepath.Join(pagefindOutputSubdir, "pagefind-ui.css"),
-		filepath.Join(pagefindOutputSubdir, "pagefind-ui.js"),
-	} {
-		if err := validatePagefindOutputFile(outputPath, relPath); err != nil {
-			return err
-		}
-	}
-
-	manifest, err := readPagefindEntryManifest(outputPath, entryRelPath)
-	if err != nil {
-		return err
-	}
-	if err := validateReferencedPagefindAssets(outputPath, entryRelPath, manifest); err != nil {
-		return err
-	}
-
-	for _, requiredPattern := range []struct {
-		relDir string
-		suffix string
-	}{
-		{relDir: pagefindOutputSubdir, suffix: ".pf_meta"},
-		{relDir: filepath.Join(pagefindOutputSubdir, "index"), suffix: ".pf_index"},
-		{relDir: filepath.Join(pagefindOutputSubdir, "fragment"), suffix: ".pf_fragment"},
-	} {
-		if err := validatePagefindOutputHasFileWithSuffix(outputPath, requiredPattern.relDir, requiredPattern.suffix); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-var pagefindEntryTopLevelKeyOrder = []string{"version", "theme", "languages", "include_characters"}
-
-func finalizePagefindOutput(outputPath string, activeThemeName string) error {
-	if err := rewritePagefindEntryTheme(outputPath, activeThemeName); err != nil {
-		return err
-	}
-
-	return validatePagefindOutput(outputPath)
-}
-
-func rewritePagefindEntryTheme(outputPath string, activeThemeName string) error {
-	entryRelPath := filepath.Join(pagefindOutputSubdir, "pagefind-entry.json")
-	manifestPath := filepath.ToSlash(entryRelPath)
-	absolutePath := filepath.Join(outputPath, entryRelPath)
-
-	data, err := os.ReadFile(absolutePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("pagefind indexing did not produce %q", manifestPath)
-		}
-		return fmt.Errorf("read generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-
-	fields := make(map[string]json.RawMessage)
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return fmt.Errorf("parse generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-
-	trimmedTheme := strings.TrimSpace(activeThemeName)
-	if trimmedTheme == "" {
-		delete(fields, "theme")
-	} else {
-		themeValue, err := json.Marshal(trimmedTheme)
-		if err != nil {
-			return fmt.Errorf("marshal generated Pagefind manifest %q theme marker: %w", manifestPath, err)
-		}
-		fields["theme"] = themeValue
-	}
-
-	rewritten, err := marshalOrderedRawJSONObject(fields, pagefindEntryTopLevelKeyOrder)
-	if err != nil {
-		return fmt.Errorf("marshal generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-	if bytes.Equal(data, rewritten) {
-		return nil
-	}
-
-	if err := os.WriteFile(absolutePath, rewritten, 0o644); err != nil {
-		return fmt.Errorf("write generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-
-	return nil
-}
-
-func marshalOrderedRawJSONObject(fields map[string]json.RawMessage, preferredOrder []string) ([]byte, error) {
-	orderedKeys := make([]string, 0, len(fields))
-	seen := make(map[string]struct{}, len(fields))
-	for _, key := range preferredOrder {
-		if _, ok := fields[key]; !ok {
-			continue
-		}
-		orderedKeys = append(orderedKeys, key)
-		seen[key] = struct{}{}
-	}
-
-	extraKeys := make([]string, 0, len(fields)-len(orderedKeys))
-	for key := range fields {
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		extraKeys = append(extraKeys, key)
-	}
-	sort.Strings(extraKeys)
-	orderedKeys = append(orderedKeys, extraKeys...)
-
-	var buf bytes.Buffer
-	buf.WriteByte('{')
-	for index, key := range orderedKeys {
-		if index > 0 {
-			buf.WriteByte(',')
-		}
-
-		encodedKey, err := json.Marshal(key)
-		if err != nil {
-			return nil, err
-		}
-		buf.Write(encodedKey)
-		buf.WriteByte(':')
-
-		value := bytes.TrimSpace(fields[key])
-		if len(value) == 0 {
-			buf.WriteString("null")
-			continue
-		}
-		buf.Write(value)
-	}
-	buf.WriteByte('}')
-
-	return buf.Bytes(), nil
-}
-
-func readPagefindEntryManifest(outputPath string, relPath string) (pagefindEntryManifest, error) {
-	absolutePath := filepath.Join(outputPath, relPath)
-	manifestPath := filepath.ToSlash(relPath)
-	data, err := os.ReadFile(absolutePath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return pagefindEntryManifest{}, fmt.Errorf("pagefind indexing did not produce %q", manifestPath)
-		}
-		return pagefindEntryManifest{}, fmt.Errorf("read generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-
-	var manifest pagefindEntryManifest
-	if err := json.Unmarshal(data, &manifest); err != nil {
-		return pagefindEntryManifest{}, fmt.Errorf("parse generated Pagefind manifest %q: %w", manifestPath, err)
-	}
-
-	return manifest, nil
-}
-
-func validateReferencedPagefindAssets(outputPath string, entryRelPath string, manifest pagefindEntryManifest) error {
-	if len(manifest.Languages) == 0 {
-		return nil
-	}
-
-	languages := make([]string, 0, len(manifest.Languages))
-	for language := range manifest.Languages {
-		languages = append(languages, language)
-	}
-	sort.Strings(languages)
-
-	for _, language := range languages {
-		entry := manifest.Languages[language]
-		hash := strings.TrimSpace(entry.Hash)
-		if hash == "" {
-			return fmt.Errorf("pagefind entry %q is missing hash for language %q", filepath.ToSlash(entryRelPath), language)
-		}
-
-		if err := validateReferencedPagefindAsset(outputPath, entryRelPath, language, filepath.Join(pagefindOutputSubdir, fmt.Sprintf("pagefind.%s.pf_meta", hash))); err != nil {
-			return err
-		}
-
-		wasmLanguage := strings.TrimSpace(entry.Wasm)
-		if wasmLanguage == "" {
-			continue
-		}
-
-		if err := validateReferencedPagefindAsset(outputPath, entryRelPath, language, filepath.Join(pagefindOutputSubdir, fmt.Sprintf("wasm.%s.pagefind", wasmLanguage))); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-func validateReferencedPagefindAsset(outputPath string, entryRelPath string, language string, relPath string) error {
-	entryPath := filepath.ToSlash(entryRelPath)
-	assetPath := filepath.ToSlash(relPath)
-	info, err := os.Stat(filepath.Join(outputPath, relPath))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("pagefind entry %q references missing asset %q for language %q", entryPath, assetPath, language)
-		}
-		return fmt.Errorf("inspect generated Pagefind asset %q referenced by %q for language %q: %w", assetPath, entryPath, language, err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("pagefind entry %q references directory %q for language %q, want file", entryPath, assetPath, language)
-	}
-
-	return nil
-}
-
-func validatePagefindOutputFile(outputPath string, relPath string) error {
-	info, err := os.Stat(filepath.Join(outputPath, relPath))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("pagefind indexing did not produce %q", filepath.ToSlash(relPath))
-		}
-		return fmt.Errorf("inspect generated Pagefind asset %q: %w", filepath.ToSlash(relPath), err)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("generated Pagefind asset %q is a directory, want file", filepath.ToSlash(relPath))
-	}
-
-	return nil
-}
-
-func validatePagefindOutputHasFileWithSuffix(outputPath string, relDir string, suffix string) error {
-	entries, err := os.ReadDir(filepath.Join(outputPath, relDir))
-	if err != nil {
-		pattern := filepath.ToSlash(filepath.Join(relDir, "*"+suffix))
-		if errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("pagefind indexing did not produce any %q files", pattern)
-		}
-		return fmt.Errorf("inspect generated Pagefind asset directory %q: %w", filepath.ToSlash(relDir), err)
-	}
-
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), suffix) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("pagefind indexing did not produce any %q files", filepath.ToSlash(filepath.Join(relDir, "*"+suffix)))
-}
-
-func formatCommandOutputDetails(output []byte) string {
-	trimmed := strings.TrimSpace(string(output))
-	if trimmed == "" {
-		return ""
-	}
-
-	return "\n" + trimmed
 }
 
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
@@ -1726,7 +1287,6 @@ func writeNotePages(
 	diagnostics *diag.Collector,
 	popoverMarker *popoverLinkMarker,
 	sidebarTree []model.SidebarNode,
-	searchReady bool,
 	notePageDirty map[string]struct{},
 	noteStates map[string]*noteBuildState,
 	relatedArticlesByPath map[string][]model.RelatedArticle,
@@ -1746,9 +1306,6 @@ func writeNotePages(
 		if !pageIsDirty {
 			pageRelPath := notePageRelPath(renderedNote.rendered)
 			copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, pageRelPath)
-			if cfg.Search.Enabled && !searchReady {
-				copied, err = copyPageFromPreviousOutputWithoutSearchUI(previousOutputPath, outputPath, pageRelPath)
-			}
 			if err != nil {
 				return nil, err
 			}
@@ -1770,7 +1327,6 @@ func writeNotePages(
 			Backlinks:       buildBacklinks(notePageRelPath(renderedNote.rendered), idx, graph, renderedNote.source.RelPath),
 			RelatedArticles: cloneRelatedArticles(relatedArticlesByPath[renderedNote.source.RelPath]),
 			SidebarTree:     sidebarTreeForPage(cfg, sidebarTree, renderedNote.rendered.Slug),
-			HasSearch:       searchReady,
 		}
 		if notePageHook != nil {
 			notePageHook(renderInput)
@@ -1797,188 +1353,17 @@ func writeNotePages(
 }
 
 func copyPageFromPreviousOutput(previousOutputPath string, outputPath string, relPath string) (bool, error) {
-	return copyPreparedPageFromPreviousOutput(previousOutputPath, outputPath, relPath, nil)
-}
-
-func copyPageFromPreviousOutputWithoutSearchUI(previousOutputPath string, outputPath string, relPath string) (bool, error) {
-	return copyPreparedPageFromPreviousOutput(previousOutputPath, outputPath, relPath, stripSearchUIFromHTML)
-}
-
-func copyPreparedPageFromPreviousOutput(previousOutputPath string, outputPath string, relPath string, prepare func([]byte) ([]byte, bool, error)) (bool, error) {
 	if strings.TrimSpace(previousOutputPath) == "" {
 		return false, nil
 	}
-
 	data, err := os.ReadFile(filepath.Join(previousOutputPath, filepath.FromSlash(relPath)))
 	if err != nil {
 		return false, nil
-	}
-	if prepare != nil {
-		prepared, changed, err := prepare(data)
-		if err != nil {
-			return false, fmt.Errorf("prepare cached page %q: %w", relPath, err)
-		}
-		if !changed {
-			return false, nil
-		}
-		data = prepared
 	}
 	if err := writeOutputFile(outputPath, relPath, data); err != nil {
 		return false, err
 	}
 	return true, nil
-}
-
-const searchUIMarkerAttr = "data-obsite-search-ui"
-
-func stripSearchUIFromHTML(html []byte) ([]byte, bool, error) {
-	if len(html) == 0 {
-		return html, false, nil
-	}
-
-	doc, err := xhtml.Parse(bytes.NewReader(html))
-	if err != nil {
-		return nil, false, fmt.Errorf("parse HTML: %w", err)
-	}
-	if !removeSearchUINodes(doc) {
-		return html, false, nil
-	}
-	if searchUINodesRemain(doc) {
-		return html, false, nil
-	}
-
-	var buf bytes.Buffer
-	if err := xhtml.Render(&buf, doc); err != nil {
-		return nil, false, fmt.Errorf("render HTML: %w", err)
-	}
-
-	return buf.Bytes(), true, nil
-}
-
-func normalizeHTMLForSearchSignature(html []byte) []byte {
-	if len(html) == 0 {
-		return html
-	}
-
-	doc, err := xhtml.Parse(bytes.NewReader(html))
-	if err != nil {
-		return html
-	}
-
-	var buf bytes.Buffer
-	if err := xhtml.Render(&buf, doc); err != nil {
-		return html
-	}
-
-	return buf.Bytes()
-}
-
-func removeSearchUINodes(node *xhtml.Node) bool {
-	if node == nil {
-		return false
-	}
-
-	changed := false
-	for child := node.FirstChild; child != nil; {
-		next := child.NextSibling
-		if isSearchUIHTMLNode(child) {
-			node.RemoveChild(child)
-			changed = true
-			child = next
-			continue
-		}
-		if removeSearchUINodes(child) {
-			changed = true
-		}
-		child = next
-	}
-
-	return changed
-}
-
-func searchUINodesRemain(node *xhtml.Node) bool {
-	if node == nil {
-		return false
-	}
-	if isSearchUIHTMLNode(node) {
-		return true
-	}
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		if searchUINodesRemain(child) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func isSearchUIHTMLNode(node *xhtml.Node) bool {
-	if node == nil || node.Type != xhtml.ElementNode {
-		return false
-	}
-
-	return htmlNodeHasAttr(node, searchUIMarkerAttr)
-}
-
-func htmlNodeHasAttr(node *xhtml.Node, key string) bool {
-	if node == nil {
-		return false
-	}
-
-	for _, attr := range node.Attr {
-		if strings.EqualFold(attr.Key, key) {
-			return true
-		}
-	}
-
-	return false
-}
-
-func tryCopySearchlessPageFromPreviousOutput(previous *CacheManifest, previousOutputPath string, outputPath string, relPath string, searchReadyInput any, fullDirty bool) (bool, error) {
-	signature, err := buildInputSignature(searchReadyInput)
-	if err != nil {
-		return false, err
-	}
-	if !shouldReuseCachedPage(previous, relPath, signature, fullDirty) {
-		return false, nil
-	}
-
-	return copyPageFromPreviousOutputWithoutSearchUI(previousOutputPath, outputPath, relPath)
-}
-
-func tryWriteCachedRenderedPage(outputPath string, relPath string, cachedPages map[string]render.RenderedPage, minifier *minify.M, popoverMarker *popoverLinkMarker) (model.PageData, bool, error) {
-	if len(cachedPages) == 0 {
-		return model.PageData{}, false, nil
-	}
-
-	page, ok := cachedPages[relPath]
-	if !ok {
-		return model.PageData{}, false, nil
-	}
-
-	if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
-		return model.PageData{}, false, err
-	}
-
-	return page.Page, true, nil
-}
-
-func writeSearchPreparedRenderedPage(outputPath string, relPath string, page render.RenderedPage, minifier *minify.M, popoverMarker *popoverLinkMarker, cachedPages map[string]render.RenderedPage) (model.PageData, error) {
-	html := page.HTML
-	if cachedPages != nil {
-		cachedPages[relPath] = page
-		prepared, _, err := stripSearchUIFromHTML(page.HTML)
-		if err != nil {
-			return model.PageData{}, fmt.Errorf("prepare staged pre-search page %q: %w", relPath, err)
-		}
-		html = prepared
-	}
-
-	if err := writeRenderedPage(outputPath, page.Page, html, minifier, popoverMarker); err != nil {
-		return model.PageData{}, err
-	}
-
-	return page.Page, nil
 }
 
 func mergePageSignatures(target map[string]string, source map[string]string) {
@@ -2335,7 +1720,7 @@ func writePopoverPayloads(cfg model.SiteConfig, renderedByPath map[string]*rende
 	return nil
 }
 
-func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
+func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	recentNotes := recentPublicNotes(idx)
 	paginatedNotes := paginate(recentNotes, cfg.Pagination.PageSize)
 	pages := make([]model.PageData, 0, len(paginatedNotes))
@@ -2352,23 +1737,12 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, baseRelPath, currentPage, len(paginatedNotes)),
 			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
-			HasSearch:    searchReady,
 		}
 		signature, err := buildInputSignature(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build index page signature %q: %w", currentRelPath, err)
 		}
 		signatures[currentRelPath] = signature
-		if searchReady {
-			page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
-			if err != nil {
-				return nil, nil, err
-			}
-			if copied {
-				pages = append(pages, page)
-				continue
-			}
-		}
 		if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 			copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 			if err != nil {
@@ -2379,41 +1753,21 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 				continue
 			}
 		}
-		if cfg.Search.Enabled && !searchReady {
-			searchReadyInput := input
-			searchReadyInput.HasSearch = true
-			copied, err := tryCopySearchlessPageFromPreviousOutput(previous, previousOutputPath, outputPath, currentRelPath, searchReadyInput, fullDirty)
-			if err != nil {
-				return nil, nil, fmt.Errorf("reuse cached pre-search index page %q: %w", currentRelPath, err)
-			}
-			if copied {
-				pages = append(pages, buildStaticPageSitemapData(model.PageIndex, cfg, currentRelPath, lastModified))
-				continue
-			}
-		}
 
-		renderInput := input
-		var searchlessCache map[string]render.RenderedPage
-		if cfg.Search.Enabled && !searchReady {
-			renderInput.HasSearch = true
-			searchlessCache = searchReadyPages
-		}
-
-		page, err := renderIndexPage(renderInput)
+		page, err := renderIndexPage(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render index: %w", err)
 		}
-		writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
-		if err != nil {
+		if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
 			return nil, nil, err
 		}
-		pages = append(pages, writtenPage)
+		pages = append(pages, page.Page)
 	}
 
 	return pages, signatures, nil
 }
 
-func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
+func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	tagNames := sortedTagNames(idx)
 	pages := make([]model.PageData, 0, len(tagNames))
 	signatures := make(map[string]string)
@@ -2440,23 +1794,12 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, tagPageRelPath, currentPage, len(paginatedNotes)),
 				SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
-				HasSearch:    searchReady,
 			}
 			signature, err := buildInputSignature(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build tag page signature %q: %w", currentRelPath, err)
 			}
 			signatures[currentRelPath] = signature
-			if searchReady {
-				page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
-				if err != nil {
-					return nil, nil, err
-				}
-				if copied {
-					pages = append(pages, page)
-					continue
-				}
-			}
 			if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 				copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 				if err != nil {
@@ -2467,42 +1810,22 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 					continue
 				}
 			}
-			if cfg.Search.Enabled && !searchReady {
-				searchReadyInput := input
-				searchReadyInput.HasSearch = true
-				copied, err := tryCopySearchlessPageFromPreviousOutput(previous, previousOutputPath, outputPath, currentRelPath, searchReadyInput, fullDirty)
-				if err != nil {
-					return nil, nil, fmt.Errorf("reuse cached pre-search tag page %q: %w", currentRelPath, err)
-				}
-				if copied {
-					pages = append(pages, buildStaticPageSitemapData(model.PageTag, cfg, currentRelPath, lastModified))
-					continue
-				}
-			}
 
-			renderInput := input
-			var searchlessCache map[string]render.RenderedPage
-			if cfg.Search.Enabled && !searchReady {
-				renderInput.HasSearch = true
-				searchlessCache = searchReadyPages
-			}
-
-			page, err := renderTagPage(renderInput)
+			page, err := renderTagPage(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render tag page %q: %w", tag.Name, err)
 			}
-			writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
-			if err != nil {
+			if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
 				return nil, nil, err
 			}
-			pages = append(pages, writtenPage)
+			pages = append(pages, page.Page)
 		}
 	}
 
 	return pages, signatures, nil
 }
 
-func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
+func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	pages := make([]model.PageData, 0, len(folders))
 	signatures := make(map[string]string)
 
@@ -2526,23 +1849,12 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, folderPageRelPath, currentPage, len(paginatedNotes)),
 				SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, folderPath),
-				HasSearch:    searchReady,
 			}
 			signature, err := buildInputSignature(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build folder page signature %q: %w", currentRelPath, err)
 			}
 			signatures[currentRelPath] = signature
-			if searchReady {
-				page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
-				if err != nil {
-					return nil, nil, err
-				}
-				if copied {
-					pages = append(pages, page)
-					continue
-				}
-			}
 			if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 				copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 				if err != nil {
@@ -2553,42 +1865,22 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 					continue
 				}
 			}
-			if cfg.Search.Enabled && !searchReady {
-				searchReadyInput := input
-				searchReadyInput.HasSearch = true
-				copied, err := tryCopySearchlessPageFromPreviousOutput(previous, previousOutputPath, outputPath, currentRelPath, searchReadyInput, fullDirty)
-				if err != nil {
-					return nil, nil, fmt.Errorf("reuse cached pre-search folder page %q: %w", currentRelPath, err)
-				}
-				if copied {
-					pages = append(pages, buildStaticPageSitemapData(model.PageFolder, cfg, currentRelPath, lastModified))
-					continue
-				}
-			}
 
-			renderInput := input
-			var searchlessCache map[string]render.RenderedPage
-			if cfg.Search.Enabled && !searchReady {
-				renderInput.HasSearch = true
-				searchlessCache = searchReadyPages
-			}
-
-			page, err := renderFolderPage(renderInput)
+			page, err := renderFolderPage(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render folder page %q: %w", folderPath, err)
 			}
-			writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
-			if err != nil {
+			if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
 				return nil, nil, err
 			}
-			pages = append(pages, writtenPage)
+			pages = append(pages, page.Page)
 		}
 	}
 
 	return pages, signatures, nil
 }
 
-func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, searchReady bool, fullDirty bool, searchReadyPages map[string]render.RenderedPage) ([]model.PageData, map[string]string, error) {
+func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	if !cfg.Timeline.Enabled {
 		return nil, nil, nil
 	}
@@ -2611,23 +1903,12 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPa
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, timelineRelPath, currentPage, len(paginatedNotes)),
 			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
-			HasSearch:    searchReady,
 		}
 		signature, err := buildInputSignature(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build timeline page signature %q: %w", currentRelPath, err)
 		}
 		signatures[currentRelPath] = signature
-		if searchReady {
-			page, copied, err := tryWriteCachedRenderedPage(outputPath, currentRelPath, searchReadyPages, minifier, popoverMarker)
-			if err != nil {
-				return nil, nil, err
-			}
-			if copied {
-				pages = append(pages, page)
-				continue
-			}
-		}
 		if shouldReuseCachedPage(previous, currentRelPath, signature, fullDirty) {
 			copied, err := copyPageFromPreviousOutput(previousOutputPath, outputPath, currentRelPath)
 			if err != nil {
@@ -2638,35 +1919,15 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPa
 				continue
 			}
 		}
-		if cfg.Search.Enabled && !searchReady {
-			searchReadyInput := input
-			searchReadyInput.HasSearch = true
-			copied, err := tryCopySearchlessPageFromPreviousOutput(previous, previousOutputPath, outputPath, currentRelPath, searchReadyInput, fullDirty)
-			if err != nil {
-				return nil, nil, fmt.Errorf("reuse cached pre-search timeline page %q: %w", currentRelPath, err)
-			}
-			if copied {
-				pages = append(pages, buildStaticPageSitemapData(model.PageTimeline, cfg, currentRelPath, lastModified))
-				continue
-			}
-		}
 
-		renderInput := input
-		var searchlessCache map[string]render.RenderedPage
-		if cfg.Search.Enabled && !searchReady {
-			renderInput.HasSearch = true
-			searchlessCache = searchReadyPages
-		}
-
-		page, err := renderTimelinePage(renderInput)
+		page, err := renderTimelinePage(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render timeline page: %w", err)
 		}
-		writtenPage, err := writeSearchPreparedRenderedPage(outputPath, currentRelPath, page, minifier, popoverMarker, searchlessCache)
-		if err != nil {
+		if err := writeRenderedPage(outputPath, page.Page, page.HTML, minifier, popoverMarker); err != nil {
 			return nil, nil, err
 		}
-		pages = append(pages, writtenPage)
+		pages = append(pages, page.Page)
 	}
 
 	return pages, signatures, nil

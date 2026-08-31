@@ -21,7 +21,6 @@ type SiteConfig struct {
 	ThemeRoot       string
 	ThemeDir        string
 	CustomCSS       string
-	Search          SearchConfig
 	Pagination      PaginationConfig
 	Sidebar         SidebarConfig
 	Popover         PopoverConfig
@@ -33,13 +32,6 @@ type SiteConfig struct {
 	KaTeXJSURL         string
 	KaTeXAutoRenderURL string
 	MermaidJSURL       string
-}
-
-// SearchConfig configures optional Pagefind-based search output.
-type SearchConfig struct {
-	Enabled         bool
-	PagefindPath    string
-	PagefindVersion string
 }
 
 // PaginationConfig controls list-page pagination behavior.
