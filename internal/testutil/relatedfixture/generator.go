@@ -13,11 +13,12 @@ import (
 
 const Seed int64 = 20260406
 
-const GeneratorVersion = 1
+const GeneratorVersion = 2
 
 const (
 	CaseMixed           = "mixed"
 	CaseSparsePosting   = "sparse-posting"
+	CaseTermCoverage40  = "term-40%-boundary"
 	CaseTermCoverage49  = "term-49%-coverage"
 	CaseTagCoverage49   = "tag-49%-coverage"
 	CaseRejectedContent = "rejected-content"
@@ -64,13 +65,15 @@ func FrozenManifest() Manifest {
 		Cases: []CaseSpec{
 			{Name: CaseMixed, MinimumTokens: 200, Topics: 5, Languages: 4, SharedTerms: 2},
 			{Name: CaseSparsePosting, MinimumTokens: 2000, Topics: 1, Languages: 1, SharedTerms: 2},
+			{Name: CaseTermCoverage40, MinimumTokens: 200, Topics: 1, Languages: 1, SharedTerms: 8, CoveragePercent: 40},
 			{Name: CaseTermCoverage49, MinimumTokens: 200, Topics: 1, Languages: 1, SharedTerms: 8, CoveragePercent: 49},
-			{Name: CaseTagCoverage49, MinimumTokens: 200, Topics: 5, Languages: 1, SharedTerms: 2, CoveragePercent: 49},
+			{Name: CaseTagCoverage49, MinimumTokens: 200, Topics: 5, Languages: 4, SharedTerms: 2, CoveragePercent: 49},
 			{Name: CaseRejectedContent, MinimumTokens: 200, Topics: 1, Languages: 1, SharedTerms: 1},
 		},
 		Samples: []CorpusDigest{
 			{Name: CaseMixed, Count: 20, SHA256: "1247a2cac179100b17a184a92aff64a77abd6b69932351dd4f175f70e93c1393"},
 			{Name: CaseSparsePosting, Count: 10, SHA256: "7754aaa57a10518bddf98c28fd96a76cb476bba11f5581e5af1bfe90f10d9091"},
+			{Name: CaseTermCoverage40, Count: 100, SHA256: "f86240ddfc84c423795984a3f235c9d9b279bbaf1121863bad605cb4230d90eb"},
 			{Name: CaseTermCoverage49, Count: 100, SHA256: "ffd6db4a125100997f2741a40ff31a7fb1a8167e9bd582b9b70712c45d1bdbb4"},
 			{Name: CaseTagCoverage49, Count: 100, SHA256: "0eccbd90262a0014bdb61695d766bfa8ba9174de0f1cdc43e8827b79ba6a764d"},
 			{Name: CaseRejectedContent, Count: 100, SHA256: "838f0ef42c48eb5928640f338dc6a60bd5ce39760c3da28b21d3def663fb3040"},
@@ -146,7 +149,7 @@ func Generate(name string, documentCount int) (Fixture, error) {
 			Backward: make(map[string][]string, documentCount),
 		},
 	}
-	coverage := documentCount * 49 / 100
+	coverage := documentCount * spec.CoveragePercent / 100
 	for docID := 0; docID < documentCount; docID++ {
 		relPath := fmt.Sprintf("notes/%05d.md", docID)
 		body, tags, err := generateDocument(spec, docID, coverage)
@@ -183,7 +186,7 @@ func generateDocument(spec CaseSpec, docID int, coverage int) (string, []string,
 		return mixedBody(docID, spec.MinimumTokens), mixedTags(docID), nil
 	case CaseSparsePosting:
 		return sparseBody(docID, spec.MinimumTokens), nil, nil
-	case CaseTermCoverage49:
+	case CaseTermCoverage40, CaseTermCoverage49:
 		return termCoverageBody(docID, coverage, spec.MinimumTokens), nil, nil
 	case CaseTagCoverage49:
 		tags := mixedTags(docID)

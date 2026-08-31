@@ -55,6 +55,7 @@ func BenchmarkRelatedBuildWarm(b *testing.B) {
 		{name: "mixed-1000", kind: relatedfixture.CaseMixed, count: 1000},
 		{name: "mixed-5000", kind: relatedfixture.CaseMixed, count: 5000},
 		{name: "sparse-posting-5000", kind: relatedfixture.CaseSparsePosting, count: 5000},
+		{name: "term-40%-boundary-5000", kind: relatedfixture.CaseTermCoverage40, count: 5000},
 		{name: "term-49%-coverage-5000", kind: relatedfixture.CaseTermCoverage49, count: 5000},
 		{name: "tag-49%-coverage-5000", kind: relatedfixture.CaseTagCoverage49, count: 5000},
 		{name: "rejected-content-5000", kind: relatedfixture.CaseRejectedContent, count: 5000},
@@ -106,6 +107,28 @@ func TestPerformanceAdversarialBehavior(t *testing.T) {
 		if len(document.Related) != 0 {
 			t.Fatalf("rejected-content document %s retained %#v", document.RelPath, document.Related)
 		}
+	}
+
+	termBoundary, err := relatedfixture.Generate(relatedfixture.CaseTermCoverage40, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryFeatures, err := BuildFeatureIndex(termBoundary.Semantics, ProductionEngineParameters(5, 1).Features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryTerms := 0
+	for termID, term := range boundaryFeatures.Terms {
+		if !strings.HasPrefix(term, "coverage-term-") {
+			continue
+		}
+		boundaryTerms++
+		if got := len(boundaryFeatures.Postings[termID]); got != 40 {
+			t.Fatalf("40%% boundary posting %q length = %d, want 40", term, got)
+		}
+	}
+	if boundaryTerms != 8 {
+		t.Fatalf("40%% boundary retained terms = %d, want 8", boundaryTerms)
 	}
 
 	termCoverage, err := relatedfixture.Generate(relatedfixture.CaseTermCoverage49, 100)
@@ -207,12 +230,7 @@ func TestMemoryProfileCheckpoints(t *testing.T) {
 }
 
 func buildEngineFromSemanticOwner(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
-	var semantics []model.RelatedSemanticDocument
-	if owner != nil {
-		semantics = *owner
-		*owner = nil
-	}
-	return buildEngine(semantics, idx, graph, parameters, observer)
+	return buildOwnedEngine(owner, idx, graph, parameters, observer)
 }
 
 func writeRetainedOwnerControlProfile(t *testing.T, profileDir string) {

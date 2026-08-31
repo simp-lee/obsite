@@ -106,8 +106,24 @@ func (h *weightedTermHeap) Pop() any {
 }
 
 // BuildFeatureIndex tokenizes fields independently and builds deterministic
-// dynamic TF-IDF features and postings.
+// dynamic TF-IDF features and postings without consuming the caller's input.
 func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters FeatureParameters) (*FeatureIndex, error) {
+	return buildFeatureIndex(documents, parameters, false)
+}
+
+func buildOwnedFeatureIndex(owner *[]model.RelatedSemanticDocument, parameters FeatureParameters) (*FeatureIndex, error) {
+	var documents []model.RelatedSemanticDocument
+	if owner != nil {
+		documents = *owner
+		*owner = nil
+	}
+	return buildFeatureIndex(documents, parameters, true)
+}
+
+func buildFeatureIndex(documents []model.RelatedSemanticDocument, parameters FeatureParameters, consumeInput bool) (*FeatureIndex, error) {
+	if consumeInput {
+		defer clear(documents)
+	}
 	if err := validateFeatureParameters(parameters); err != nil {
 		return nil, err
 	}
@@ -122,7 +138,8 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 		return ordered[left].RelPath < ordered[right].RelPath
 	})
 
-	counts := newDocumentTermCountOwner(len(ordered))
+	documentCount := len(ordered)
+	counts := newDocumentTermCountOwner(documentCount)
 	documentFrequency := newDocumentFrequencyOwner()
 	for docID, document := range ordered {
 		normalizedPath := normalizeFeatureRelPath(document.RelPath)
@@ -139,8 +156,13 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 			documentFrequency[term]++
 		}
 	}
+	if consumeInput {
+		clear(documents)
+	}
+	clear(ordered)
+	ordered = nil
 
-	terms := eligibleTerms(documentFrequency, len(ordered), parameters.MaxDFRatio)
+	terms := eligibleTerms(documentFrequency, documentCount, parameters.MaxDFRatio)
 	termIDs := newTermIDOwner(len(terms))
 	corpusDF := make([]int, len(terms))
 	for termID, term := range terms {
@@ -150,14 +172,15 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 
 	selected := newSelectedFeatureOwner(len(counts))
 	selectedDF := newSelectedDFOwner(len(terms))
-	for docID, document := range counts {
+	for docID := range counts {
+		document := &counts[docID]
 		winners := make(weightedTermHeap, 0, parameters.MaxFeatures)
 		for term, fieldCounts := range document.terms {
 			termID, ok := termIDs[term]
 			if !ok {
 				continue
 			}
-			weight := weightedTermFrequency(fieldCounts) * inverseDocumentFrequency(len(ordered), corpusDF[termID])
+			weight := weightedTermFrequency(fieldCounts) * inverseDocumentFrequency(documentCount, corpusDF[termID])
 			if weight <= 0 {
 				continue
 			}
@@ -185,6 +208,7 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 		for _, candidate := range candidates {
 			selectedDF[candidate.termID]++
 		}
+		document.terms = nil
 	}
 
 	finalTermCount := 0
@@ -244,6 +268,7 @@ func BuildFeatureIndex(documents []model.RelatedSemanticDocument, parameters Fea
 				Fields: feature.Fields,
 			})
 		}
+		selected[docID] = nil
 	}
 
 	return index, nil

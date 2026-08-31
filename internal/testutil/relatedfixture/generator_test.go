@@ -48,7 +48,7 @@ func TestPerformanceFixtureManifest(t *testing.T) {
 
 func TestPerformanceAdversarialCases(t *testing.T) {
 	fixtures := make(map[string]Fixture)
-	for _, name := range []string{CaseSparsePosting, CaseTermCoverage49, CaseTagCoverage49, CaseRejectedContent} {
+	for _, name := range []string{CaseSparsePosting, CaseTermCoverage40, CaseTermCoverage49, CaseTagCoverage49, CaseRejectedContent} {
 		fixture, err := Generate(name, 100)
 		if err != nil {
 			t.Fatalf("Generate(%s) error = %v", name, err)
@@ -79,6 +79,33 @@ func TestPerformanceAdversarialCases(t *testing.T) {
 			t.Fatalf("sparse fixture posting %d length = %d, want 2", termID, len(postings))
 		}
 	}
+	boundaryMembers := 0
+	for _, document := range fixtures[CaseTermCoverage40].Semantics {
+		if strings.Contains(document.Body, "coverage-term-0") {
+			boundaryMembers++
+		}
+	}
+	if boundaryMembers != 40 {
+		t.Fatalf("term boundary coverage members = %d, want 40", boundaryMembers)
+	}
+	boundaryIndex, err := recommend.BuildFeatureIndex(fixtures[CaseTermCoverage40].Semantics, recommend.ProductionEngineParameters(5, 1).Features)
+	if err != nil {
+		t.Fatal(err)
+	}
+	boundaryTerms := 0
+	for termID, term := range boundaryIndex.Terms {
+		if !strings.HasPrefix(term, "coverage-term-") {
+			continue
+		}
+		boundaryTerms++
+		if got := len(boundaryIndex.Postings[termID]); got != 40 {
+			t.Fatalf("term boundary posting %q length = %d, want 40", term, got)
+		}
+	}
+	if boundaryTerms != 8 {
+		t.Fatalf("term boundary retained terms = %d, want 8", boundaryTerms)
+	}
+
 	termMembers := 0
 	for _, document := range fixtures[CaseTermCoverage49].Semantics {
 		if strings.Contains(document.Body, "coverage-term-0") {
@@ -86,15 +113,19 @@ func TestPerformanceAdversarialCases(t *testing.T) {
 		}
 	}
 	if termMembers != 49 {
-		t.Fatalf("term coverage members = %d, want 49", termMembers)
+		t.Fatalf("term cutoff coverage members = %d, want 49", termMembers)
 	}
 	tagMembers := 0
+	tagLanguages := make(map[string]struct{})
 	for _, note := range fixtures[CaseTagCoverage49].Index.Notes {
+		if len(note.Tags) >= 2 {
+			tagLanguages[note.Tags[1]] = struct{}{}
+		}
 		if len(note.Tags) == 6 {
 			tagMembers++
 		}
 	}
-	if tagMembers != 49 {
-		t.Fatalf("tag coverage members = %d, want 49", tagMembers)
+	if tagMembers != 49 || len(tagLanguages) != 4 {
+		t.Fatalf("tag coverage members/languages = %d/%d, want 49/4", tagMembers, len(tagLanguages))
 	}
 }

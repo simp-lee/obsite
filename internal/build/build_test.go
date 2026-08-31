@@ -44,6 +44,7 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 		{RelPath: "a.md", Body: "database protocol"},
 		{RelPath: "b.md", Body: "database protocol"},
 	}
+	semanticBacking := semantics
 	idx := &model.VaultIndex{Notes: map[string]*model.Note{
 		"a.md": {RelPath: "a.md", Slug: "a"},
 		"b.md": {RelPath: "b.md", Slug: "b"},
@@ -67,14 +68,23 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 	if semantics != nil {
 		t.Fatalf("semantic owner after successful ranking = %#v, want released", semantics)
 	}
+	for index, document := range semanticBacking {
+		if document.RelPath != "" || document.Title != "" || len(document.Aliases) != 0 || len(document.Headings) != 0 || document.Body != "" {
+			t.Fatalf("semantic backing document %d = %#v, want cleared after tokenization", index, document)
+		}
+	}
 
 	singletonOwner := []model.RelatedSemanticDocument{{RelPath: "a.md", Body: "database"}}
+	singletonBacking := singletonOwner
 	singleton, err := preparePreRenderRelatedRanking(&singletonOwner, idx, sourceGraph, recommend.EngineParameters{})
 	if err != nil || singleton == nil || len(singleton.Documents) != 0 {
 		t.Fatalf("preparePreRenderRelatedRanking(singleton) = %#v, %v; want empty result", singleton, err)
 	}
 	if singletonOwner != nil {
 		t.Fatalf("semantic owner after singleton ranking = %#v, want released", singletonOwner)
+	}
+	if singletonBacking[0].RelPath != "" || singletonBacking[0].Body != "" {
+		t.Fatalf("singleton semantic backing = %#v, want cleared on early return", singletonBacking)
 	}
 }
 

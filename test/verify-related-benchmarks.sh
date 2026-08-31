@@ -44,7 +44,7 @@ print('core performance budgets verified')
 PY
     ;;
   adversarial)
-    for case_name in sparse-posting term-49%-coverage tag-49%-coverage rejected-content; do
+    for case_name in sparse-posting term-40%-boundary term-49%-coverage tag-49%-coverage rejected-content; do
       run_and_capture "$tmp/${case_name}.txt" env GOMAXPROCS=4 \
         go test ./internal/recommend -run '^$' \
         -bench "^BenchmarkRelatedBuildWarm/${case_name}-5000$" \

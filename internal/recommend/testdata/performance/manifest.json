@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "seed": 20260406,
   "cases": [
     {
@@ -17,6 +17,14 @@
       "sharedTerms": 2
     },
     {
+      "name": "term-40%-boundary",
+      "minimumTokens": 200,
+      "topics": 1,
+      "languages": 1,
+      "sharedTerms": 8,
+      "coveragePercent": 40
+    },
+    {
       "name": "term-49%-coverage",
       "minimumTokens": 200,
       "topics": 1,
@@ -28,7 +36,7 @@
       "name": "tag-49%-coverage",
       "minimumTokens": 200,
       "topics": 5,
-      "languages": 1,
+      "languages": 4,
       "sharedTerms": 2,
       "coveragePercent": 49
     },
@@ -40,7 +48,7 @@
       "sharedTerms": 1
     }
   ],
-  "sha256": "8c254a18c6b5dd2ec6d9ec59258c93785e5ab510a8030636810118d02cee5747",
+  "sha256": "fb805d31589e5223a98bee4faad53a2e1144e6277f19fd0d344222e5d8307693",
   "samples": [
     {
       "name": "mixed",
@@ -51,6 +59,11 @@
       "name": "sparse-posting",
       "count": 10,
       "sha256": "7754aaa57a10518bddf98c28fd96a76cb476bba11f5581e5af1bfe90f10d9091"
+    },
+    {
+      "name": "term-40%-boundary",
+      "count": 100,
+      "sha256": "f86240ddfc84c423795984a3f235c9d9b279bbaf1121863bad605cb4230d90eb"
     },
     {
       "name": "term-49%-coverage",

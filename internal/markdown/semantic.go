@@ -73,15 +73,8 @@ func appendRelatedHeadingText(collector *headingTextCollector, node gast.Node, s
 		collector.appendText(relatedWikilinkText(current, source, true))
 	case *gast.RawHTML:
 		collector.applyRawHTML(string(current.Segments.Value(source)))
-	case *math.InlineMath:
-		if !collector.inInvisibleRawHTML() {
-			collector.appendText(string(current.Literal))
-		}
-	case *math.DisplayMath:
-		if !collector.inInvisibleRawHTML() {
-			collector.appendText(string(current.Literal))
-			collector.space()
-		}
+	case *math.InlineMath, *math.DisplayMath:
+		return
 	default:
 		for child := node.FirstChild(); child != nil; child = child.NextSibling() {
 			appendRelatedHeadingText(collector, child, source)

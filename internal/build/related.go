@@ -17,12 +17,7 @@ func preparePreRenderRelatedRanking(
 	sourceGraph *model.LinkGraph,
 	parameters recommend.EngineParameters,
 ) (*recommend.EngineResult, error) {
-	var semantics []model.RelatedSemanticDocument
-	if semanticOwner != nil {
-		semantics = *semanticOwner
-		*semanticOwner = nil
-	}
-	return recommend.BuildEngine(semantics, idx, sourceGraph, parameters)
+	return recommend.BuildEngineFromSemanticOwner(semanticOwner, idx, sourceGraph, parameters)
 }
 
 func materializeRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, ranking *recommend.EngineResult, summaryByPath map[string]string) (map[string][]model.RelatedArticle, map[string]string) {

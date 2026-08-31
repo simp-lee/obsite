@@ -53,9 +53,16 @@ type candidateScratch struct {
 
 type pairObserver func(sourceDocID int, candidateDocID int)
 
-// BuildEngine builds and scores the deterministic bounded recommendation index.
+// BuildEngine builds and scores the deterministic bounded recommendation index
+// without consuming the caller's semantic documents.
 func BuildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters) (*EngineResult, error) {
 	return buildEngine(semantics, idx, graph, parameters, nil)
+}
+
+// BuildEngineFromSemanticOwner consumes a build-owned semantic sidecar so its
+// source text can be released immediately after field tokenization.
+func BuildEngineFromSemanticOwner(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters) (*EngineResult, error) {
+	return buildOwnedEngine(owner, idx, graph, parameters, nil)
 }
 
 func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
@@ -70,7 +77,28 @@ func buildEngine(semantics []model.RelatedSemanticDocument, idx *model.VaultInde
 	if err != nil {
 		return nil, err
 	}
-	semantics = nil
+	tags := BuildTagSignalIndex(features.Documents, idx)
+	return rankFeatureIndex(features, tags, idx, graph, parameters, observer)
+}
+
+func buildOwnedEngine(owner *[]model.RelatedSemanticDocument, idx *model.VaultIndex, graph *model.LinkGraph, parameters EngineParameters, observer pairObserver) (*EngineResult, error) {
+	if owner == nil || len(*owner) < 2 {
+		if owner != nil {
+			clear(*owner)
+			*owner = nil
+		}
+		return &EngineResult{}, nil
+	}
+	if err := validateEngineParameters(parameters); err != nil {
+		clear(*owner)
+		*owner = nil
+		return nil, err
+	}
+
+	features, err := buildOwnedFeatureIndex(owner, parameters.Features)
+	if err != nil {
+		return nil, err
+	}
 	tags := BuildTagSignalIndex(features.Documents, idx)
 	return rankFeatureIndex(features, tags, idx, graph, parameters, observer)
 }

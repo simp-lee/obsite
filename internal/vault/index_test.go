@@ -25,7 +25,7 @@ aliases:
   - Field Manual
 publish: true
 ---
-# Main <https://example.com> <span hidden>[[Hidden Target]]</span> #heading-tag [[Target|Visible Label]]
+# Main $heading_formula_secret$ <https://example.com> <span hidden>[[Hidden Target]]</span> #heading-tag [[Target|Visible Label]]
 
 Lead paragraph with [ordinary link](https://example.com) and [[Target|Wiki Label]].
 
@@ -101,7 +101,7 @@ raw_block_secret
 		}
 	}
 	for _, excluded := range []string{
-		"Main", "Hidden Target", "heading-tag", "body-tag", "formula_secret", "embed label",
+		"Main", "Hidden Target", "heading_formula_secret", "heading-tag", "body-tag", "formula_secret", "embed label",
 		"fenced_secret", "raw_block_secret", "hidden inline", "hidden script",
 	} {
 		if strings.Contains(guide.Body, excluded) {
