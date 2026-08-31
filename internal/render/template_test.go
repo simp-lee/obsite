@@ -830,13 +830,13 @@ func TestThemeRootReloadsTemplatesWhenThemeFilesChangeWithinSameProcess(t *testi
 	noteHTML := renderThemeRootNoteHTML(t, site)
 	assertContains(t, noteHTML, `data-live-base="v1"`)
 
-	baseV2 := themeBaseWithBodyAttribute(t, `data-live-base="v2"`)
+	baseV2 := themeBaseWithBodyAttribute(t, `data-live-base="version-2"`)
 	if err := os.WriteFile(basePath, []byte(baseV2), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(base.html v2) error = %v", err)
 	}
 
 	notFoundHTML := renderThemeRoot404HTML(t, site)
-	assertContains(t, notFoundHTML, `data-live-base="v2"`)
+	assertContains(t, notFoundHTML, `data-live-base="version-2"`)
 	assertNotContains(t, notFoundHTML, `data-live-base="v1"`)
 
 	notFoundOverride := `{{define "content-404"}}<section data-live-404>{{.Title}}</section>{{end}}`
