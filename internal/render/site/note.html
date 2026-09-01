@@ -10,7 +10,7 @@
 {{end}}
 
 {{define "content-note"}}
-<article class="page-shell article-page">
+<article class="page-shell article-page" data-page-content>
   <header class="page-header">
     <p class="page-eyebrow">Note</p>
     <h1 class="page-title"{{with .TitleID}} id="{{.}}"{{end}}>{{if .Title}}{{.Title}}{{else}}Untitled note{{end}}</h1>
@@ -63,7 +63,7 @@
     </nav>
     {{end}}
 
-    <div class="entry-content" data-page-content>
+    <div class="entry-content">
       {{.Content}}
     </div>
   </section>

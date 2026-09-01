@@ -132,7 +132,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"<meta name=\"twitter:card\" content=\"summary\">",
 				"<meta name=\"twitter:title\" content=\"Plain Note\">",
 				"<meta name=\"twitter:description\" content=\"A note without asset URLs.\">",
-				"<div class=\"entry-content\" data-page-content>",
+				"<article class=\"page-shell article-page\" data-page-content>",
 			},
 			wantAbsent: []string{
 				"<meta name=\"twitter:image\"",
@@ -272,12 +272,21 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 	}
 }
 
-func TestDefaultTemplatesExposeStableObsiteLandmarks(t *testing.T) {
+func TestDefaultTemplatesExposeStableObsiteLandmarksForEveryPageKind(t *testing.T) {
 	t.Parallel()
 	tmpl := parseDefaultTemplateSet(t)
-	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, Site: model.SiteConfig{Title: "Garden"}, Title: "Note", Content: template.HTML("<p data-page-content>body</p>")})
-	for _, marker := range []string{"data-obsite-root", `data-obsite-kind="note"`, "data-obsite-header", "data-obsite-main", "data-page-content", "data-obsite-footer"} {
-		assertContains(t, got, marker)
+	for _, kind := range []model.PageKind{model.PageNote, model.PageIndex, model.PageTag, model.PageFolder, model.PageTimeline, model.Page404} {
+		kind := kind
+		t.Run(string(kind), func(t *testing.T) {
+			t.Parallel()
+			got := renderTemplate(t, tmpl, model.PageData{Kind: kind, Site: model.SiteConfig{Title: "Garden"}, Title: "Page", Content: template.HTML("<p>body</p>")})
+			for _, marker := range []string{"data-obsite-root", `data-obsite-kind="` + string(kind) + `"`, "data-obsite-header", "data-obsite-main", "data-page-content", "data-obsite-footer"} {
+				assertContains(t, got, marker)
+			}
+			if count := strings.Count(got, "data-page-content"); count != 1 {
+				t.Fatalf("data-page-content count = %d, want 1\noutput:\n%s", count, got)
+			}
+		})
 	}
 }
 

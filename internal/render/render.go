@@ -56,17 +56,6 @@ var embeddedHTMLTemplatePaths = func() []string {
 	return paths
 }()
 
-// RequiredHTMLTemplateNames lists the HTML template files every external theme must provide.
-var RequiredHTMLTemplateNames = []string{
-	"base.html",
-	"note.html",
-	"index.html",
-	"tag.html",
-	"folder.html",
-	"timeline.html",
-	"404.html",
-}
-
 type embeddedOutputAsset struct {
 	name       string
 	outputPath string

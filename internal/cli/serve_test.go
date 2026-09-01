@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,7 +16,6 @@ import (
 	"github.com/fsnotify/fsnotify"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	"github.com/simp-lee/obsite/internal/model"
-	internalrender "github.com/simp-lee/obsite/internal/render"
 )
 
 func TestServeCommandDefaultsToCurrentVaultPublicOutput(t *testing.T) {
@@ -1302,36 +1300,6 @@ func sendServeWatchCreateFromWatchedParent(t *testing.T, watcher *fakeFileWatche
 
 	if !watcher.sendIfWatched(fsnotify.Event{Name: path, Op: fsnotify.Create}) {
 		t.Fatalf("create event for %q is not covered by any active watch", path)
-	}
-}
-
-func writeServeWatchThemeConfig(t *testing.T, configPath string, themeRoot string) {
-	t.Helper()
-
-	content := strings.Join([]string{
-		"title: Garden",
-		"baseURL: https://example.com",
-		"themes:",
-		"  feature:",
-		fmt.Sprintf("    root: %q", themeRoot),
-		"defaultTheme: feature",
-	}, "\n") + "\n"
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", configPath, err)
-	}
-}
-
-func writeServeWatchThemeTemplates(t *testing.T, root string) {
-	t.Helper()
-
-	for _, name := range internalrender.RequiredHTMLTemplateNames {
-		filePath := filepath.Join(root, filepath.FromSlash(name))
-		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
-		}
-		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
-			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
-		}
 	}
 }
 
