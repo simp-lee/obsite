@@ -375,4 +375,3 @@ func IsPortableSitePath(value string) bool {
 	}
 	return true
 }
-
