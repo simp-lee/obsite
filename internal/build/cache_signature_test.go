@@ -206,7 +206,7 @@ func TestBuildRefreshesImageEmbedDiagnosticsWhenAssetInventoryChangesWithoutNote
 		}
 
 		state := states[0]
-		manifest := buildCacheManifest("abi", "config", "template", nil, map[string]*noteBuildState{noteRelPath: state}, nil)
+		manifest := buildCacheManifest("abi", "config", "template", "", nil, map[string]*noteBuildState{noteRelPath: state}, nil)
 		entry, ok := manifest.Notes[noteRelPath]
 		if !ok {
 			t.Fatalf("manifest missing %q entry", noteRelPath)

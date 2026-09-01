@@ -32,7 +32,7 @@ import (
 const (
 	cacheManifestDir             = ".obsite-cache"
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion         = 3
+	cacheManifestVersion         = 4
 	defaultTemplateSigKey        = "default"
 	cacheSignatureSaltKey        = "phase-21-step-50"
 	derivedSignatureKeyBacklinks = "backlinks"
@@ -99,6 +99,7 @@ type CacheManifest struct {
 	BuildABISignature string                       `json:"buildABISignature"`
 	ConfigSignature   string                       `json:"configSignature"`
 	TemplateSignature string                       `json:"templateSignature"`
+	DefaultImagePath  string                       `json:"defaultImagePath,omitempty"`
 	Graph             model.LinkGraph              `json:"graph"`
 	Pages             map[string]string            `json:"pages,omitempty"`
 	Notes             map[string]cacheManifestNote `json:"notes"`
@@ -212,6 +213,8 @@ func writeCacheManifest(outputRoot string, manifest *CacheManifest) error {
 }
 
 func buildConfigSignature(cfg model.SiteConfig) (string, error) {
+	cfg.DefaultImg = ""
+	cfg.DefaultImgExternal = false
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		return "", fmt.Errorf("marshal config signature: %w", err)
@@ -979,12 +982,13 @@ func cacheSeverityOrder(severity diag.Severity) int {
 	}
 }
 
-func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
+func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, defaultImagePath string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
 	manifest := &CacheManifest{
 		Version:           cacheManifestVersion,
 		BuildABISignature: strings.TrimSpace(buildABISignature),
 		ConfigSignature:   configSignature,
 		TemplateSignature: templateSignature,
+		DefaultImagePath:  strings.TrimSpace(defaultImagePath),
 		Graph:             cloneLinkGraph(graph),
 		Pages:             cloneSignatureMap(pageSignatures),
 		Notes:             make(map[string]cacheManifestNote, len(noteStates)),

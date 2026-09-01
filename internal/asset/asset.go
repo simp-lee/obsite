@@ -15,6 +15,7 @@ import (
 	"github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
+	internalslug "github.com/simp-lee/obsite/internal/slug"
 )
 
 const (
@@ -310,7 +311,7 @@ func outputSiteKey(value string) string {
 		return ""
 	}
 
-	return strings.ToLower(normalized)
+	return internalslug.Canonicalize(normalized)
 }
 
 func normalizeReservedOutputKeys(reservedOutputPaths []string) map[string]struct{} {

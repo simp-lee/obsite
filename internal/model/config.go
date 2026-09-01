@@ -3,23 +3,24 @@ package model
 // SiteConfig is the stable site-level configuration contract shared across packages.
 // URL-like fields intentionally remain plain strings so html/template keeps contextual escaping.
 type SiteConfig struct {
-	Title          string
-	BaseURL        string
-	Author         string
-	Description    string
-	Language       string
-	DefaultPublish bool
-	DefaultImg     string
-	ThemeDir       string
-	ThemeCSS       string
-	ThemeSlots     string
-	CustomCSS      string
-	Pagination     PaginationConfig
-	Sidebar        SidebarConfig
-	Popover        PopoverConfig
-	Related        RelatedConfig
-	RSS            RSSConfig
-	Timeline       TimelineConfig
+	Title              string
+	BaseURL            string
+	Author             string
+	Description        string
+	Language           string
+	DefaultPublish     bool
+	DefaultImg         string
+	DefaultImgExternal bool
+	ThemeDir           string
+	ThemeCSS           string
+	ThemeSlots         string
+	CustomCSS          string
+	Pagination         PaginationConfig
+	Sidebar            SidebarConfig
+	Popover            PopoverConfig
+	Related            RelatedConfig
+	RSS                RSSConfig
+	Timeline           TimelineConfig
 
 	RuntimeJSURL string
 }

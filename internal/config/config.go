@@ -267,7 +267,12 @@ func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 	cfg.Author = strings.TrimSpace(cfg.Author)
 	cfg.Description = strings.TrimSpace(cfg.Description)
 	cfg.Language = strings.TrimSpace(cfg.Language)
-	cfg.DefaultImg = strings.TrimSpace(cfg.DefaultImg)
+	defaultImg, externalDefaultImg, err := normalizeDefaultImg(cfg.DefaultImg)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	cfg.DefaultImg = defaultImg
+	cfg.DefaultImgExternal = externalDefaultImg
 	cfg.ThemeDir = strings.TrimSpace(cfg.ThemeDir)
 	cfg.ThemeCSS = strings.TrimSpace(cfg.ThemeCSS)
 	cfg.CustomCSS = strings.TrimSpace(cfg.CustomCSS)
@@ -313,6 +318,25 @@ func discoverOptionalDirectory(vaultRoot string, relPath string, label string) (
 		return "", fmt.Errorf("%s %q must be a non-symlink directory inside the vault", label, candidate)
 	}
 	return "", fmt.Errorf("inspect %s %q: %w", label, candidate, err)
+}
+
+func normalizeDefaultImg(raw string) (string, bool, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false, nil
+	}
+	parsed, err := url.Parse(trimmed)
+	if err == nil && parsed.IsAbs() && parsed.Host != "" && (strings.EqualFold(parsed.Scheme, "http") || strings.EqualFold(parsed.Scheme, "https")) {
+		return trimmed, true, nil
+	}
+	if strings.Contains(trimmed, `\`) || strings.ContainsAny(trimmed, "?#:") || strings.HasPrefix(trimmed, "/") || strings.HasPrefix(trimmed, "//") || hasWindowsDrivePrefix(trimmed) {
+		return "", false, fmt.Errorf("defaultImg must be an absolute hosted http(s) URL or a vault-root-relative resource path using '/' separators")
+	}
+	cleaned := path.Clean(trimmed)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", false, fmt.Errorf("defaultImg must stay inside the vault")
+	}
+	return cleaned, false, nil
 }
 
 func normalizeTimelinePath(raw string) (string, error) {

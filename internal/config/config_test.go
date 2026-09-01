@@ -272,6 +272,41 @@ func TestInitialYAMLUsesDefaultsAndStrictFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeSiteConfigValidatesDefaultImageSemantics(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name     string
+		value    string
+		want     string
+		external bool
+	}{
+		{name: "empty", value: "", want: ""},
+		{name: "local", value: "images/../media/Hero.png", want: "media/Hero.png"},
+		{name: "external HTTP", value: "http://images.example.test/hero.png?size=2#card", want: "http://images.example.test/hero.png?size=2#card", external: true},
+		{name: "external HTTPS", value: "https://images.example.test/hero.png", want: "https://images.example.test/hero.png", external: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultImg: tt.value})
+			if err != nil {
+				t.Fatalf("NormalizeSiteConfig() error = %v", err)
+			}
+			if cfg.DefaultImg != tt.want || cfg.DefaultImgExternal != tt.external {
+				t.Fatalf("default image = (%q,%t), want (%q,%t)", cfg.DefaultImg, cfg.DefaultImgExternal, tt.want, tt.external)
+			}
+		})
+	}
+
+	for _, value := range []string{"images/hero.png?v=1", "images/hero.png#card", `images\\hero.png`, "/images/hero.png", "../hero.png", "C:/hero.png", "//server/share/hero.png", "data:image/png;base64,AA"} {
+		t.Run(value, func(t *testing.T) {
+			_, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultImg: value})
+			if err == nil || !strings.Contains(err.Error(), "defaultImg") {
+				t.Fatalf("NormalizeSiteConfig(%q) error = %v, want defaultImg rejection", value, err)
+			}
+		})
+	}
+}
+
 func TestNormalizeSiteConfigPreservesInternalBooleanPolicy(t *testing.T) {
 	t.Parallel()
 

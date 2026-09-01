@@ -395,6 +395,10 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, fmt.Errorf("scan vault: %w", err)
 	}
+	defaultImageSource, err := resolveDefaultImageSource(normalizedVaultPath, cfg, scanResult)
+	if err != nil {
+		return result, err
+	}
 	recordCanvasDiagnostics(scanResult.ResourceFiles, diagnostics)
 
 	frontmatterResult, err := vault.ParseFrontmatter(scanResult, cfg)
@@ -410,6 +414,15 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	result.Index = idx
 	if err != nil {
 		return result, fmt.Errorf("build index: %w", err)
+	}
+	if defaultImageSource != "" {
+		asset := idx.Assets[defaultImageSource]
+		if asset == nil {
+			asset = &model.Asset{SrcPath: defaultImageSource}
+			idx.Assets[defaultImageSource] = asset
+		}
+		asset.RefCount++
+		idx.SetAssets(idx.Assets)
 	}
 
 	var relatedRanking *recommend.EngineResult
@@ -449,9 +462,16 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	noteDerivedSignatures := make(map[string]map[string]string)
 	hashSnapshot := diffNoteHashes(previousManifest, noteHashes)
 
+	temporaryDefaultImagePeers := seedDefaultImageCollisionPeers(idx, defaultImageSource, scanResult.ResourceFiles)
 	assetCollector, err := internalasset.NewCollectorWithResourceFiles(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths, nil)
 	if err != nil {
 		return result, fmt.Errorf("create asset collector: %w", err)
+	}
+	for _, peer := range temporaryDefaultImagePeers {
+		delete(idx.Assets, peer)
+	}
+	if len(temporaryDefaultImagePeers) > 0 {
+		idx.SetAssets(idx.Assets)
 	}
 	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, fullDirty)
 	if renderErr != nil {
@@ -478,6 +498,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}
 	assetDestinationPlan := assetCollector.PlanDestinations(mergeBuildAssets(idx.Assets, noteStatesByPath))
+	if defaultImageSource != "" {
+		defaultImageDestination := assetDestinationPlan[defaultImageSource]
+		if strings.TrimSpace(defaultImageDestination) == "" {
+			return result, fmt.Errorf("plan defaultImg %q output destination", defaultImageSource)
+		}
+		cfg.DefaultImg = defaultImageDestination
+		idx.Assets[defaultImageSource].DstPath = defaultImageDestination
+	}
 	assetDestinationDirtyPaths, err := rerenderNotesWithMismatchedAssetDestinations(idx, assetCollector, noteStatesByPath, assetDestinationPlan)
 	if err != nil {
 		return result, fmt.Errorf("rerender notes for asset path changes: %w", err)
@@ -510,6 +538,11 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	relatedArticlesByPath, relatedSignatures := materializeRelatedArticlesByPath(cfg, idx, relatedRanking, summaryByPath)
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyRelated, relatedSignatures)
 	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, noteDerivedSignatures, fullDirty)
+	if previousManifest != nil && previousManifest.DefaultImagePath != cfg.DefaultImg {
+		for relPath := range allPublicNotePathSet(idx) {
+			notePageDirty[relPath] = struct{}{}
+		}
+	}
 	for relPath := range assetDestinationDirtyPaths {
 		notePageDirty[relPath] = struct{}{}
 	}
@@ -647,7 +680,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 
 	if !disableCacheReuse {
-		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, result.Graph, noteStatesByPath, pageSignatures)
+		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, cfg.DefaultImg, result.Graph, noteStatesByPath, pageSignatures)
 		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
 			return result, err
 		}
