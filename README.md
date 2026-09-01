@@ -1,218 +1,206 @@
 # Obsite
 
-Obsite is a single-binary CLI that builds a static website from an Obsidian vault.
+Obsite is a self-contained CLI that turns one Obsidian Markdown vault into a static website.
 
-## Features
+## Quick start
 
-- **Obsidian-native Markdown** — wikilinks, callouts, embeds, comments, LaTeX math, hashtags
-- **Incremental builds** — content-hash cache rebuilds only changed pages
-- **SEO** — canonical URLs, Open Graph, Twitter Cards, JSON-LD, sitemap, robots.txt, RSS
-- **Related articles** — build-time dynamic TF-IDF cosine similarity with direct link and tag signals
-- **Live preview** — local server with file watching and live reload
-- **Sidebar navigation** — collapsible file-tree sidebar
-- **Link popovers** — async internal-link previews
-- **Timeline page** — chronological recent-notes view, optionally as homepage
-- **KaTeX & Mermaid** — client-side math and diagram rendering
-- **Syntax highlighting** — Chroma-based code highlighting
-- **HTML & CSS minification** — smaller output files
-- **Global custom.css override** — optional vault-root stylesheet loaded after the active theme
-
-## Installation
+Run these commands from the parent of an existing vault directory:
 
 ```bash
-go install github.com/simp-lee/obsite/cmd/obsite@latest
+cd vault
+obsite init
+obsite build
+obsite serve --watch
 ```
 
-Requires **Go 1.25+**.
+Open <http://localhost:8080>. `init` creates `obsite.yaml` exclusively and will not overwrite an existing file. The generated configuration builds immediately; replace its example `baseURL` with the real public URL before publishing.
 
-## Quick Start
+The current directory is the default vault. `build` reads `<vault>/obsite.yaml` and publishes transactionally to `<vault>/public`. `serve --watch` performs that same build first, then watches valid vault inputs and reloads the browser only after a successful rebuild.
+
+## Install
+
+Download the archive for Linux, macOS, or Windows (`amd64` or `arm64`) from [GitHub Releases](https://github.com/simp-lee/obsite/releases). Each archive contains one `obsite` executable, the project license, and third-party notices. Verify the archive with the published SHA-256 `checksums.txt` before use.
+
+The versioned Go entrypoint is also supported and requires Go 1.25 or newer:
 
 ```bash
-# 1. Generate a config file inside your vault
-obsite init --vault ~/my-vault
-
-# 2. Edit the generated obsite.yaml
-#    baseURL and title are required; author and description are recommended
-
-# 3. Build the site
-obsite build --vault ~/my-vault --output ~/my-site
-
-# 4. Preview locally
-obsite serve --output ~/my-site
-
-# Optional: rebuild while watching the vault
-obsite serve --output ~/my-site --watch --vault ~/my-vault
+go install github.com/simp-lee/obsite/cmd/obsite@vX.Y.Z
 ```
 
-Open <http://localhost:8080> to view the site.
-
-Only `baseURL` and `title` are required in `obsite.yaml`.
+Official release archives contain one `CGO_ENABLED=0` binary; source installs honor the caller's Go and CGO environment. Running `init`, `build`, or `serve` does not require Node.js, npm, an external search indexer, a browser tool, a CDN, another executable, or a runtime download. Obsite does not expose a public Go library API.
 
 ## Commands
 
-### `obsite init`
-
-Create an `obsite.yaml` template in a vault directory. The command fails if `obsite.yaml` already exists.
-
-```bash
-obsite init --vault <PATH>
+```text
+obsite init [--vault PATH]
+obsite build [--vault PATH] [--output PATH] [--force]
+obsite serve [--vault PATH] [--output PATH] [--port NUM] [--watch]
+obsite version
+obsite --version
 ```
 
-### `obsite build`
+- `init` defaults to the current directory. The vault must already exist.
+- `build` defaults to the current directory and `<vault>/public`. `--output` may select another directory; `--force` bypasses page-cache reuse.
+- `serve` defaults to `<vault>/public` on port `8080`. Without `--watch`, a missing output is an error. With `--watch`, Obsite builds before serving.
+- The optional `--vault` changes the vault root. There is no external config or theme flag.
+- Running `obsite` without arguments prints concise help. Unknown commands, arguments, and removed flags fail explicitly.
 
-Build a static site from an Obsidian vault.
+Shell completions are available through `obsite completion <bash|zsh|fish|powershell>`.
 
-```bash
-```
+## Vault contract
 
-| Flag | Description |
-|---|---|
-| `--vault` | Path to the Obsidian vault (required) |
-| `--output` | Path to write the generated site (required) |
-| `--config` | Path to `obsite.yaml` (defaults to `<vault>/obsite.yaml`) |
-| `--force` | Ignore incremental cache and rebuild all pages |
+The vault is the only file data source. Obsite recognizes these fixed inputs:
 
-### `obsite serve`
+- `obsite.yaml` — the only site configuration.
+- Markdown notes and publishable vault resources.
+- `.obsidian/app.json` — only for Obsidian's `attachmentFolderPath` setting.
+- `custom.css` — an optional final user stylesheet.
+- `.obsite/theme/theme.css` — an optional CSS-variable theme.
+- `.obsite/theme/slots.html` — optional append-only HTML slots.
+- `.obsite/theme/assets/**` — optional theme assets.
 
-Serve the generated site for local preview.
-
-```bash
-obsite serve --output <PATH> [--port <NUM>]
-```
-
-| Flag | Description |
-|---|---|
-| `--output` | Path to the generated site (required) |
-| `--vault` | Path to the vault (required when `--watch` is used) |
-| `--config` | Path to `obsite.yaml` (defaults to `<vault>/obsite.yaml` when `--watch` is used) |
-| `--port` | Port number (default: `8080`) |
-| `--watch` | Rebuild on file changes and live-reload browsers |
-
-
-### `obsite completion`
-
-Generate shell completion scripts.
-
-```bash
-obsite completion <bash|zsh|fish|powershell>
-```
+Ordinary scanning excludes `.obsite`, `.obsidian`, `node_modules`, unrelated hidden paths, and the resolved output directory. Config, CSS, theme files, Markdown, and resources must be regular contained vault files; symlink escapes are rejected. `serve --watch` watches the fixed inputs above and excludes the generated output.
 
 ## Configuration
 
-All site settings live in the vault-root `obsite.yaml`; Obsite does not read external configuration files. Run `obsite init` to generate the current field set.
-
+Only `title` and an absolute HTTP(S) `baseURL` are required. YAML is strict: unknown and removed fields are errors.
 
 ```yaml
-# Required
-baseURL: https://example.com/
+baseURL: https://example.com/notes/
 title: My Obsite Site
-
-# Recommended
-author: Your Name
-description: Notes published with obsite.
-
-# Optional
-language: en              # HTML lang attribute (default: en)
-defaultPublish: true      # Publish notes without frontmatter publish field
-defaultImg:               # Default Open Graph image path or absolute URL
-
-# Pagination
+author: ""
+description: ""
+language: en
+defaultPublish: true
+defaultImg: ""
 pagination:
-  pageSize: 20            # Items per page on list pages
-
-# Sidebar file-tree navigation
+  pageSize: 20
 sidebar:
   enabled: false
-
-# Internal-link hover previews
 popover:
   enabled: false
-
-# Related articles
 related:
   enabled: false
-  count: 5                # Recommendations per page (1..20)
-
-# RSS feed
+  count: 5
 rss:
   enabled: true
-
-# Timeline / recent-notes page
 timeline:
   enabled: false
-  asHomepage: false       # Replace the default homepage
-  path: notes             # Output path for the timeline
-
+  asHomepage: false
+  path: notes
 ```
 
-When enabled, related articles are ranked during the build with site-dynamic TF-IDF cosine similarity plus direct source-link and normalized-tag signals. `related.count` must be between `1` and `20`; omitting it uses `5`. The generated site remains fully static.
+`baseURL` and `title` above are required examples; the remaining values shown are the product defaults. `related.count` must be from `1` through `20`. Related notes use build-time dynamic TF-IDF cosine similarity plus source-link and normalized-tag signals; disabling related notes avoids tokenizer and recommendation-index work.
 
-Place an optional global override stylesheet at `<vault>/custom.css` to load it after the generated site stylesheet. That vault-root file is the only auto-detected `custom.css` location.
+### `defaultImg`
 
+`defaultImg` has exactly two non-empty meanings:
 
-## Note Frontmatter
+1. An absolute `http` or `https` URL with a host is used as the hosted Open Graph/Twitter image without local lookup.
+2. Any other value must be a clean `/`-separated resource path relative to the vault root, such as `media/social-card.png`.
 
-Individual notes can use YAML frontmatter to control publishing and metadata:
+A local image is resolved from the vault root, published even when no note references it, and routed through the same collision-safe asset plan as other resources. Metadata uses its final public URL. Missing, ambiguous, directory, symlink, absolute filesystem, query/fragment, backslash, or escaping paths fail the build. An empty value emits no image metadata.
+
+## Markdown and generated site
+
+Obsite keeps page content server-rendered and supports frontmatter publishing/metadata, wikilinks, note and image embeds, callouts, comment stripping, hashtags, headings/TOC, syntax highlighting, permitted raw HTML, attachments, backlinks, tags, folders, pagination, timeline, RSS, sitemap, robots, canonical metadata, Open Graph, Twitter cards, JSON-LD, and a static 404 page.
+
+The stable note, index, tag, folder, timeline, and 404 shells are built into Obsite. Themes cannot replace page structure, SEO, headers, content, navigation mounts, or footers. Stable integrations can target `data-obsite-root`, `data-obsite-kind`, `data-obsite-main`, and `data-page-content`; decorative classes are not compatibility promises.
+
+### Offline math and diagrams
+
+Obsite embeds unmodified official browser distributions of KaTeX `0.18.4` and Mermaid `11.17.2`, including KaTeX fonts. Math source is protected by the pinned upstream Goldmark passthrough extension. Generated sites render math and diagrams without CDN, npm, or other network requests. Pages without a feature do not start its vendor runtime.
+
+### Shared runtime, Sidebar, and Popover
+
+Every page references one content-addressed `assets/obsite/runtime.<hash>.js`. It applies the base-path-isolated light/dark preference before paint, then initializes enabled enhancements. When Sidebar is enabled, the tree is serialized once at `assets/obsite/sidebar.json`; it is not copied into each page. Popovers use delegated behavior for both server-rendered note links and Sidebar links created later.
+
+JavaScript or shared-data failure does not remove the server-rendered title, body, breadcrumbs, built-in links, SEO, or static resources. Sidebar and Popover are progressive enhancements.
+
+## CSS themes and assets
+
+Stylesheets always load in this order:
+
+1. Obsite structural CSS and default light/dark/system variables.
+2. Official runtime CSS.
+3. Optional `.obsite/theme/theme.css`, published as `assets/theme/theme.css`.
+4. Optional vault-root `custom.css`, published as `assets/custom.css`.
+
+A distributable theme changes the public variables rather than replacing HTML:
+
+```css
+:root {
+  --obsite-background: #fff;
+  --obsite-surface: #f7f7f7;
+  --obsite-text: #171717;
+  --obsite-muted: #686868;
+  --obsite-accent: #315efb;
+  --obsite-border: #dedede;
+  --obsite-font-body: system-ui, sans-serif;
+  --obsite-font-display: system-ui, sans-serif;
+  --obsite-font-mono: ui-monospace, monospace;
+  --obsite-content-width: 48rem;
+  --obsite-sidebar-width: 18rem;
+  --obsite-radius: 0.5rem;
+  --obsite-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 12%);
+}
+```
+
+Files below `.obsite/theme/assets/` are copied without that source `assets/` prefix to `assets/theme/`. Relative URLs in `theme.css` therefore remain relative to the published theme stylesheet. `custom.css` may use arbitrary CSS as the final site-specific override.
+
+## Append-only theme slots
+
+`.obsite/theme/slots.html` may contain only Go `html/template` definitions for these four names:
+
+- `obsite-head-end`
+- `obsite-header-end`
+- `obsite-main-end`
+- `obsite-footer-end`
+
+Each is appended exactly once at its named structural boundary. Example:
+
+```gotemplate
+{{ define "obsite-footer-end" }}
+  <img src="{{ themeAssetURL .SiteRootRel "brand/mark.svg" }}" alt="">
+{{ end }}
+```
+
+Slots can read only `.Kind`, `.Title`, `.Canonical`, `.RelPath`, `.SiteRootRel`, `.Site.Title`, `.Site.BaseURL`, `.Site.Author`, `.Site.Description`, and `.Site.Language`. The only added helper is `themeAssetURL .SiteRootRel "path-relative-to-theme-assets"`. Unknown definitions, raw content outside definitions, template invocation, unsupported files in `.obsite/theme/`, and invalid asset paths fail the build.
+
+## Note frontmatter
 
 ```yaml
 ---
 title: My Note Title
-description: A short description for SEO.
+description: A short SEO description.
 publish: true
-date: 2025-01-15
-updated: 2025-02-10
-tags:
-  - example
-  - notes
-aliases:
-  - alternate-name
+date: 2026-01-15
+updated: 2026-02-10
+tags: [example, notes]
+aliases: [alternate-name]
 slug: custom-url-slug
 ---
 ```
 
-| Field | Description |
-|---|---|
-| `title` | Page title (falls back to filename) |
-| `description` | SEO meta description |
-| `publish` | `true` / `false` — overrides `defaultPublish` |
-| `date` | Publication date |
-| `updated` | Override last-modified timestamp |
-| `tags` | List of tags |
-| `aliases` | Alternative note names for wikilink resolution |
-| `slug` | Custom URL slug (overrides auto-generated slug) |
-
-## Build Pipeline
-
-Obsite processes a vault through these phases:
-
-1. **Scan** — Walk the vault, discover Markdown files and attachments
-2. **Frontmatter** — Parse YAML frontmatter, partition public/unpublished notes
-3. **Source index** — Build slugs, aliases, tags, direct links, and optional related-article semantic fields
-4. **Related ranking** — Before HTML rendering, compute dynamic TF-IDF cosine features and combine qualified content with source-only link and tag signals
-5. **Markdown render** — Convert Markdown to HTML, expand embeds, resolve render-time links, and discover assets
-6. **Pages & graph** — Build the render-expanded backlinks graph and apply templates with related cards
-7. **Assets** — Emit CSS and runtime assets, copy vault resources with hash-based deduplication
-8. **SEO** — Generate `robots.txt`, `sitemap.xml`, `index.xml`, JSON-LD
-
-Incremental builds skip unchanged pages using content-hash caching. Use `--force` to bypass the cache.
+`publish` overrides `defaultPublish`; title falls back to the filename. Dates, aliases, tags, descriptions, and custom slugs feed the corresponding page, link, list, related-note, and SEO behavior.
 
 ## Development
 
-```bash
-# Run all checks (format, lint, test)
-make check
+Pinned development versions used by CI are Go `1.26.2`, Node.js `24.14.1`, Playwright `1.62.1`, Chromium from that exact Playwright package, GoReleaser `v2.18.0`, actionlint `v1.7.7`, golangci-lint `v2.11.4`, gofumpt `v0.9.2`, and goimports `v0.44.0`.
 
-# Individual targets
-make fmt          # Format code
-make fmt-check    # Check formatting
-make lint         # Run golangci-lint
-make test         # Run tests
+```bash
+make tools       # install the pinned Go format/lint tools
+make check       # format check, lint, Go tests, and product/workflow audits
+npm ci
+npx --no-install playwright install chromium
+npm run test:e2e
 ```
 
-### Prerequisites
+Release verification is available through the pinned wrappers:
 
-- [Go 1.25+](https://go.dev/dl/)
-- [golangci-lint](https://golangci-lint.run/)
-- [gofumpt](https://github.com/mvdan/gofumpt) (`go install mvdan.cc/gofumpt@latest`)
-- [goimports](https://pkg.go.dev/golang.org/x/tools/cmd/goimports) (`go install golang.org/x/tools/cmd/goimports@latest`)
-
+```bash
+sh scripts/verify-version-builds.sh
+scripts/goreleaser.sh check
+scripts/goreleaser.sh release --snapshot --clean
+sh scripts/verify-release.sh dist
+```

@@ -385,7 +385,7 @@ func TestBuildABISourceSignatureIgnoresStylesheetAssetsAndTracksGoSources(t *tes
 
 	write("go.mod", "module example.com/obsite\n\ngo 1.24.0\n")
 	write("internal/render/render.go", "package render\n\nconst buildABITest = 1\n")
-	write("templates/style.css", "body { color: black; }\n")
+	write("internal/render/site/style.css", "body { color: black; }\n")
 
 	baseline, err := buildABISourceSignatureFromRoot(repoRoot)
 	if err != nil {
@@ -395,7 +395,7 @@ func TestBuildABISourceSignatureIgnoresStylesheetAssetsAndTracksGoSources(t *tes
 		t.Fatal("buildABISourceSignatureFromRoot() = empty baseline signature")
 	}
 
-	write("templates/style.css", "body { color: white; }\n")
+	write("internal/render/site/style.css", "body { color: white; }\n")
 	styleOnly, err := buildABISourceSignatureFromRoot(repoRoot)
 	if err != nil {
 		t.Fatalf("buildABISourceSignatureFromRoot() style-only error = %v", err)

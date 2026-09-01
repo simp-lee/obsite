@@ -483,7 +483,7 @@ Gamma note.
 	styleCSS := readBuildOutputFile(t, outputPath, "style.css")
 	templateCSS, err := os.ReadFile(filepath.Join("..", "render", "site", "style.css"))
 	if err != nil {
-		t.Fatalf("os.ReadFile(templates/style.css) error = %v", err)
+		t.Fatalf("os.ReadFile(internal/render/site/style.css) error = %v", err)
 	}
 	if len(styleCSS) >= len(templateCSS) {
 		t.Fatalf("len(style.css) = %d, want minified output smaller than embedded source %d", len(styleCSS), len(templateCSS))

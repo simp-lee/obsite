@@ -385,7 +385,7 @@ func collectBuildABISourceFiles(repoRoot string) ([]string, error) {
 	}
 
 	files := make([]string, 0, 128)
-	for _, relDir := range []string{"cmd", "internal", "templates"} {
+	for _, relDir := range []string{"cmd", "internal"} {
 		absDir := filepath.Join(repoRoot, relDir)
 		info, err := os.Stat(absDir)
 		if err != nil {
