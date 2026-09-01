@@ -81,9 +81,11 @@ var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 
 func parseEmbeddedTemplates() (*template.Template, error) {
 	return template.New(baseTemplateName).Funcs(template.FuncMap{
-		"toJSON":       templateJSON,
-		"pageAssetURL": pageAssetURL,
-		"siteBasePath": siteBasePath,
+		"toJSON":        templateJSON,
+		"pageAssetURL":  pageAssetURL,
+		"siteBasePath":  siteBasePath,
+		"slotData":      projectSlotData,
+		"themeAssetURL": themeAssetURL,
 	}).ParseFS(embeddedSiteFS, embeddedHTMLTemplatePaths...)
 }
 
@@ -1044,9 +1046,9 @@ func executeTemplate(page model.PageData) ([]byte, error) {
 }
 
 func loadTemplateSet(site model.SiteConfig) (*template.Template, error) {
-	tmpl, err := parseDefaultTemplates()
+	tmpl, err := templateSetWithThemeSlots(site.ThemeSlots)
 	if err != nil {
-		return nil, fmt.Errorf("parse default templates: %w", err)
+		return nil, err
 	}
 	return tmpl, nil
 }

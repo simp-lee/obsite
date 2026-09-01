@@ -12,6 +12,7 @@ type SiteConfig struct {
 	DefaultImg     string
 	ThemeDir       string
 	ThemeCSS       string
+	ThemeSlots     string
 	CustomCSS      string
 	Pagination     PaginationConfig
 	Sidebar        SidebarConfig

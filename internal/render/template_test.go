@@ -760,9 +760,11 @@ func parseDefaultTemplateSet(t *testing.T) *template.Template {
 
 	root := repoRoot(t)
 	tmpl, err := template.New("base").Funcs(template.FuncMap{
-		"toJSON":       templateJSON,
-		"pageAssetURL": pageAssetURL,
-		"siteBasePath": siteBasePath,
+		"toJSON":        templateJSON,
+		"pageAssetURL":  pageAssetURL,
+		"siteBasePath":  siteBasePath,
+		"slotData":      projectSlotData,
+		"themeAssetURL": themeAssetURL,
 	}).ParseFiles(
 		filepath.Join(root, "internal", "render", "site", "base.html"),
 		filepath.Join(root, "internal", "render", "site", "note.html"),

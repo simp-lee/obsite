@@ -326,6 +326,17 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 	cfg.ThemeDir = theme.directory
 	cfg.ThemeCSS = theme.stylesheet
+	cfg.ThemeSlots = ""
+	if theme.slots != "" {
+		_, slots, _, readErr := internalfsutil.ReadContainedRegularFile(normalizedVaultPath, theme.slots)
+		if readErr != nil {
+			return result, fmt.Errorf("read theme slots %q: %w", theme.slots, readErr)
+		}
+		cfg.ThemeSlots = string(slots)
+		if err := render.ValidateThemeSlots(cfg.ThemeSlots); err != nil {
+			return result, fmt.Errorf("validate theme slots %q: %w", theme.slots, err)
+		}
+	}
 	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)

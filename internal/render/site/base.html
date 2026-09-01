@@ -1,3 +1,8 @@
+{{define "obsite-head-end"}}{{end}}
+{{define "obsite-header-end"}}{{end}}
+{{define "obsite-main-end"}}{{end}}
+{{define "obsite-footer-end"}}{{end}}
+
 {{define "base"}}
 <!doctype html>
 <html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}">
@@ -192,6 +197,7 @@
   {{end}}
 
   {{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>{{end}}
+  {{template "obsite-head-end" (slotData .)}}
 </head>
 <body class="kind-{{.Kind}}" data-obsite-root data-obsite-kind="{{.Kind}}">
   <div class="site-frame">
@@ -223,6 +229,7 @@
         {{with .Site.Description}}<p class="site-description">{{.}}</p>{{end}}
         {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}
       </div>
+      {{template "obsite-header-end" (slotData .)}}
     </header>
 
     {{if .Breadcrumbs}}
@@ -254,12 +261,14 @@
 
       <main class="site-main" data-obsite-main>
         {{template "content" .}}
+        {{template "obsite-main-end" (slotData .)}}
       </main>
     </div>
 
     <footer class="site-footer" data-obsite-footer>
       <p>{{if .Site.Title}}{{.Site.Title}}{{else}}Obsite{{end}}{{if .Site.Author}} · {{.Site.Author}}{{end}}</p>
       <p class="site-footer-note">Built for long-form reading, quick scanning, and durable internal links.</p>
+      {{template "obsite-footer-end" (slotData .)}}
     </footer>
   </div>
 
