@@ -41,10 +41,16 @@ func TestRealEntrypointDefaultInitBuildAndDiagnostics(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(vault, "public", "index.html")); err != nil {
 		t.Fatalf("os.Stat(public/index.html) error = %v", err)
 	}
+	var versionOutputs []string
 	for _, args := range [][]string{{"version"}, {"--version"}} {
-		if output, err := run(args...); err != nil || output != "obsite dev\n" {
+		output, err := run(args...)
+		if err != nil || !strings.Contains(output, "obsite version=dev ") || !strings.Contains(output, " type=dev\n") {
 			t.Fatalf("%v = %v, %q", args, err, output)
 		}
+		versionOutputs = append(versionOutputs, output)
+	}
+	if versionOutputs[0] != versionOutputs[1] {
+		t.Fatalf("version outputs differ: %#v", versionOutputs)
 	}
 	if output, err := run("unknown"); err == nil || !strings.Contains(output, "unknown command") {
 		t.Fatalf("unknown = %v\n%s", err, output)

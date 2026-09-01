@@ -15,10 +15,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const (
-	defaultConfigFilename = internalconfig.Filename
-	developmentVersion    = "dev"
-)
+const defaultConfigFilename = internalconfig.Filename
 
 type previewServer interface {
 	ListenAndServe() error
@@ -72,9 +69,9 @@ func newRootCommand(deps commandDependencies) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()
 		},
-		Version: developmentVersion,
+		Version: formatVersion(),
 	}
-	cmd.SetVersionTemplate("obsite {{.Version}}\n")
+	cmd.SetVersionTemplate("{{.Version}}\n")
 
 	cmd.AddCommand(
 		newBuildCommand(deps),
@@ -92,7 +89,7 @@ func newVersionCommand() *cobra.Command {
 		Short: "Print the Obsite version",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			_, err := fmt.Fprintf(cmd.OutOrStdout(), "obsite %s\n", developmentVersion)
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), formatVersion())
 			return err
 		},
 	}

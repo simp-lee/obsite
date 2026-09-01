@@ -26,6 +26,7 @@ func TestExecuteShowsRootHelp(t *testing.T) {
 }
 
 func TestExecuteVersionFormsMatch(t *testing.T) {
+	setVersionTestState(t)
 	var outputs []string
 	for _, args := range [][]string{{"version"}, {"--version"}} {
 		stdout, _, err := executeForTest(t, testCommandDependencies(), args)
@@ -34,7 +35,7 @@ func TestExecuteVersionFormsMatch(t *testing.T) {
 		}
 		outputs = append(outputs, stdout)
 	}
-	if outputs[0] != outputs[1] || outputs[0] != "obsite dev\n" {
+	if outputs[0] != outputs[1] || outputs[0] != "obsite version=dev commit=unknown date=unknown type=dev\n" {
 		t.Fatalf("version outputs = %#v", outputs)
 	}
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"version", "extra"})

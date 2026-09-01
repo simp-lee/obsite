@@ -9,6 +9,13 @@ Version: 11.17.2. License: MIT (`internal/render/vendor/mermaid/LICENSE`).
 ## hugo-goldmark-extensions/passthrough
 Version: 0.5.0. License: Apache-2.0 (`internal/markdown/PASSTHROUGH_LICENSE`).
 
+## Chinese tokenizer resources
+The retained/adapted go-ego/gse data and implementation, Jieba HMM provenance,
+and vcaesar/cedar dependency are inventoried in
+`internal/recommend/chinese/THIRD_PARTY.md`. Their Apache-2.0, MIT, and
+BSD-2-Clause terms are retained beside that inventory. Release archives preserve
+all paths referenced by this notice.
+
 ## Vendored file SHA-256
 
 - `e5372d199bcdae8b4de71d0f7ceba72a4ba12774a27c60a6f1f77d03b3228ee4  internal/render/vendor/katex/contrib/auto-render.min.js`
