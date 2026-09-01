@@ -41,6 +41,7 @@ type PageData struct {
 	RelatedArticles []RelatedArticle
 	HasMath         bool
 	HasMermaid      bool
+	HasThemeCSS     bool
 	HasCustomCSS    bool
 	HasRSS          bool
 

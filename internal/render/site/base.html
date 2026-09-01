@@ -155,10 +155,13 @@
   </script>
 
   <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
+  {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
+  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel .Site.KaTeXCSSURL}}">
+  {{end}}
+  {{if .HasThemeCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/theme/theme.css">{{end}}
   {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
 
   {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
-  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel .Site.KaTeXCSSURL}}">
   <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXJSURL}}"></script>
   <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXAutoRenderURL}}"></script>
   <script>

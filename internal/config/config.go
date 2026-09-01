@@ -290,6 +290,7 @@ func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 	cfg.Language = strings.TrimSpace(cfg.Language)
 	cfg.DefaultImg = strings.TrimSpace(cfg.DefaultImg)
 	cfg.ThemeDir = strings.TrimSpace(cfg.ThemeDir)
+	cfg.ThemeCSS = strings.TrimSpace(cfg.ThemeCSS)
 	cfg.CustomCSS = strings.TrimSpace(cfg.CustomCSS)
 	if cfg.Pagination.PageSize <= 0 {
 		return model.SiteConfig{}, fmt.Errorf("pagination.pageSize must be greater than 0")

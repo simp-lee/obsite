@@ -1819,15 +1819,15 @@ func TestWriteOutputFileRejectsPathOutsideOutputRoot(t *testing.T) {
 	}
 }
 
-func TestBuildCopiesConfiguredCustomCSSAndInjectsRelativeLinks(t *testing.T) {
+func TestBuildCopiesFixedCustomCSSAndInjectsRelativeLinks(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 	customCSSContent := "body { color: tomato; }\n"
-	customCSSPath := filepath.Join(vaultPath, "styles", "theme.css")
+	customCSSPath := filepath.Join(vaultPath, "custom.css")
 
-	writeBuildTestFile(t, vaultPath, "styles/theme.css", customCSSContent)
+	writeBuildTestFile(t, vaultPath, "custom.css", customCSSContent)
 	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
 title: Alpha
 date: 2026-04-06
@@ -1977,13 +1977,14 @@ Body.
 	}
 }
 
-func TestBuildRejectsMissingCustomCSSSource(t *testing.T) {
+func TestBuildRejectsNonFixedCustomCSSSource(t *testing.T) {
 	t.Parallel()
 
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
-	missingCustomCSSPath := filepath.Join(vaultPath, "styles", "missing.css")
+	nonFixedPath := filepath.Join(vaultPath, "styles", "custom.css")
 
+	writeBuildTestFile(t, vaultPath, "styles/custom.css", "body {}\n")
 	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
 title: Alpha
 date: 2026-04-06
@@ -1994,14 +1995,14 @@ Body.
 `)
 
 	cfg := testBuildSiteConfig()
-	cfg.CustomCSS = missingCustomCSSPath
+	cfg.CustomCSS = nonFixedPath
 
 	_, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
 	if err == nil {
-		t.Fatal("buildWithOptions() error = nil, want explicit missing custom CSS error")
+		t.Fatal("buildWithOptions() error = nil, want fixed custom CSS path error")
 	}
-	if !strings.Contains(err.Error(), `custom CSS "`+missingCustomCSSPath+`" does not exist`) {
-		t.Fatalf("buildWithOptions() error = %q, want missing custom CSS path error", err.Error())
+	if !strings.Contains(err.Error(), `custom CSS "`+nonFixedPath+`" must be the fixed vault input`) {
+		t.Fatalf("buildWithOptions() error = %q, want fixed custom CSS path error", err.Error())
 	}
 }
 
@@ -2087,9 +2088,9 @@ func TestBuildKeepsCustomCSSPathReservedFromReferencedAssets(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "site")
 	customCSSContent := "body { color: tomato; }\n"
 	attachmentCSSContent := "body { color: dodgerblue; }\n"
-	customCSSPath := filepath.Join(vaultPath, "styles", "theme.css")
+	customCSSPath := filepath.Join(vaultPath, "custom.css")
 
-	writeBuildTestFile(t, vaultPath, "styles/theme.css", customCSSContent)
+	writeBuildTestFile(t, vaultPath, "custom.css", customCSSContent)
 	writeBuildTestFile(t, vaultPath, "attachments/custom.css", attachmentCSSContent)
 	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
 title: Alpha
@@ -5448,9 +5449,9 @@ func TestBuildRestoresPlainMarkdownImagePathWhenReservedOutputIsReleasedOnCached
 	outputPath := filepath.Join(t.TempDir(), "site")
 	customCSSContent := "body { color: tomato; }\n"
 	attachmentCSSContent := "body { color: dodgerblue; }\n"
-	customCSSPath := filepath.Join(vaultPath, "styles", "theme.css")
+	customCSSPath := filepath.Join(vaultPath, "custom.css")
 
-	writeBuildTestFile(t, vaultPath, "styles/theme.css", customCSSContent)
+	writeBuildTestFile(t, vaultPath, "custom.css", customCSSContent)
 	writeBuildTestFile(t, vaultPath, "attachments/custom.css", attachmentCSSContent)
 	writeBuildTestFile(t, vaultPath, "notes/host.md", `---
 title: Host
@@ -5477,6 +5478,9 @@ date: 2026-04-06
 		t.Fatalf("first.Assets[attachments/custom.css].DstPath = %q, want hashed reserved path", initialHostAsset.DstPath)
 	}
 	initialHostDst := initialHostAsset.DstPath
+	if err := os.Remove(customCSSPath); err != nil {
+		t.Fatalf("os.Remove(%q) error = %v", customCSSPath, err)
+	}
 
 	getRenderedMarkdownPaths := captureRenderedMarkdownNotePaths(t)
 	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})

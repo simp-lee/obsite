@@ -19,6 +19,8 @@ const (
 	outputOwnerPopover    outputOwner = "popover data"
 	outputOwnerStyle      outputOwner = "site stylesheet"
 	outputOwnerRuntime    outputOwner = "runtime assets"
+	outputOwnerThemeCSS   outputOwner = "theme stylesheet"
+	outputOwnerThemeAsset outputOwner = "theme assets"
 	outputOwnerCustomCSS  outputOwner = "custom stylesheet"
 	outputOwnerVaultAsset outputOwner = "vault assets"
 	outputOwnerSitemap    outputOwner = "sitemap"
@@ -119,7 +121,7 @@ func outputClaimConflict(existing outputClaim, next outputClaim) error {
 	)
 }
 
-func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, assets map[string]*model.Asset, writeStyleCSS bool, writeCache bool) error {
+func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, folders []folderPageSpec, assets map[string]*model.Asset, theme themeInputs, writeStyleCSS bool, writeCache bool) error {
 	plan := newOutputDestinationPlan()
 	if err := plan.claimFile(managedOutputMarkerFilename, outputOwnerMarker, "output manager"); err != nil {
 		return err
@@ -153,6 +155,16 @@ func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, fol
 	}
 	for _, relPath := range render.RuntimeAssetOutputPaths() {
 		if err := plan.claimFile(relPath, outputOwnerRuntime, relPath); err != nil {
+			return err
+		}
+	}
+	if theme.stylesheet != "" {
+		if err := plan.claimFile(themeCSSOutputPath, outputOwnerThemeCSS, theme.stylesheet); err != nil {
+			return err
+		}
+	}
+	for _, asset := range theme.assets {
+		if err := plan.claimFile(asset.outputPath, outputOwnerThemeAsset, asset.sourcePath); err != nil {
 			return err
 		}
 	}

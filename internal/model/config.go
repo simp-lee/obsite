@@ -11,6 +11,7 @@ type SiteConfig struct {
 	DefaultPublish bool
 	DefaultImg     string
 	ThemeDir       string
+	ThemeCSS       string
 	CustomCSS      string
 	Pagination     PaginationConfig
 	Sidebar        SidebarConfig

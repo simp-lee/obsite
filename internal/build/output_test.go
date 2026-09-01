@@ -80,8 +80,8 @@ func TestBuildRejectsExternalVaultInputSources(t *testing.T) {
 			tt.set(&cfg, external)
 
 			_, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
-			if err == nil || !strings.Contains(err.Error(), "must stay inside the vault") {
-				t.Fatalf("buildWithOptions() error = %v, want vault input boundary rejection", err)
+			if err == nil || !strings.Contains(err.Error(), "must be the fixed vault input") {
+				t.Fatalf("buildWithOptions() error = %v, want fixed vault input rejection", err)
 			}
 			if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
 				t.Fatalf("os.Stat(output) error = %v, want no published output", statErr)

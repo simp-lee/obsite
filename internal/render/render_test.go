@@ -1702,7 +1702,7 @@ func TestEmitStyleCSSWritesEmbeddedStylesheet(t *testing.T) {
 	t.Parallel()
 
 	outputDir := t.TempDir()
-	wrote, err := EmitStyleCSS(outputDir, model.SiteConfig{})
+	wrote, err := EmitStyleCSS(outputDir)
 	if err != nil {
 		t.Fatalf("EmitStyleCSS() error = %v", err)
 	}

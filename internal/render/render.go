@@ -205,6 +205,7 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 		RelatedArticles: cloneRelatedArticles(input.RelatedArticles),
 		HasMath:         input.Note.HasMath,
 		HasMermaid:      input.Note.HasMermaid,
+		HasThemeCSS:     hasThemeCSS(input.Site),
 		HasCustomCSS:    hasCustomCSS(input.Site),
 		Breadcrumbs:     defaultNoteBreadcrumbs(input.Breadcrumbs, relPath, input.Note, displayTitle),
 		SidebarTree:     cloneSidebarTree(input.SidebarTree),
@@ -819,6 +820,7 @@ func RenderTagPage(input TagPageInput) (RenderedPage, error) {
 		ChildTags:    cloneTagLinks(input.ChildTags),
 		LastModified: input.LastModified,
 		Pagination:   clonePagination(input.Pagination),
+		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
 		Breadcrumbs:  defaultTagBreadcrumbs(input.Breadcrumbs, relPath, input.Tag),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
@@ -851,6 +853,7 @@ func RenderFolderPage(input FolderPageInput) (RenderedPage, error) {
 		FolderChildren: cloneNoteSummaries(input.Children),
 		LastModified:   input.LastModified,
 		Pagination:     clonePagination(input.Pagination),
+		HasThemeCSS:    hasThemeCSS(input.Site),
 		HasCustomCSS:   hasCustomCSS(input.Site),
 		Breadcrumbs:    defaultFolderBreadcrumbs(input.Breadcrumbs, relPath, folderPath, title),
 		SidebarTree:    cloneSidebarTree(input.SidebarTree),
@@ -882,6 +885,7 @@ func RenderTimelinePage(input TimelinePageInput) (RenderedPage, error) {
 		TimelineNotes: cloneNoteSummaries(input.Notes),
 		LastModified:  input.LastModified,
 		Pagination:    clonePagination(input.Pagination),
+		HasThemeCSS:   hasThemeCSS(input.Site),
 		HasCustomCSS:  hasCustomCSS(input.Site),
 		Breadcrumbs:   defaultTimelineBreadcrumbs(relPath, input.AsHomepage),
 		SidebarTree:   cloneSidebarTree(input.SidebarTree),
@@ -903,6 +907,7 @@ func RenderIndex(input IndexPageInput) (RenderedPage, error) {
 		RecentNotes:  cloneNoteSummaries(input.RecentNotes),
 		LastModified: input.LastModified,
 		Pagination:   clonePagination(input.Pagination),
+		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
@@ -921,6 +926,7 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 		RelPath:      notFoundOutputPath,
 		RecentNotes:  cloneNoteSummaries(input.RecentNotes),
 		LastModified: input.LastModified,
+		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
 		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
@@ -929,7 +935,7 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 }
 
 // EmitStyleCSS writes the permanent embedded stylesheet into the output root.
-func EmitStyleCSS(outputRoot string, site model.SiteConfig) (bool, error) {
+func EmitStyleCSS(outputRoot string) (bool, error) {
 	if strings.TrimSpace(outputRoot) == "" {
 		return false, errors.New("emit style.css: output root is required")
 	}
@@ -1222,6 +1228,10 @@ func pathSegments(raw string) []string {
 	}
 
 	return filtered
+}
+
+func hasThemeCSS(site model.SiteConfig) bool {
+	return strings.TrimSpace(site.ThemeCSS) != ""
 }
 
 func hasCustomCSS(site model.SiteConfig) bool {

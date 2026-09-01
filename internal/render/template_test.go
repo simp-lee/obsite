@@ -290,6 +290,38 @@ func TestDefaultTemplatesExposeStableObsiteLandmarksForEveryPageKind(t *testing.
 	}
 }
 
+func TestDefaultTemplatesOrderStructuralRuntimeThemeAndCustomStyles(t *testing.T) {
+	t.Parallel()
+	tmpl := parseDefaultTemplateSet(t)
+	site := model.SiteConfig{
+		Title:              "Field Notes",
+		Language:           "en",
+		ThemeCSS:           "/vault/.obsite/theme/theme.css",
+		CustomCSS:          "/vault/custom.css",
+		KaTeXCSSURL:        "assets/obsite-runtime/katex.min.css",
+		KaTeXJSURL:         "assets/obsite-runtime/katex.min.js",
+		KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js",
+	}
+	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, SiteRootRel: "../../", Site: site, Title: "Math", Content: template.HTML(`<p>$x$</p>`), HasMath: true, HasThemeCSS: true, HasCustomCSS: true})
+	ordered := []string{
+		`href="../../style.css"`,
+		`href="../../assets/obsite-runtime/katex.min.css"`,
+		`href="../../assets/theme/theme.css"`,
+		`href="../../assets/custom.css"`,
+	}
+	previous := -1
+	for _, marker := range ordered {
+		index := strings.Index(got, marker)
+		if index < 0 {
+			t.Fatalf("rendered page missing %q\n%s", marker, got)
+		}
+		if index <= previous {
+			t.Fatalf("stylesheet %q is out of cascade order\n%s", marker, got)
+		}
+		previous = index
+	}
+}
+
 func TestDefaultTemplatesLoadOfficialMermaidBundle(t *testing.T) {
 	t.Parallel()
 	tmpl := parseDefaultTemplateSet(t)
@@ -631,20 +663,46 @@ func TestDefaultStylesProvideResponsiveSidebarNavigation(t *testing.T) {
 	}
 }
 
-func TestDefaultStylesDefineDarkThemeOverrides(t *testing.T) {
+func TestDefaultStylesDefinePublicLightDarkAndSystemVariables(t *testing.T) {
 	t.Parallel()
 
 	css := readTemplateAsset(t, "style.css")
 	for _, want := range []string{
+		"@layer obsite",
 		":root[data-theme=\"light\"]",
 		":root[data-theme=\"dark\"]",
 		"@media (prefers-color-scheme: dark)",
 		"--theme-toggle-bg",
-		"--page-background",
+		"--page-background: var(--obsite-background)",
+		"--paper: var(--obsite-surface)",
+		"--page-surface: var(--obsite-surface)",
+		"--ink: var(--obsite-text)",
+		"--muted: var(--obsite-muted)",
+		"--accent: var(--obsite-accent)",
+		"--line: var(--obsite-border)",
 		".sr-only",
 	} {
 		if !strings.Contains(css, want) {
 			t.Fatalf("style.css missing %q", want)
+		}
+	}
+	for _, variable := range []string{
+		"--obsite-background",
+		"--obsite-surface",
+		"--obsite-text",
+		"--obsite-muted",
+		"--obsite-accent",
+		"--obsite-border",
+		"--obsite-font-body",
+		"--obsite-font-display",
+		"--obsite-font-mono",
+		"--obsite-content-width",
+		"--obsite-sidebar-width",
+		"--obsite-radius",
+		"--obsite-shadow",
+	} {
+		if !strings.Contains(css, variable+":") {
+			t.Fatalf("style.css missing public variable %q", variable)
 		}
 	}
 }

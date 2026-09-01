@@ -320,7 +320,13 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, fmt.Errorf("resolve custom CSS: %w", err)
 	}
-	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS)
+	theme, err := resolveThemeInputs(normalizedVaultPath, cfg.ThemeDir)
+	if err != nil {
+		return result, fmt.Errorf("resolve theme inputs: %w", err)
+	}
+	cfg.ThemeDir = theme.directory
+	cfg.ThemeCSS = theme.stylesheet
+	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
 	if err != nil {
@@ -499,7 +505,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	siteLastModified := siteLastModified(allPublicNotes(idx))
 	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
 	writeStyleCSS := true
-	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, writeStyleCSS, !disableCacheReuse); err != nil {
+	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, theme, writeStyleCSS, !disableCacheReuse); err != nil {
 		return result, fmt.Errorf("plan generated output: %w", err)
 	}
 	stagingOutputPath := publisher.OutputPath()
@@ -571,7 +577,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, fmt.Errorf("write popover payloads: %w", err)
 	}
 
-	wroteStyleCSS, err := render.EmitStyleCSS(stagingOutputPath, cfg)
+	wroteStyleCSS, err := render.EmitStyleCSS(stagingOutputPath)
 	if err != nil {
 		return result, fmt.Errorf("emit style.css: %w", err)
 	}
@@ -582,6 +588,9 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 	if err := render.EmitRuntimeAssets(stagingOutputPath); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
+	}
+	if err := copyThemeInputs(normalizedVaultPath, theme, stagingOutputPath); err != nil {
+		return result, err
 	}
 	if err := copyCustomCSS(normalizedVaultPath, cfg.CustomCSS, stagingOutputPath); err != nil {
 		return result, err
@@ -1945,9 +1954,9 @@ func minifyCSSFile(filePath string, minifier *minify.M) error {
 	return nil
 }
 
-func buildReservedAssetOutputPaths(customCSSPath string) []string {
-	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+1)
-	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+1)
+func buildReservedAssetOutputPaths(customCSSPath string, theme themeInputs) []string {
+	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+2)
+	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+2)
 	appendReserved := func(value string) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
@@ -1963,6 +1972,12 @@ func buildReservedAssetOutputPaths(customCSSPath string) []string {
 	for _, outputPath := range render.RuntimeAssetOutputPaths() {
 		appendReserved(outputPath)
 	}
+	if theme.stylesheet != "" {
+		appendReserved(themeCSSOutputPath)
+	}
+	for _, asset := range theme.assets {
+		appendReserved(asset.outputPath)
+	}
 	if strings.TrimSpace(customCSSPath) != "" {
 		appendReserved(customCSSOutputPath)
 	}
@@ -1972,22 +1987,33 @@ func buildReservedAssetOutputPaths(customCSSPath string) []string {
 
 func resolveCustomCSSSource(vaultRoot string, customCSSPath string) (string, error) {
 	trimmedPath := strings.TrimSpace(customCSSPath)
-	if trimmedPath == "" {
-		return "", nil
+	fixedPath := filepath.Join(vaultRoot, internalconfig.CustomCSSFilename)
+	if trimmedPath != "" {
+		configuredPath := trimmedPath
+		if !filepath.IsAbs(configuredPath) {
+			configuredPath = filepath.Join(vaultRoot, configuredPath)
+		}
+		configuredPath, err := filepath.Abs(configuredPath)
+		if err != nil {
+			return "", fmt.Errorf("resolve custom CSS %q: %w", trimmedPath, err)
+		}
+		if filepath.Clean(configuredPath) != filepath.Clean(fixedPath) {
+			return "", fmt.Errorf("custom CSS %q must be the fixed vault input %q", trimmedPath, fixedPath)
+		}
 	}
 
-	resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(vaultRoot, trimmedPath)
+	resolvedPath, _, err := internalfsutil.InspectContainedRegularFile(vaultRoot, fixedPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("custom CSS %q does not exist", trimmedPath)
-		}
-		if errors.Is(err, internalfsutil.ErrPathOutsideRoot) {
-			return "", fmt.Errorf("custom CSS %q must stay inside the vault", trimmedPath)
+			if trimmedPath == "" {
+				return "", nil
+			}
+			return "", fmt.Errorf("custom CSS %q does not exist", fixedPath)
 		}
 		if errors.Is(err, internalfsutil.ErrUnsupportedRegularFileSource) || errors.Is(err, internalfsutil.ErrSymlinkPath) {
-			return "", fmt.Errorf("custom CSS %q must be a regular non-symlink file inside the vault", trimmedPath)
+			return "", fmt.Errorf("custom CSS %q must be a regular non-symlink file inside the vault", fixedPath)
 		}
-		return "", fmt.Errorf("inspect custom CSS %q: %w", trimmedPath, err)
+		return "", fmt.Errorf("inspect custom CSS %q: %w", fixedPath, err)
 	}
 
 	return resolvedPath, nil
