@@ -69,6 +69,10 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 		case <-time.After(2 * time.Second):
 			t.Fatal("timed out waiting for native watch rebuild")
 		}
+		deadline := time.Now().Add(2 * time.Second)
+		for reloads.Load() <= before && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
 		if reloads.Load() <= before {
 			t.Fatal("successful rebuild did not notify reload")
 		}
