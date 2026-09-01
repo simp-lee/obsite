@@ -266,9 +266,11 @@ func isHTMLCandidatePath(servePath string) bool {
 
 func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, serve func(http.ResponseWriter, *http.Request)) {
 	recorder := newBufferedResponseWriter()
-	serveRequest := r
-	if r != nil && r.Method == http.MethodHead {
-		serveRequest = r.Clone(r.Context())
+	serveRequest := r.Clone(r.Context())
+	serveRequest.Header = r.Header.Clone()
+	serveRequest.Header.Del("If-Modified-Since")
+	serveRequest.Header.Del("If-None-Match")
+	if r.Method == http.MethodHead {
 		serveRequest.Method = http.MethodGet
 	}
 	serve(recorder, serveRequest)
@@ -280,6 +282,7 @@ func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, s
 
 	body := recorder.body.Bytes()
 	headers := cloneHeaders(recorder.Header())
+	headers.Set("Cache-Control", "no-store")
 	if statusCode != http.StatusPartialContent && !requestHasRange(r) && shouldInjectLiveReload(headers, body) {
 		body = injectLiveReloadScript(body)
 		headers.Set("Content-Length", strconv.Itoa(len(body)))

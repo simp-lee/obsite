@@ -658,6 +658,10 @@ samp {
   backdrop-filter: blur(2px);
 }
 
+.sidebar-overlay[hidden] {
+  display: none;
+}
+
 .page-shell,
 .support-panel,
 .article-sheet {
@@ -987,6 +991,10 @@ samp {
   color: var(--ink);
   pointer-events: auto;
   backdrop-filter: blur(18px);
+}
+
+.popover-card[hidden] {
+  display: none;
 }
 
 .popover-card-title,

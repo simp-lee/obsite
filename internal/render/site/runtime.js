@@ -693,11 +693,20 @@
             {left: "$", right: "$", display: false},
             {left: "\\(", right: "\\)", display: false}
           ],
-          throwOnError: false
+          throwOnError: false,
+          errorCallback: function (message, error) {
+            report("error", "KaTeX could not render formula: " + message, error);
+          }
         });
+        var sources = target.querySelectorAll("[data-obsite-math-source]");
+        for (var index = 0; index < sources.length; index += 1) {
+          if (!sources[index].querySelector(".katex") && !sources[index].querySelector(".katex-error")) {
+            report("error", "KaTeX could not render formula: " + sources[index].textContent);
+          }
+        }
         var failures = target.querySelectorAll(".katex-error");
-        for (var index = 0; index < failures.length; index += 1) {
-          report("error", "KaTeX could not render formula: " + failures[index].textContent);
+        for (var failureIndex = 0; failureIndex < failures.length; failureIndex += 1) {
+          report("error", "KaTeX could not render formula: " + failures[failureIndex].textContent);
         }
       })
       .catch(function (error) {

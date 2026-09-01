@@ -277,7 +277,9 @@ func (r *mathTrackingHTMLRenderer) renderInlineMath(w util.BufWriter, source []b
 		r.note.HasMath = true
 	}
 	mathNode := node.(*passthrough.PassthroughInline)
+	_, _ = w.WriteString(`<span data-obsite-math-source="inline">`)
 	_, _ = w.WriteString(html.EscapeString(string(mathNode.Segment.Value(source))))
+	_, _ = w.WriteString(`</span>`)
 	return gast.WalkContinue, nil
 }
 
@@ -288,6 +290,7 @@ func (r *mathTrackingHTMLRenderer) renderDisplayMath(w util.BufWriter, source []
 	if r.note != nil {
 		r.note.HasMath = true
 	}
+	_, _ = w.WriteString(`<div data-obsite-math-source="display">`)
 	inCallout := node.Parent() != nil && node.Parent().Kind() == callout.KindCallout
 	for i := 0; i < node.Lines().Len(); i++ {
 		segment := node.Lines().At(i)
@@ -297,7 +300,7 @@ func (r *mathTrackingHTMLRenderer) renderDisplayMath(w util.BufWriter, source []
 		}
 		_, _ = w.WriteString(html.EscapeString(line))
 	}
-	_, _ = w.WriteString("\n")
+	_, _ = w.WriteString("\n</div>")
 	return gast.WalkSkipChildren, nil
 }
 

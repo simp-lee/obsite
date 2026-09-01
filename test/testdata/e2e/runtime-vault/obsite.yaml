@@ -1,0 +1,22 @@
+baseURL: http://127.0.0.1/alpha/
+title: Runtime Garden
+author: Browser Test
+description: Offline shared runtime fixture.
+language: en
+defaultPublish: true
+defaultImg: ""
+pagination:
+  pageSize: 20
+sidebar:
+  enabled: true
+popover:
+  enabled: true
+related:
+  enabled: false
+  count: 5
+rss:
+  enabled: true
+timeline:
+  enabled: false
+  asHomepage: false
+  path: notes

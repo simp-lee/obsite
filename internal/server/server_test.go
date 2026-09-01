@@ -784,12 +784,31 @@ func TestServerInjectsLiveReloadScriptIntoHTMLResponsesOnly(t *testing.T) {
 	if contentRange := htmlResp.Header.Get("Content-Range"); contentRange != "" {
 		t.Fatalf("GET /alpha/ Content-Range = %q, want empty after HTML rewrite", contentRange)
 	}
+	if cacheControl := htmlResp.Header.Get("Cache-Control"); cacheControl != "no-store" {
+		t.Fatalf("GET /alpha/ Cache-Control = %q, want %q", cacheControl, "no-store")
+	}
 	onDiskHTML, err := os.ReadFile(filepath.Join(outputPath, "alpha", "index.html"))
 	if err != nil {
 		t.Fatalf("os.ReadFile(index.html) error = %v", err)
 	}
 	if strings.Contains(string(onDiskHTML), "data-obsite-livereload") {
 		t.Fatalf("served file on disk = %q, do not want injected livereload script persisted", string(onDiskHTML))
+	}
+
+	writeServerTestFile(t, outputPath, "alpha/index.html", "<html><body>updated alpha page</body></html>")
+	conditionalReq, err := http.NewRequest(http.MethodGet, ts.URL+"/alpha/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conditionalReq.Header.Set("If-Modified-Since", time.Now().Add(time.Hour).UTC().Format(http.TimeFormat))
+	conditionalResp, err := ts.Client().Do(conditionalReq)
+	if err != nil {
+		t.Fatalf("conditional GET /alpha/ error = %v", err)
+	}
+	defer closeServerResponseBody(t, conditionalResp)
+	conditionalBody := readServerResponseBody(t, conditionalResp)
+	if conditionalResp.StatusCode != http.StatusOK || !strings.Contains(conditionalBody, "updated alpha page") {
+		t.Fatalf("conditional GET /alpha/ = %d %q, want fresh updated body", conditionalResp.StatusCode, conditionalBody)
 	}
 
 	cssResp, err := ts.Client().Get(ts.URL + "/style.css")

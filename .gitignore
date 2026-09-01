@@ -8,6 +8,11 @@ bin/
 coverage.out
 .coverprofile
 
+# Browser test tooling and artifacts
+node_modules/
+test-results/
+playwright-report/
+
 .codex
 
 # Local OS files
