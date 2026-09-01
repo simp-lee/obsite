@@ -113,8 +113,8 @@ func TestBuildThemeSlotMutationInvalidatesEveryPage(t *testing.T) {
 	before := snapshotThemeTestOutput(t, outputPath)
 
 	writeBuildTestFile(t, vaultPath, ".obsite/theme/slots.html", `{{define "obsite-main-end"}}<span>slot-v2</span>{{end}}`)
-	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
-	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{}); err != nil {
+	getRenderedMarkdown, markdownHook := captureRenderedMarkdownNotePaths(t)
+	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{testMarkdownNoteHook: markdownHook}); err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
 	if got := getRenderedMarkdown(); len(got) != 0 {

@@ -30,7 +30,6 @@ import (
 )
 
 var (
-	buildTestRenderHookScopes sync.Map
 	buildTestOutputHookMu     sync.Mutex
 	buildTestOutputHookScopes sync.Map
 )
@@ -157,8 +156,8 @@ func TestBuildDisablingRelatedRemovesCachedNoteSectionsWithoutMarkdownRerender(t
 	}
 
 	cfg.Related.Enabled = false
-	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
+	getRenderedMarkdown, markdownHook := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,22 +309,6 @@ func TestNonRelatedPages(t *testing.T) {
 			t.Fatalf("non-related page %s changed when recommendations were enabled", relPath)
 		}
 	}
-}
-
-func lockBuildTestRenderHooks(t *testing.T) {
-	if t == nil {
-		return
-	}
-	t.Helper()
-	if _, loaded := buildTestRenderHookScopes.LoadOrStore(t, struct{}{}); loaded {
-		return
-	}
-
-	lockBuildRenderHookIsolation()
-	t.Cleanup(func() {
-		buildTestRenderHookScopes.Delete(t)
-		unlockBuildRenderHookIsolation()
-	})
 }
 
 func lockBuildTestOutputHooks(t *testing.T) {
@@ -4576,8 +4559,6 @@ func TestBuildUsesLoadedConfigDefaultsForMinimalConfig(t *testing.T) {
 }
 
 func TestBuildRetainsPassTwoDiagnosticsWhenOneRenderFails(t *testing.T) {
-	lockBuildTestRenderHooks(t)
-
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 
@@ -4595,7 +4576,7 @@ date: 2026-04-06
 `)
 
 	originalRenderMarkdownNote := renderMarkdownNote
-	renderMarkdownNote = func(idx *model.VaultIndex, note *model.Note, assetSink internalmarkdown.AssetSink) (*renderedNote, error) {
+	renderMarkdownNoteFn := func(idx *model.VaultIndex, note *model.Note, assetSink internalmarkdown.AssetSink) (*renderedNote, error) {
 		switch note.RelPath {
 		case "notes/warn.md":
 			collector := diag.NewCollector()
@@ -4607,14 +4588,12 @@ date: 2026-04-06
 			return originalRenderMarkdownNote(idx, note, assetSink)
 		}
 	}
-	defer func() {
-		renderMarkdownNote = originalRenderMarkdownNote
-	}()
 
 	var diagnostics bytes.Buffer
 	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{
-		concurrency:       1,
-		diagnosticsWriter: &diagnostics,
+		concurrency:        1,
+		diagnosticsWriter:  &diagnostics,
+		renderMarkdownNote: renderMarkdownNoteFn,
 	})
 	if err == nil {
 		t.Fatal("buildWithOptions() error = nil, want render markdown failure")
@@ -4898,7 +4877,7 @@ Original unrelated section body.
 		t.Fatalf("host page unexpectedly rendered unrelated embedded section\n%s", firstHostHTML)
 	}
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
 	writeBuildTestFile(t, vaultPath, "notes/beta.md", `---
 title: Beta
 ---
@@ -4913,7 +4892,7 @@ Selected section body.
 Updated unrelated section body.
 `)
 
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5148,12 +5127,12 @@ Body.
 		t.Fatalf("result.NotePages = %d, want %d before build ABI changes", result.NotePages, 0)
 	}
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
 	readBuildABISignature = func() (buildABIState, error) {
 		return buildABIState{signature: "abi-v2", cacheReusable: true}, nil
 	}
 
-	result, err = buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	result, err = buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("third buildWithOptions() error = %v", err)
 	}
@@ -5271,8 +5250,8 @@ func TestBuildTreatsSameVersionPartialManifestAsCompleteMiss(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
-			result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{})
+			getRenderedMarkdown, markdownHook := captureRenderedMarkdownNotePaths(t)
+			result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{testMarkdownNoteHook: markdownHook})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -5400,8 +5379,8 @@ date: 2026-04-06
 [[Gamma]]
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5453,8 +5432,8 @@ date: 2026-04-06
 Updated body.
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5596,8 +5575,8 @@ date: 2026-04-06
 		t.Fatalf("first manifest assets = %#v, want published slash-path embed asset", firstEntry.Assets)
 	}
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	second, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	second, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5679,8 +5658,8 @@ date: 2026-04-06
 
 	writeBuildTestFile(t, vaultPath, resolvedAssetPath, "resolved-image")
 
-	getRenderedPaths := captureRenderedMarkdownNotePaths(t)
-	second, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, markdownHook := captureRenderedMarkdownNotePaths(t)
+	second, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5822,8 +5801,8 @@ publish: false
 ![Hero](../images/hero.png)
 `)
 
-	getRenderedMarkdownPaths := captureRenderedMarkdownNotePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedMarkdownPaths, markdownHook := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -5924,8 +5903,8 @@ date: 2026-04-06
 ![Hero](../images/hero.png)
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6017,8 +5996,8 @@ date: 2026-04-06
 		t.Fatalf("os.Remove(notes/collision.md) error = %v", err)
 	}
 
-	getRenderedMarkdownPaths := captureRenderedMarkdownNotePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedMarkdownPaths, markdownHook := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6092,8 +6071,8 @@ date: 2026-04-06
 
 	writeBuildTestFile(t, vaultPath, "images/hero.png", "collision-image-v2")
 
-	getRenderedMarkdownPaths := captureRenderedMarkdownNotePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedMarkdownPaths, markdownHook := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6171,8 +6150,8 @@ date: 2026-04-06
 		t.Fatalf("os.Remove(%q) error = %v", customCSSPath, err)
 	}
 
-	getRenderedMarkdownPaths := captureRenderedMarkdownNotePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedMarkdownPaths, markdownHook := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testMarkdownNoteHook: markdownHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6227,8 +6206,8 @@ date: 2026-04-06
 	}
 	writeBuildTestFile(t, vaultPath, "notes/hero.png", "note-local-image")
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6318,8 +6297,8 @@ date: 2026-04-06
 Travel itinerary seaside journal.
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6383,8 +6362,8 @@ date: 2026-04-06
 Static site generator release notes.
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6444,8 +6423,8 @@ date: 2026-04-06
 Shared term cluster [[Beta]].
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6698,8 +6677,8 @@ Body.
 		t.Fatalf("os.Chtimes(secondModified) error = %v", err)
 	}
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6746,8 +6725,8 @@ title: Alpha
 Updated body.
 `)
 
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6778,8 +6757,8 @@ func TestBuildAddingSidebarNodeKeepsExistingNotePagesByteIdentical(t *testing.T)
 	sidebarBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, sidebarJSONOutputPath)...)
 
 	writeBuildTestFile(t, vaultPath, "notes/gamma.md", "# Gamma\n\nBody.\n")
-	getRenderedPaths := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedPaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6815,9 +6794,9 @@ func TestBuildPaginationChangeDoesNotRerenderMarkdownOrNotePages(t *testing.T) {
 	alphaBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, "alpha/index.html")...)
 
 	cfg.Pagination.PageSize = 2
-	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
-	getRenderedPages := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
+	getRenderedMarkdown, markdownHook := captureRenderedMarkdownNotePaths(t)
+	getRenderedPages, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{testMarkdownNoteHook: markdownHook, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -6890,11 +6869,11 @@ Body.
 		t.Fatalf("manifest.Notes[alpha/one.md].DerivedSignatures[%q] = %q, want non-empty signature", derivedSignatureKeyBacklinks, manifest.Notes["alpha/one.md"].DerivedSignatures[derivedSignatureKeyBacklinks])
 	}
 
-	getRenderedIndexPaths := captureRenderedIndexPagePaths(t)
-	getRenderedTagPaths := captureRenderedTagPagePaths(t)
-	getRenderedFolderPaths := captureRenderedFolderPagePaths(t)
-	getRenderedTimelinePaths := captureRenderedTimelinePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedIndexPaths, indexPageHook := captureRenderedIndexPagePaths(t)
+	getRenderedTagPaths, tagPageHook := captureRenderedTagPagePaths(t)
+	getRenderedFolderPaths, folderPageHook := captureRenderedFolderPagePaths(t)
+	getRenderedTimelinePaths, timelinePageHook := captureRenderedTimelinePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testIndexPageHook: indexPageHook, testTagPageHook: tagPageHook, testFolderPageHook: folderPageHook, testTimelinePageHook: timelinePageHook})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
@@ -6925,12 +6904,12 @@ tags:
 Body.
 `)
 
-	getRenderedIndexPaths = captureRenderedIndexPagePaths(t)
-	getRenderedTagPaths = captureRenderedTagPagePaths(t)
-	getRenderedFolderPaths = captureRenderedFolderPagePaths(t)
-	getRenderedTimelinePaths = captureRenderedTimelinePagePaths(t)
-	getRenderedNotePaths := captureRenderedNotePagePaths(t)
-	result, err = buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	getRenderedIndexPaths, indexPageHook = captureRenderedIndexPagePaths(t)
+	getRenderedTagPaths, tagPageHook = captureRenderedTagPagePaths(t)
+	getRenderedFolderPaths, folderPageHook = captureRenderedFolderPagePaths(t)
+	getRenderedTimelinePaths, timelinePageHook = captureRenderedTimelinePagePaths(t)
+	getRenderedNotePaths, notePageHook := captureRenderedNotePagePaths(t)
+	result, err = buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard, testIndexPageHook: indexPageHook, testTagPageHook: tagPageHook, testFolderPageHook: folderPageHook, testTimelinePageHook: timelinePageHook, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatalf("third buildWithOptions() error = %v", err)
 	}
@@ -7156,152 +7135,65 @@ func findSidebarNodeByURL(nodes []model.SidebarNode, url string) *model.SidebarN
 	return nil
 }
 
-func captureRenderedNotePagePaths(t *testing.T) func() []string {
-	t.Helper()
-	lockBuildTestRenderHooks(t)
-
-	originalRenderNotePage := renderNotePage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 8)
-	renderNotePage = func(input internalrender.NotePageInput) (internalrender.RenderedPage, error) {
-		if input.Note != nil {
-			renderedMu.Lock()
-			rendered = append(rendered, input.Note.RelPath)
-			renderedMu.Unlock()
-		}
-		return originalRenderNotePage(input)
-	}
-	t.Cleanup(func() {
-		renderNotePage = originalRenderNotePage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return uniqueSortedStrings(append([]string(nil), rendered...))
-	}
+type renderedPathCapture struct {
+	mu    sync.Mutex
+	paths []string
 }
 
-func captureRenderedMarkdownNotePaths(t *testing.T) func() []string {
-	t.Helper()
-	lockBuildTestRenderHooks(t)
+func (c *renderedPathCapture) add(path string) {
+	c.mu.Lock()
+	c.paths = append(c.paths, path)
+	c.mu.Unlock()
+}
 
-	originalRenderMarkdownNote := renderMarkdownNote
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 8)
-	renderMarkdownNote = func(idx *model.VaultIndex, note *model.Note, assetSink internalmarkdown.AssetSink) (*renderedNote, error) {
+func (c *renderedPathCapture) get() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return uniqueSortedStrings(append([]string(nil), c.paths...))
+}
+
+func captureRenderedMarkdownNotePaths(t *testing.T) (func() []string, func(*model.Note)) {
+	t.Helper()
+	capture := &renderedPathCapture{}
+	return capture.get, func(note *model.Note) {
 		if note != nil {
-			renderedMu.Lock()
-			rendered = append(rendered, note.RelPath)
-			renderedMu.Unlock()
+			capture.add(note.RelPath)
 		}
-		return originalRenderMarkdownNote(idx, note, assetSink)
-	}
-	t.Cleanup(func() {
-		renderMarkdownNote = originalRenderMarkdownNote
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return uniqueSortedStrings(append([]string(nil), rendered...))
 	}
 }
 
-func captureRenderedIndexPagePaths(t *testing.T) func() []string {
+func captureRenderedNotePagePaths(t *testing.T) (func() []string, func(internalrender.NotePageInput)) {
 	t.Helper()
-	lockBuildTestRenderHooks(t)
-
-	originalRenderIndexPage := renderIndexPage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 4)
-	renderIndexPage = func(input internalrender.IndexPageInput) (internalrender.RenderedPage, error) {
-		renderedMu.Lock()
-		rendered = append(rendered, input.RelPath)
-		renderedMu.Unlock()
-		return originalRenderIndexPage(input)
-	}
-	t.Cleanup(func() {
-		renderIndexPage = originalRenderIndexPage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return sortedStrings(append([]string(nil), rendered...))
+	capture := &renderedPathCapture{}
+	return capture.get, func(input internalrender.NotePageInput) {
+		if input.Note != nil {
+			capture.add(input.Note.RelPath)
+		}
 	}
 }
 
-func captureRenderedTagPagePaths(t *testing.T) func() []string {
+func captureRenderedIndexPagePaths(t *testing.T) (func() []string, func(internalrender.IndexPageInput)) {
 	t.Helper()
-	lockBuildTestRenderHooks(t)
-
-	originalRenderTagPage := renderTagPage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 4)
-	renderTagPage = func(input internalrender.TagPageInput) (internalrender.RenderedPage, error) {
-		renderedMu.Lock()
-		rendered = append(rendered, input.RelPath)
-		renderedMu.Unlock()
-		return originalRenderTagPage(input)
-	}
-	t.Cleanup(func() {
-		renderTagPage = originalRenderTagPage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return sortedStrings(append([]string(nil), rendered...))
-	}
+	capture := &renderedPathCapture{}
+	return capture.get, func(input internalrender.IndexPageInput) { capture.add(input.RelPath) }
 }
 
-func captureRenderedFolderPagePaths(t *testing.T) func() []string {
+func captureRenderedTagPagePaths(t *testing.T) (func() []string, func(internalrender.TagPageInput)) {
 	t.Helper()
-	lockBuildTestRenderHooks(t)
-
-	originalRenderFolderPage := renderFolderPage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 4)
-	renderFolderPage = func(input internalrender.FolderPageInput) (internalrender.RenderedPage, error) {
-		renderedMu.Lock()
-		rendered = append(rendered, input.RelPath)
-		renderedMu.Unlock()
-		return originalRenderFolderPage(input)
-	}
-	t.Cleanup(func() {
-		renderFolderPage = originalRenderFolderPage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return sortedStrings(append([]string(nil), rendered...))
-	}
+	capture := &renderedPathCapture{}
+	return capture.get, func(input internalrender.TagPageInput) { capture.add(input.RelPath) }
 }
 
-func captureRenderedTimelinePagePaths(t *testing.T) func() []string {
+func captureRenderedFolderPagePaths(t *testing.T) (func() []string, func(internalrender.FolderPageInput)) {
 	t.Helper()
-	lockBuildTestRenderHooks(t)
+	capture := &renderedPathCapture{}
+	return capture.get, func(input internalrender.FolderPageInput) { capture.add(input.RelPath) }
+}
 
-	originalRenderTimelinePage := renderTimelinePage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 4)
-	renderTimelinePage = func(input internalrender.TimelinePageInput) (internalrender.RenderedPage, error) {
-		renderedMu.Lock()
-		rendered = append(rendered, input.RelPath)
-		renderedMu.Unlock()
-		return originalRenderTimelinePage(input)
-	}
-	t.Cleanup(func() {
-		renderTimelinePage = originalRenderTimelinePage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return sortedStrings(append([]string(nil), rendered...))
-	}
+func captureRenderedTimelinePagePaths(t *testing.T) (func() []string, func(internalrender.TimelinePageInput)) {
+	t.Helper()
+	capture := &renderedPathCapture{}
+	return capture.get, func(input internalrender.TimelinePageInput) { capture.add(input.RelPath) }
 }
 
 func assertRenderedArchivePageCalls(t *testing.T, label string, got []string, want []string) {

@@ -242,7 +242,7 @@ func TestBuildRefreshesImageEmbedDiagnosticsWhenAssetInventoryChangesWithoutNote
 		t.Helper()
 
 		renderSignatures := buildNoteRenderSignatures(idx, noteHashes)
-		states, err := buildNoteStates(idx, nil, 1, previous, noteHashes, renderSignatures, noteDerivedSignatures, false)
+		states, err := buildNoteStates(idx, nil, 1, previous, noteHashes, renderSignatures, noteDerivedSignatures, false, renderMarkdownNote, nil)
 		if err != nil {
 			t.Fatalf("buildNoteStates() error = %v", err)
 		}

@@ -130,9 +130,9 @@ func TestBuildEquivalentDefaultImageSpellingKeepsPagesCached(t *testing.T) {
 	before := append([]byte(nil), readBuildOutputFile(t, outputPath, "alpha/index.html")...)
 
 	cfg.DefaultImg = "images/hero.png"
-	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
-	getRenderedPages := captureRenderedNotePagePaths(t)
-	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
+	getRenderedMarkdown, markdownHook := captureRenderedMarkdownNotePaths(t)
+	getRenderedPages, notePageHook := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{testMarkdownNoteHook: markdownHook, testNotePageHook: notePageHook})
 	if err != nil {
 		t.Fatal(err)
 	}

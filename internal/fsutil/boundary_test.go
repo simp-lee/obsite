@@ -112,6 +112,35 @@ func TestResolveVaultOutputResolvesExistingParentSymlink(t *testing.T) {
 	}
 }
 
+func TestResolveVaultOutputRebasesVaultSymlinkAlias(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires elevated privileges on some Windows hosts")
+	}
+
+	root := t.TempDir()
+	vault := filepath.Join(root, "vault")
+	alias := filepath.Join(root, "vault-alias")
+	if err := os.MkdirAll(vault, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(vault, alias); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveVaultOutput(vault, filepath.Join(alias, "public"))
+	if err != nil {
+		t.Fatalf("ResolveVaultOutput() error = %v", err)
+	}
+	want := filepath.Join(vault, "public")
+	if got.OutputPath != want {
+		t.Fatalf("OutputPath = %q, want %q", got.OutputPath, want)
+	}
+	if !PathWithinRoot(got.VaultPath, got.OutputPath) {
+		t.Fatal("rebased output is outside vault, want descendant")
+	}
+}
+
 func TestResolveVaultOutputRejectsFinalSymlink(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {

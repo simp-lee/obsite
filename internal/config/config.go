@@ -357,6 +357,23 @@ func normalizeTimelinePath(raw string) (string, error) {
 	return cleaned, nil
 }
 
+func rawBaseURLPath(raw string) string {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return ""
+	}
+	pathStart := strings.IndexByte(raw[schemeEnd+3:], '/')
+	if pathStart < 0 {
+		return "/"
+	}
+	pathStart += schemeEnd + 3
+	pathEnd := strings.IndexAny(raw[pathStart:], "?#")
+	if pathEnd < 0 {
+		return raw[pathStart:]
+	}
+	return raw[pathStart : pathStart+pathEnd]
+}
+
 func hasWindowsDrivePrefix(raw string) bool {
 	return len(raw) >= 2 && ((raw[0] >= 'a' && raw[0] <= 'z') || (raw[0] >= 'A' && raw[0] <= 'Z')) && raw[1] == ':'
 }
@@ -383,12 +400,39 @@ func normalizeBaseURL(raw string) (string, error) {
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("baseURL must not include query or fragment")
 	}
+
+	escapedPath := parsed.EscapedPath()
+	if rawPath := rawBaseURLPath(raw); strings.Contains(rawPath, "%") {
+		escapedPath = rawPath
+	}
+	for _, component := range strings.Split(escapedPath, "/") {
+		if !strings.Contains(component, "%") {
+			continue
+		}
+		decoded, err := url.PathUnescape(component)
+		if err != nil {
+			return "", fmt.Errorf("baseURL has an invalid escaped path component: %w", err)
+		}
+		if decoded == "." || decoded == ".." || strings.ContainsAny(decoded, `/\\`) {
+			return "", fmt.Errorf("baseURL must not contain encoded separators or dot segments")
+		}
+	}
+
 	cleanPath := path.Clean(parsed.Path)
+	if strings.Contains(escapedPath, "%") && cleanPath != parsed.Path {
+		return "", fmt.Errorf("baseURL with escaped path components cannot be normalized")
+	}
 	if cleanPath == "." || cleanPath == "/" {
 		parsed.Path = "/"
+		escapedPath = "/"
 	} else {
 		parsed.Path = strings.TrimSuffix(cleanPath, "/") + "/"
+		escapedPath = strings.TrimSuffix(escapedPath, "/") + "/"
 	}
-	parsed.RawPath = ""
+	if escapedPath != parsed.Path {
+		parsed.RawPath = escapedPath
+	} else {
+		parsed.RawPath = ""
+	}
 	return parsed.String(), nil
 }

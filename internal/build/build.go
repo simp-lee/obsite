@@ -11,12 +11,9 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 
 	xhtml "golang.org/x/net/html"
@@ -58,11 +55,17 @@ type SiteInput struct {
 }
 
 type buildOptions struct {
-	concurrency       int
-	diagnosticsWriter io.Writer
-	force             bool
-	minifier          *minify.M
-	testNotePageHook  func(render.NotePageInput)
+	concurrency          int
+	diagnosticsWriter    io.Writer
+	force                bool
+	minifier             *minify.M
+	renderMarkdownNote   func(*model.VaultIndex, *model.Note, markdown.AssetSink) (*renderedNote, error)
+	testMarkdownNoteHook func(*model.Note)
+	testNotePageHook     func(render.NotePageInput)
+	testIndexPageHook    func(render.IndexPageInput)
+	testTagPageHook      func(render.TagPageInput)
+	testFolderPageHook   func(render.FolderPageInput)
+	testTimelinePageHook func(render.TimelinePageInput)
 }
 
 type renderedNote struct {
@@ -125,49 +128,10 @@ type stagedOutputPublisher struct {
 }
 
 var (
-	stagedOutputRename     = os.Rename
-	stagedOutputRemoveAll  = os.RemoveAll
-	stagedOutputStat       = os.Stat
-	buildRenderHookBarrier sync.RWMutex
-	buildRenderHookOwnerID atomic.Uint64
+	stagedOutputRename    = os.Rename
+	stagedOutputRemoveAll = os.RemoveAll
+	stagedOutputStat      = os.Stat
 )
-
-func lockBuildRenderHookIsolation() {
-	buildRenderHookBarrier.Lock()
-	buildRenderHookOwnerID.Store(currentGoroutineID())
-}
-
-func unlockBuildRenderHookIsolation() {
-	buildRenderHookOwnerID.Store(0)
-	buildRenderHookBarrier.Unlock()
-}
-
-func lockBuildExecutionForRenderHooks() func() {
-	if ownerID := buildRenderHookOwnerID.Load(); ownerID != 0 && ownerID == currentGoroutineID() {
-		return func() {}
-	}
-
-	buildRenderHookBarrier.RLock()
-	return func() {
-		buildRenderHookBarrier.RUnlock()
-	}
-}
-
-func currentGoroutineID() uint64 {
-	var stack [64]byte
-	n := runtime.Stack(stack[:], false)
-	fields := bytes.Fields(stack[:n])
-	if len(fields) < 2 {
-		return 0
-	}
-
-	id, err := strconv.ParseUint(string(fields[1]), 10, 64)
-	if err != nil {
-		return 0
-	}
-
-	return id
-}
 
 const (
 	managedOutputMarkerFilename = ".obsite-output"
@@ -180,7 +144,7 @@ var paginationGeneratedHrefPattern = regexp.MustCompile(`(<(?:link\b[^>]*\brel=(
 
 var minimalSiteLastModified = time.Unix(0, 0).UTC()
 
-var renderMarkdownNote = func(idx *model.VaultIndex, note *model.Note, assetSink markdown.AssetSink) (*renderedNote, error) {
+func renderMarkdownNote(idx *model.VaultIndex, note *model.Note, assetSink markdown.AssetSink) (*renderedNote, error) {
 	localDiag := diag.NewCollector()
 	md, renderResult := markdown.NewMarkdown(idx, note, assetSink, localDiag)
 
@@ -202,14 +166,6 @@ var renderMarkdownNote = func(idx *model.VaultIndex, note *model.Note, assetSink
 		diag:     localDiag,
 	}, nil
 }
-
-var (
-	renderNotePage     = render.RenderNote
-	renderIndexPage    = render.RenderIndex
-	renderTagPage      = render.RenderTagPage
-	renderFolderPage   = render.RenderFolderPage
-	renderTimelinePage = render.RenderTimelinePage
-)
 
 func newNoteAssetRecorder(shared markdown.AssetSink) *noteAssetRecorder {
 	return &noteAssetRecorder{
@@ -297,9 +253,6 @@ func BuildWithOptions(input SiteInput, vaultPath string, outputPath string, opti
 }
 
 func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string, options buildOptions) (result *BuildResult, err error) {
-	releaseRenderHookBuildLock := lockBuildExecutionForRenderHooks()
-	defer releaseRenderHookBuildLock()
-
 	options = normalizeBuildOptions(options)
 	result = &BuildResult{}
 	diagnostics := diag.NewCollector()
@@ -481,7 +434,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if len(temporaryDefaultImagePeers) > 0 {
 		idx.SetAssets(idx.Assets)
 	}
-	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, noteFullDirty)
+	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, noteFullDirty, options.renderMarkdownNote, options.testMarkdownNoteHook)
 	if renderErr != nil {
 		for _, state := range noteStates {
 			if state == nil {
@@ -514,7 +467,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		cfg.DefaultImg = defaultImageDestination
 		idx.Assets[defaultImageSource].DstPath = defaultImageDestination
 	}
-	assetDestinationDirtyPaths, err := rerenderNotesWithMismatchedAssetDestinations(idx, assetCollector, noteStatesByPath, assetDestinationPlan)
+	assetDestinationDirtyPaths, err := rerenderNotesWithMismatchedAssetDestinations(idx, assetCollector, noteStatesByPath, assetDestinationPlan, options.renderMarkdownNote, options.testMarkdownNoteHook)
 	if err != nil {
 		return result, fmt.Errorf("rerender notes for asset path changes: %w", err)
 	}
@@ -587,7 +540,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 		sitemapPages = append(sitemapPages, notePages...)
 
-		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty)
+		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty, options.testTagPageHook)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -595,14 +548,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result.TagPages = len(tagPages)
 		sitemapPages = append(sitemapPages, tagPages...)
 
-		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty)
+		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty, options.testFolderPageHook)
 		if err != nil {
 			return nil, nil, err
 		}
 		mergePageSignatures(pageSignatures, folderSignatures)
 		sitemapPages = append(sitemapPages, renderedFolderPages...)
 
-		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty)
+		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty, options.testTimelinePageHook)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -610,7 +563,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages = append(sitemapPages, timelinePages...)
 
 		if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
-			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty)
+			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty, options.testIndexPageHook)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -707,6 +660,9 @@ func normalizeBuildOptions(options buildOptions) buildOptions {
 	}
 	if options.minifier == nil {
 		options.minifier = newSiteMinifier()
+	}
+	if options.renderMarkdownNote == nil {
+		options.renderMarkdownNote = renderMarkdownNote
 	}
 	return options
 }
@@ -1148,7 +1104,7 @@ func writePostCommitDiagnostic(writer io.Writer, diagnostic diag.Diagnostic) {
 	_ = writeDiagnosticsSummary(writer, collector, nil)
 }
 
-func buildNoteStates(idx *model.VaultIndex, assetSink *internalasset.AssetCollector, concurrency int, previous *CacheManifest, noteHashes map[string]string, noteRenderSignatures map[string]string, noteDerivedSignatures map[string]map[string]string, fullDirty bool) ([]*noteBuildState, error) {
+func buildNoteStates(idx *model.VaultIndex, assetSink *internalasset.AssetCollector, concurrency int, previous *CacheManifest, noteHashes map[string]string, noteRenderSignatures map[string]string, noteDerivedSignatures map[string]map[string]string, fullDirty bool, renderMarkdownNoteFn func(*model.VaultIndex, *model.Note, markdown.AssetSink) (*renderedNote, error), renderMarkdownNoteHook func(*model.Note)) ([]*noteBuildState, error) {
 	notes := allPublicNotes(idx)
 	return runOrderedPipeline(notes, concurrency, func(note *model.Note) (*noteBuildState, error) {
 		if note == nil {
@@ -1174,7 +1130,10 @@ func buildNoteStates(idx *model.VaultIndex, assetSink *internalasset.AssetCollec
 		}
 
 		recorder := newNoteAssetRecorder(assetSink)
-		rendered, err := renderMarkdownNote(idx, note, recorder)
+		if renderMarkdownNoteHook != nil {
+			renderMarkdownNoteHook(note)
+		}
+		rendered, err := renderMarkdownNoteFn(idx, note, recorder)
 		state := &noteBuildState{
 			rendered:          rendered,
 			contentHash:       contentHash,
@@ -1341,7 +1300,7 @@ func mergeBuildAssetMap(dst map[string]*model.Asset, src map[string]*model.Asset
 	}
 }
 
-func rerenderNotesWithMismatchedAssetDestinations(idx *model.VaultIndex, assetSink markdown.AssetSink, states map[string]*noteBuildState, plannedDestinations map[string]string) (map[string]struct{}, error) {
+func rerenderNotesWithMismatchedAssetDestinations(idx *model.VaultIndex, assetSink markdown.AssetSink, states map[string]*noteBuildState, plannedDestinations map[string]string, renderMarkdownNoteFn func(*model.VaultIndex, *model.Note, markdown.AssetSink) (*renderedNote, error), renderMarkdownNoteHook func(*model.Note)) (map[string]struct{}, error) {
 	dirty := make(map[string]struct{})
 	for _, relPath := range sortedNoteBuildStatePaths(states) {
 		state := states[relPath]
@@ -1354,7 +1313,10 @@ func rerenderNotesWithMismatchedAssetDestinations(idx *model.VaultIndex, assetSi
 
 		wasFromCache := state.fromCache
 		recorder := newNoteAssetRecorder(assetSink)
-		rendered, err := renderMarkdownNote(idx, state.rendered.source, recorder)
+		if renderMarkdownNoteHook != nil {
+			renderMarkdownNoteHook(state.rendered.source)
+		}
+		rendered, err := renderMarkdownNoteFn(idx, state.rendered.source, recorder)
 		if err != nil {
 			return nil, err
 		}
@@ -1492,7 +1454,7 @@ func writeNotePages(
 		if notePageHook != nil {
 			notePageHook(renderInput)
 		}
-		page, err := renderNotePage(renderInput)
+		page, err := render.RenderNote(renderInput)
 		if state != nil {
 			state.pageDiagnostics = cloneDiagnostics(page.Diagnostics)
 		}
@@ -1896,7 +1858,7 @@ func writePopoverPayloads(cfg model.SiteConfig, renderedByPath map[string]*rende
 	return nil
 }
 
-func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool, pageHook func(render.IndexPageInput)) ([]model.PageData, map[string]string, error) {
 	recentNotes := recentPublicNotes(idx)
 	paginatedNotes := paginate(recentNotes, cfg.Pagination.PageSize)
 	pages := make([]model.PageData, 0, len(paginatedNotes))
@@ -1931,7 +1893,10 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 			}
 		}
 
-		page, err := renderIndexPage(input)
+		if pageHook != nil {
+			pageHook(input)
+		}
+		page, err := render.RenderIndex(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render index: %w", err)
 		}
@@ -1944,7 +1909,7 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 	return pages, signatures, nil
 }
 
-func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool, pageHook func(render.TagPageInput)) ([]model.PageData, map[string]string, error) {
 	tagNames := sortedTagNames(idx)
 	pages := make([]model.PageData, 0, len(tagNames))
 	signatures := make(map[string]string)
@@ -1989,7 +1954,10 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 				}
 			}
 
-			page, err := renderTagPage(input)
+			if pageHook != nil {
+				pageHook(input)
+			}
+			page, err := render.RenderTagPage(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render tag page %q: %w", tag.Name, err)
 			}
@@ -2003,7 +1971,7 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 	return pages, signatures, nil
 }
 
-func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool, pageHook func(render.FolderPageInput)) ([]model.PageData, map[string]string, error) {
 	pages := make([]model.PageData, 0, len(folders))
 	signatures := make(map[string]string)
 
@@ -2045,7 +2013,10 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 				}
 			}
 
-			page, err := renderFolderPage(input)
+			if pageHook != nil {
+				pageHook(input)
+			}
+			page, err := render.RenderFolderPage(input)
 			if err != nil {
 				return nil, nil, fmt.Errorf("render folder page %q: %w", folderPath, err)
 			}
@@ -2059,7 +2030,7 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 	return pages, signatures, nil
 }
 
-func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool, pageHook func(render.TimelinePageInput)) ([]model.PageData, map[string]string, error) {
 	if !cfg.Timeline.Enabled {
 		return nil, nil, nil
 	}
@@ -2100,7 +2071,10 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPa
 			}
 		}
 
-		page, err := renderTimelinePage(input)
+		if pageHook != nil {
+			pageHook(input)
+		}
+		page, err := render.RenderTimelinePage(input)
 		if err != nil {
 			return nil, nil, fmt.Errorf("render timeline page: %w", err)
 		}

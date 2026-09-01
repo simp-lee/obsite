@@ -86,7 +86,7 @@ func ScanWithOptions(vaultPath string, options ScanOptions) (ScanResult, error) 
 		if relPath == "." {
 			return nil
 		}
-		if excludedOutput != "" && filepath.Clean(currentPath) == excludedOutput {
+		if excludedOutput != "" && internalfsutil.SamePath(currentPath, excludedOutput) {
 			if entry.IsDir() {
 				return fs.SkipDir
 			}

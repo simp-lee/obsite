@@ -83,7 +83,11 @@ func ResolveVaultOutput(vaultPath string, outputPath string) (VaultOutputBoundar
 		return VaultOutputBoundary{}, fmt.Errorf("resolve output path %q: %w", absoluteOutput, err)
 	}
 
-	if samePath(vaultRoot, resolvedOutput) {
+	if rebased, ok := rebasePhysicalDescendant(vaultRoot, resolvedOutput); ok {
+		resolvedOutput = rebased
+	}
+
+	if SamePath(vaultRoot, resolvedOutput) {
 		return VaultOutputBoundary{}, fmt.Errorf("output path %q must not equal the vault root %q", absoluteOutput, vaultRoot)
 	}
 	if PathWithinRoot(resolvedOutput, vaultRoot) {
@@ -101,10 +105,84 @@ func PathWithinRoot(root string, candidate string) bool {
 	cleanRoot := filepath.Clean(root)
 	cleanCandidate := filepath.Clean(candidate)
 	relative, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err == nil && (relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))) {
+		return true
+	}
+
+	rootInfo, err := os.Stat(cleanRoot)
 	if err != nil {
 		return false
 	}
-	return relative == "." || relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+	current := cleanCandidate
+	for {
+		candidateInfo, statErr := os.Lstat(current)
+		if statErr != nil {
+			return false
+		}
+		if candidateInfo.Mode()&os.ModeSymlink != 0 {
+			return false
+		}
+		if os.SameFile(rootInfo, candidateInfo) {
+			return true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return false
+		}
+		current = parent
+	}
+}
+
+// SamePath compares lexical paths and, when both paths exist, their filesystem identity.
+func SamePath(left string, right string) bool {
+	cleanLeft := filepath.Clean(left)
+	cleanRight := filepath.Clean(right)
+	if cleanLeft == cleanRight {
+		return true
+	}
+
+	leftInfo, leftErr := os.Stat(cleanLeft)
+	rightInfo, rightErr := os.Stat(cleanRight)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
+}
+
+func rebasePhysicalDescendant(root string, candidate string) (string, bool) {
+	rootInfo, err := os.Stat(root)
+	if err != nil {
+		return candidate, false
+	}
+
+	current := filepath.Clean(candidate)
+	suffix := make([]string, 0, 4)
+	for {
+		currentInfo, statErr := os.Stat(current)
+		if statErr == nil {
+			if os.SameFile(rootInfo, currentInfo) {
+				elements := make([]string, 1, len(suffix)+1)
+				elements[0] = root
+				for index := len(suffix) - 1; index >= 0; index-- {
+					elements = append(elements, suffix[index])
+				}
+				return filepath.Join(elements...), true
+			}
+			parent := filepath.Dir(current)
+			if parent == current {
+				return candidate, false
+			}
+			suffix = append(suffix, filepath.Base(current))
+			current = parent
+			continue
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return candidate, false
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return candidate, false
+		}
+		suffix = append(suffix, filepath.Base(current))
+		current = parent
+	}
 }
 
 func resolveThroughExistingAncestors(candidate string) (string, error) {
@@ -298,7 +376,3 @@ func IsPortableSitePath(value string) bool {
 	return true
 }
 
-func samePath(left string, right string) bool {
-	relative, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
-	return err == nil && relative == "."
-}

@@ -98,8 +98,6 @@ type cacheManifestNote struct {
 }
 
 type noteHashSnapshot struct {
-	current map[string]string
-	changed map[string]struct{}
 	removed map[string]struct{}
 }
 
@@ -608,37 +606,16 @@ func cacheHashWriteBool(hasher hash.Hash, value bool) {
 }
 
 func diffNoteHashes(previous *CacheManifest, current map[string]string) noteHashSnapshot {
-	snapshot := noteHashSnapshot{
-		current: current,
-		changed: map[string]struct{}{},
-		removed: map[string]struct{}{},
-	}
-
-	if len(current) == 0 {
-		if previous == nil {
-			return snapshot
-		}
-		for relPath := range previous.Notes {
-			snapshot.removed[relPath] = struct{}{}
-		}
+	snapshot := noteHashSnapshot{removed: map[string]struct{}{}}
+	if previous == nil {
 		return snapshot
 	}
 
-	for relPath, hashValue := range current {
-		previousEntry, ok := cacheManifestEntry(previous, relPath)
-		if !ok || previousEntry.ContentHash != hashValue {
-			snapshot.changed[relPath] = struct{}{}
+	for relPath := range previous.Notes {
+		if _, ok := current[relPath]; !ok {
+			snapshot.removed[relPath] = struct{}{}
 		}
 	}
-
-	if previous != nil {
-		for relPath := range previous.Notes {
-			if _, ok := current[relPath]; !ok {
-				snapshot.removed[relPath] = struct{}{}
-			}
-		}
-	}
-
 	return snapshot
 }
 

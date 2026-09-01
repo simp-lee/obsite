@@ -498,7 +498,7 @@ func fixedWatchInputExists(input string) bool {
 func (loop *serveWatchLoop) isFixedDirectoryInput(path string) bool {
 	cleanPath := filepath.Clean(path)
 	for _, input := range loop.fixedWatchInputs {
-		if filepath.Clean(input) == cleanPath {
+		if internalfsutil.SamePath(input, cleanPath) {
 			return true
 		}
 	}
@@ -509,7 +509,7 @@ func (loop *serveWatchLoop) shouldDirectlyWatchDirectory(path string) bool {
 	cleanPath := filepath.Clean(path)
 	for _, input := range loop.fixedWatchInputs {
 		targetWatchDir := filepath.Clean(input)
-		if targetWatchDir == cleanPath || pathWithinRoot(cleanPath, targetWatchDir) {
+		if internalfsutil.SamePath(targetWatchDir, cleanPath) || pathWithinRoot(cleanPath, targetWatchDir) {
 			return true
 		}
 	}
@@ -747,17 +747,7 @@ func splitWatchPath(relPath string) []string {
 }
 
 func pathWithinRoot(root string, candidate string) bool {
-	root = filepath.Clean(root)
-	candidate = filepath.Clean(candidate)
-	relPath, err := filepath.Rel(root, candidate)
-	if err != nil {
-		return false
-	}
-	if relPath == "." {
-		return true
-	}
-
-	return relPath != ".." && !strings.HasPrefix(relPath, ".."+string(filepath.Separator))
+	return internalfsutil.PathWithinRoot(root, candidate)
 }
 
 func normalizeServeWatchInputs(inputs []string) []string {

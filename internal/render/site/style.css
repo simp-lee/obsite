@@ -1324,36 +1324,6 @@ samp {
   height: auto;
 }
 
-.entry-content pre.mermaid .mermaid-node {
-  fill: var(--page-surface-soft);
-  stroke: var(--mermaid-border);
-  stroke-width: 2;
-}
-
-.entry-content pre.mermaid .mermaid-label {
-  fill: var(--ink);
-  font-family: var(--font-display);
-  font-size: 18px;
-  font-weight: 700;
-  text-anchor: middle;
-  dominant-baseline: middle;
-}
-
-.entry-content pre.mermaid .mermaid-edge {
-  stroke: var(--accent-deep);
-  stroke-width: 2.5;
-  fill: none;
-}
-
-.entry-content pre.mermaid .mermaid-arrow {
-  fill: var(--accent-deep);
-}
-
-.entry-content .math-display {
-  overflow-x: auto;
-  padding: 0.45rem 0;
-}
-
 .entry-content .footnotes {
   margin-top: 2.5rem;
   padding-top: 1rem;

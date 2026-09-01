@@ -140,6 +140,28 @@ func TestLoadForBuildRejectsArbitraryConfigPath(t *testing.T) {
 	}
 }
 
+func TestNormalizeBaseURLPreservesSafeEscapesAndRejectsAmbiguousEscapes(t *testing.T) {
+	t.Parallel()
+
+	preserved, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/a%20b"})
+	if err != nil {
+		t.Fatalf("NormalizeSiteConfig() error = %v", err)
+	}
+	if preserved.BaseURL != "https://example.com/a%20b/" {
+		t.Fatalf("BaseURL = %q, want escaped space preserved", preserved.BaseURL)
+	}
+
+	for _, value := range []string{
+		"https://example.com/a%2Fb",
+		"https://example.com/a/%2e%2e/b",
+		"https://example.com/a%5Cb",
+	} {
+		if _, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: value}); err == nil || !strings.Contains(err.Error(), "encoded separators or dot segments") {
+			t.Errorf("NormalizeSiteConfig(BaseURL=%q) error = %v, want encoded path rejection", value, err)
+		}
+	}
+}
+
 func TestLoadForBuildValidatesRequiredAndBoundedValues(t *testing.T) {
 	t.Parallel()
 
