@@ -3477,6 +3477,7 @@ func TestStagedOutputPublisherPreservesConcurrentReplacementAndBackup(t *testing
 func TestStagedOutputPublisherRestoresConcurrentObjectMovedByQuarantineRace(t *testing.T) {
 	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
 	publishErr := errors.New("publish rename reported failure after move")
+	displacedPath := outputPath + "-displaced-publication"
 	renameCalls := 0
 	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
 		renameCalls++
@@ -3487,7 +3488,7 @@ func TestStagedOutputPublisherRestoresConcurrentObjectMovedByQuarantineRace(t *t
 			}
 			return publishErr
 		case 3:
-			if err := os.RemoveAll(oldPath); err != nil {
+			if err := os.Rename(oldPath, displacedPath); err != nil {
 				return err
 			}
 			if err := os.MkdirAll(oldPath, 0o755); err != nil {
