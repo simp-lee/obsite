@@ -38,9 +38,11 @@ func TestExecuteVersionFormsMatch(t *testing.T) {
 	if outputs[0] != outputs[1] || outputs[0] != "obsite version=dev commit=unknown date=unknown type=dev\n" {
 		t.Fatalf("version outputs = %#v", outputs)
 	}
-	_, _, err := executeForTest(t, testCommandDependencies(), []string{"version", "extra"})
-	if err == nil {
-		t.Fatal("version extra error = nil")
+	for _, args := range [][]string{{"version", "extra"}, {"--version", "extra"}} {
+		_, _, err := executeForTest(t, testCommandDependencies(), args)
+		if err == nil {
+			t.Fatalf("executeForTest(%v) error = nil", args)
+		}
 	}
 }
 

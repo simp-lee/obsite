@@ -381,6 +381,17 @@ func TestBuildABISignatureSeparatesProductIdentityFromCacheProvenance(t *testing
 		t.Fatalf("revision-variant build ABI = %#v, want changed reusable identity", got)
 	}
 
+	revisionOnly := buildABISignature(&debug.BuildInfo{
+		Main: debug.Module{Path: baselineInfo.Main.Path, Version: "(devel)"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+			{Key: "vcs.modified", Value: "false"},
+		},
+	})
+	if !revisionOnly.cacheReusable {
+		t.Fatalf("clean revision-only build ABI = %#v, want reusable provenance", revisionOnly)
+	}
+
 	goInstall := buildABISignature(&debug.BuildInfo{Main: debug.Module{Path: baselineInfo.Main.Path, Version: "v1.2.3", Sum: baselineInfo.Main.Sum}})
 	if !goInstall.cacheReusable {
 		t.Fatalf("go-install build ABI = %#v, want module-version provenance", goInstall)

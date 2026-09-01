@@ -35,12 +35,11 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 	var failNext atomic.Bool
 	var reloads atomic.Int32
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:          watcher,
-		vaultPath:        vault,
-		outputPath:       output,
-		configPath:       filepath.Join(vault, defaultConfigFilename),
-		extraWatchInputs: collectServeWatchInputs(themeDir, filepath.Join(vault, "custom.css"), vault),
-		debounce:         20 * time.Millisecond,
+		watcher:    watcher,
+		vaultPath:  vault,
+		outputPath: output,
+		configPath: filepath.Join(vault, defaultConfigFilename),
+		debounce:   20 * time.Millisecond,
 		rebuild: func() error {
 			if failNext.Swap(false) {
 				err := errors.New("synthetic rebuild failure")
@@ -103,6 +102,22 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 		path, data := filePath, content
 		expectRebuild(func() { writeNativeWatchFile(t, path, data) })
 	}
+
+	expectRebuild(func() {
+		if err := os.RemoveAll(themeDir); err != nil {
+			t.Fatal(err)
+		}
+	})
+	incomingThemeDir := filepath.Join(filepath.Dir(vault), filepath.Base(vault)+"-incoming-theme")
+	if err := os.MkdirAll(incomingThemeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeNativeWatchFile(t, filepath.Join(incomingThemeDir, "theme.css"), ":root{color:purple}")
+	expectRebuild(func() {
+		if err := os.Rename(incomingThemeDir, themeDir); err != nil {
+			t.Fatal(err)
+		}
+	})
 
 	obsidianDir := filepath.Join(vault, ".obsidian")
 	expectRebuild(func() {

@@ -1236,6 +1236,16 @@ func TestBuildRejectsNonPortableGeneratedRoutes(t *testing.T) {
 			relPath: "LPT2/alpha.md",
 			content: "---\ntitle: Alpha\n---\n# Alpha\n",
 		},
+		{
+			name:    "fragment folder route",
+			relPath: "topic#draft/alpha.md",
+			content: "---\ntitle: Alpha\n---\n# Alpha\n",
+		},
+		{
+			name:    "encoded separator folder route",
+			relPath: "topic%2Fdraft/alpha.md",
+			content: "---\ntitle: Alpha\n---\n# Alpha\n",
+		},
 	}
 
 	for _, tt := range tests {
@@ -3701,37 +3711,54 @@ func TestBuildPreservesOldOutputWhenDiagnosticsCannotBeWritten(t *testing.T) {
 }
 
 func TestBuildReportsPostCommitBackupCleanupAsWarning(t *testing.T) {
-	vaultPath := t.TempDir()
-	outputPath := filepath.Join(t.TempDir(), "site")
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion one.\n")
-	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
-		t.Fatal(err)
-	}
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion two.\n")
-
-	cleanupErr := errors.New("partial backup cleanup failed")
-	overrideStagedOutputFileOps(t, nil, func(target string) error {
-		if strings.Contains(filepath.Base(target), "-obsite-backup-") {
-			_ = os.Remove(filepath.Join(target, "index.html"))
-			return cleanupErr
+	for _, failWriter := range []bool{false, true} {
+		name := "successful diagnostics writer"
+		if failWriter {
+			name = "failing diagnostics writer"
 		}
-		return os.RemoveAll(target)
-	}, nil)
+		t.Run(name, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			outputPath := filepath.Join(t.TempDir(), "site")
+			writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion one.\n")
+			if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+				t.Fatal(err)
+			}
+			writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion two.\n")
 
-	writerErr := errors.New("post-commit diagnostics writer failed")
-	writer := &failingBuildWriter{err: writerErr}
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: writer})
-	if err != nil {
-		t.Fatalf("buildWithOptions() error = %v, want committed publication success despite %v", err, writerErr)
-	}
-	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Kind != diag.KindOutputCleanup || !strings.Contains(result.Diagnostics[0].Message, cleanupErr.Error()) {
-		t.Fatalf("result.Diagnostics = %#v, want one output cleanup warning", result.Diagnostics)
-	}
-	if writer.calls == 0 {
-		t.Fatal("post-commit cleanup warning was not offered to the diagnostics writer")
-	}
-	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Contains(html, []byte("Version two.")) {
-		t.Fatalf("published alpha page does not contain committed content\n%s", html)
+			cleanupErr := errors.New("partial backup cleanup failed")
+			overrideStagedOutputFileOps(t, nil, func(target string) error {
+				if strings.Contains(filepath.Base(target), "-obsite-backup-") {
+					_ = os.Remove(filepath.Join(target, "index.html"))
+					return cleanupErr
+				}
+				return os.RemoveAll(target)
+			}, nil)
+
+			var output bytes.Buffer
+			var failing *failingBuildWriter
+			writer := io.Writer(&output)
+			if failWriter {
+				failing = &failingBuildWriter{err: errors.New("post-commit diagnostics writer failed")}
+				writer = failing
+			}
+			result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: writer})
+			if err != nil {
+				t.Fatalf("buildWithOptions() error = %v, want committed publication success", err)
+			}
+			if len(result.Diagnostics) != 1 || result.Diagnostics[0].Kind != diag.KindOutputCleanup || !strings.Contains(result.Diagnostics[0].Message, cleanupErr.Error()) {
+				t.Fatalf("result.Diagnostics = %#v, want one output cleanup warning", result.Diagnostics)
+			}
+			if failWriter {
+				if failing.calls == 0 {
+					t.Fatal("post-commit cleanup warning was not offered to the diagnostics writer")
+				}
+			} else if !strings.Contains(output.String(), "output_cleanup") || !strings.Contains(output.String(), cleanupErr.Error()) {
+				t.Fatalf("diagnostics output = %q, want cleanup kind and cause", output.String())
+			}
+			if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Contains(html, []byte("Version two.")) {
+				t.Fatalf("published alpha page does not contain committed content\n%s", html)
+			}
+		})
 	}
 }
 

@@ -60,6 +60,7 @@ func defaultCommandDependencies() commandDependencies {
 }
 
 func newRootCommand(deps commandDependencies) *cobra.Command {
+	var showVersion bool
 	cmd := &cobra.Command{
 		Use:           "obsite",
 		Short:         "Generate and preview static sites from Obsidian vaults",
@@ -67,11 +68,14 @@ func newRootCommand(deps commandDependencies) *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if showVersion {
+				_, err := fmt.Fprintln(cmd.OutOrStdout(), formatVersion())
+				return err
+			}
 			return cmd.Help()
 		},
-		Version: formatVersion(),
 	}
-	cmd.SetVersionTemplate("{{.Version}}\n")
+	cmd.Flags().BoolVar(&showVersion, "version", false, "Print the Obsite version")
 
 	cmd.AddCommand(
 		newBuildCommand(deps),

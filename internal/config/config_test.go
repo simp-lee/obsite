@@ -162,6 +162,8 @@ func TestLoadForBuildValidatesRequiredAndBoundedValues(t *testing.T) {
 		{name: "timeline reserved component", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: CON", want: "timeline.path"},
 		{name: "timeline superscript device", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: COM¹", want: "timeline.path"},
 		{name: "timeline superscript device extension", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: LPT².txt", want: "timeline.path"},
+		{name: "timeline console device", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: CONOUT$", want: "timeline.path"},
+		{name: "timeline encoded separator", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes%2Farchive", want: "timeline.path"},
 		{name: "timeline trailing dot", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes/archive.", want: "timeline.path"},
 	}
 

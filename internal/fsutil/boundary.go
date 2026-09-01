@@ -267,7 +267,7 @@ func ReadContainedRegularFile(vaultRoot string, candidate string) (resolvedPath 
 // usable as both a relative URL path and a regular filesystem name on supported platforms.
 func IsPortableSitePath(value string) bool {
 	for component := range strings.SplitSeq(value, "/") {
-		if component == "" || strings.ContainsAny(component, `<>:"\|?*`) || strings.TrimRight(component, " .") != component {
+		if component == "" || strings.ContainsAny(component, `<>:"\|?*#%`) || strings.TrimRight(component, " .") != component {
 			return false
 		}
 		for _, character := range component {
@@ -280,9 +280,9 @@ func IsPortableSitePath(value string) bool {
 		if dot := strings.IndexByte(base, '.'); dot >= 0 {
 			base = base[:dot]
 		}
-		upperBase := strings.ToUpper(base)
+		upperBase := strings.ToUpper(strings.TrimRight(base, " "))
 		switch upperBase {
-		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		case "CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
 			return false
 		}
 		characters := []rune(upperBase)

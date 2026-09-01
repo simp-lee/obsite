@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -426,8 +425,8 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	var reloadCalls atomic.Int32
 	rebuildSignal := make(chan struct{}, 4)
+	reloadSignal := make(chan struct{}, 4)
 	errorSignal := make(chan error, 2)
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
 		watcher:    watcher,
@@ -440,7 +439,7 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 			return nil
 		},
 		notifyReload: func() {
-			reloadCalls.Add(1)
+			reloadSignal <- struct{}{}
 		},
 		onError: func(err error) {
 			errorSignal <- err
@@ -452,6 +451,7 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 	watcher.send(fsnotify.Event{Name: notePath, Op: fsnotify.Write})
 	watcher.send(fsnotify.Event{Name: notePath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "vault rebuild")
+	waitForServeWatchSignal(t, reloadSignal, "vault reload")
 	select {
 	case <-rebuildSignal:
 		t.Fatal("received unexpected second rebuild for debounced vault writes")
@@ -459,10 +459,6 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 		t.Fatalf("watch loop reported error: %v", err)
 	case <-time.After(60 * time.Millisecond):
 	}
-	if got := reloadCalls.Load(); got != 1 {
-		t.Fatalf("NotifyReload calls = %d, want 1", got)
-	}
-
 	watcher.send(fsnotify.Event{Name: filepath.Join(outputPath, "index.html"), Op: fsnotify.Write})
 	select {
 	case <-rebuildSignal:
@@ -474,9 +470,7 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
-	if got := reloadCalls.Load(); got != 2 {
-		t.Fatalf("NotifyReload calls after config change = %d, want 2", got)
-	}
+	waitForServeWatchSignal(t, reloadSignal, "config reload")
 }
 
 func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {
@@ -692,14 +686,13 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 	assertNoServeWatchError(t, errorSignal)
 }
 
-func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFile(t *testing.T) {
+func TestStartServeWatchLoopRebuildsForAttachmentsAndVaultCustomCSS(t *testing.T) {
 	vaultPath := t.TempDir()
 	attachmentPath := filepath.Join(vaultPath, "files", "manual.pdf")
 	customCSSPath := filepath.Join(vaultPath, "custom.css")
-	extraWatchFilePath := filepath.Join(t.TempDir(), "watch-inputs", "explicit-input.txt")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
-	for _, filePath := range []string{attachmentPath, customCSSPath, extraWatchFilePath, configPath} {
+	for _, filePath := range []string{attachmentPath, customCSSPath, configPath} {
 		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
 		}
@@ -719,12 +712,11 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 	reloadSignal := make(chan struct{}, 6)
 	errorSignal := make(chan error, 4)
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:          watcher,
-		vaultPath:        vaultPath,
-		outputPath:       outputPath,
-		configPath:       configPath,
-		extraWatchInputs: []serveWatchInput{{path: extraWatchFilePath, kind: serveWatchInputFile}},
-		debounce:         15 * time.Millisecond,
+		watcher:    watcher,
+		vaultPath:  vaultPath,
+		outputPath: outputPath,
+		configPath: configPath,
+		debounce:   15 * time.Millisecond,
 		rebuild: func() error {
 			rebuildSignal <- struct{}{}
 			return nil
@@ -738,8 +730,6 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 	}); err != nil {
 		t.Fatalf("startServeWatchLoop() error = %v", err)
 	}
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(extraWatchFilePath), 1)
-
 	tests := []struct {
 		name   string
 		path   string
@@ -779,17 +769,6 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 				}
 			},
 		},
-		{
-			name: "generic extra watch file write",
-			path: extraWatchFilePath,
-			op:   fsnotify.Write,
-			before: func(t *testing.T) {
-				t.Helper()
-				if err := os.WriteFile(extraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
-					t.Fatalf("os.WriteFile(%q) error = %v", extraWatchFilePath, err)
-				}
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -801,205 +780,6 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 			waitForServeWatchSignal(t, reloadSignal, tt.name+" reload")
 			assertNoServeWatchError(t, errorSignal)
 		})
-	}
-}
-
-func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *testing.T) {
-	vaultPath := t.TempDir()
-	configPath := filepath.Join(vaultPath, defaultConfigFilename)
-	outputPath := filepath.Join(vaultPath, "public")
-	oldExtraWatchFilePath := filepath.Join(t.TempDir(), "watch-a", "explicit-input.txt")
-	recoveryWatchDir := t.TempDir()
-	brokenExtraWatchParent := filepath.Join(recoveryWatchDir, "watch-b", "nested")
-	brokenExtraWatchFilePath := filepath.Join(brokenExtraWatchParent, "explicit-input.txt")
-	for _, filePath := range []string{configPath, oldExtraWatchFilePath} {
-		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
-		}
-		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
-			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
-		}
-	}
-	if err := os.MkdirAll(outputPath, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
-	}
-
-	watcher := newFakeFileWatcher()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	currentExtraWatchInputs := []serveWatchInput{{path: oldExtraWatchFilePath, kind: serveWatchInputFile}}
-	rebuildSignal := make(chan struct{}, 8)
-	errorSignal := make(chan error, 4)
-	rebuildCalls := 0
-	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:          watcher,
-		vaultPath:        vaultPath,
-		outputPath:       outputPath,
-		configPath:       configPath,
-		extraWatchInputs: currentExtraWatchInputs,
-		currentExtraWatchInputs: func() []serveWatchInput {
-			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
-		},
-		debounce: 15 * time.Millisecond,
-		rebuild: func() error {
-			rebuildCalls++
-			if rebuildCalls == 1 {
-				currentExtraWatchInputs = []serveWatchInput{{path: brokenExtraWatchFilePath, kind: serveWatchInputFile}}
-				return errors.New("missing external extra watch file")
-			}
-
-			rebuildSignal <- struct{}{}
-			return nil
-		},
-		onError: func(err error) {
-			errorSignal <- err
-		},
-	}); err != nil {
-		t.Fatalf("startServeWatchLoop() error = %v", err)
-	}
-
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
-
-	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
-	waitForServeWatchErrorContains(t, errorSignal, "missing external extra watch file")
-	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
-	waitForServeWatchRemoveCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
-
-	brokenExtraWatchTopDir := filepath.Join(recoveryWatchDir, "watch-b")
-	mkdirServeWatchDir(t, brokenExtraWatchTopDir)
-	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchTopDir)
-	waitForServeWatchAddCount(t, watcher, brokenExtraWatchTopDir, 1)
-
-	mkdirServeWatchDir(t, brokenExtraWatchParent)
-	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchParent)
-	waitForServeWatchAddCount(t, watcher, brokenExtraWatchParent, 1)
-
-	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("restored extra watch input\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
-	}
-	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchFilePath)
-	waitForServeWatchSignal(t, rebuildSignal, "recreated external extra watch file rebuild")
-	assertNoServeWatchError(t, errorSignal)
-
-	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
-	}
-	watcher.send(fsnotify.Event{Name: brokenExtraWatchFilePath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "fixed external extra watch file rebuild")
-	assertNoServeWatchError(t, errorSignal)
-}
-
-func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFromOneShotDeepCreation(t *testing.T) {
-	vaultPath := t.TempDir()
-	configPath := filepath.Join(vaultPath, defaultConfigFilename)
-	outputPath := filepath.Join(vaultPath, "public")
-	oldExtraWatchFilePath := filepath.Join(t.TempDir(), "watch-a", "explicit-input.txt")
-	recoveryWatchDir := t.TempDir()
-	brokenExtraWatchParent := filepath.Join(recoveryWatchDir, "watch-b", "nested")
-	brokenExtraWatchFilePath := filepath.Join(brokenExtraWatchParent, "explicit-input.txt")
-	brokenExtraWatchTopDir := filepath.Join(recoveryWatchDir, "watch-b")
-	for _, filePath := range []string{configPath, oldExtraWatchFilePath} {
-		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
-			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(filePath), err)
-		}
-		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
-			t.Fatalf("os.WriteFile(%q) error = %v", filePath, err)
-		}
-	}
-	if err := os.MkdirAll(outputPath, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
-	}
-
-	watcher := newFakeFileWatcher()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	currentExtraWatchInputs := []serveWatchInput{{path: oldExtraWatchFilePath, kind: serveWatchInputFile}}
-	rebuildSignal := make(chan struct{}, 8)
-	errorSignal := make(chan error, 4)
-	rebuildCalls := 0
-	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:          watcher,
-		vaultPath:        vaultPath,
-		outputPath:       outputPath,
-		configPath:       configPath,
-		extraWatchInputs: currentExtraWatchInputs,
-		currentExtraWatchInputs: func() []serveWatchInput {
-			return append([]serveWatchInput(nil), currentExtraWatchInputs...)
-		},
-		debounce: 15 * time.Millisecond,
-		rebuild: func() error {
-			rebuildCalls++
-			if rebuildCalls == 1 {
-				currentExtraWatchInputs = []serveWatchInput{{path: brokenExtraWatchFilePath, kind: serveWatchInputFile}}
-				return errors.New("missing external extra watch file")
-			}
-
-			rebuildSignal <- struct{}{}
-			return nil
-		},
-		onError: func(err error) {
-			errorSignal <- err
-		},
-	}); err != nil {
-		t.Fatalf("startServeWatchLoop() error = %v", err)
-	}
-
-	waitForServeWatchAddCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
-
-	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
-	waitForServeWatchErrorContains(t, errorSignal, "missing external extra watch file")
-	waitForServeWatchAddCount(t, watcher, recoveryWatchDir, 1)
-	waitForServeWatchRemoveCount(t, watcher, filepath.Dir(oldExtraWatchFilePath), 1)
-
-	if err := os.MkdirAll(brokenExtraWatchParent, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", brokenExtraWatchParent, err)
-	}
-	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("restored extra watch input\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
-	}
-	sendServeWatchCreateFromWatchedParent(t, watcher, brokenExtraWatchTopDir)
-	waitForServeWatchAddCount(t, watcher, brokenExtraWatchParent, 1)
-	waitForServeWatchSignal(t, rebuildSignal, "one-shot recreated external extra watch file rebuild")
-	assertNoServeWatchError(t, errorSignal)
-
-	if err := os.WriteFile(brokenExtraWatchFilePath, []byte("updated extra watch input\n"), 0o644); err != nil {
-		t.Fatalf("os.WriteFile(%q) error = %v", brokenExtraWatchFilePath, err)
-	}
-	watcher.send(fsnotify.Event{Name: brokenExtraWatchFilePath, Op: fsnotify.Write})
-	waitForServeWatchSignal(t, rebuildSignal, "fixed external extra watch file rebuild after one-shot recovery")
-	assertNoServeWatchError(t, errorSignal)
-}
-
-func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalInputs(t *testing.T) {
-	vaultPath := t.TempDir()
-	outputPath := filepath.Join(vaultPath, "public")
-	if err := os.MkdirAll(outputPath, 0o755); err != nil {
-		t.Fatalf("os.MkdirAll(%q) error = %v", outputPath, err)
-	}
-
-	rootDir := filesystemRootForPath(vaultPath)
-	missingRoot := filepath.Join(rootDir, "obsite-root-fallback-"+strings.ReplaceAll(time.Now().UTC().Format("20060102150405.000000000"), ".", "-"))
-	if _, err := os.Stat(missingRoot); err == nil {
-		t.Fatalf("os.Stat(%q) unexpectedly succeeded; want a missing root-level directory for this regression", missingRoot)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("os.Stat(%q) error = %v", missingRoot, err)
-	}
-
-	loop := serveWatchLoop{
-		vaultPath:  vaultPath,
-		outputPath: outputPath,
-	}
-	got, err := loop.watchDirsForInputs([]serveWatchInput{
-		{path: filepath.Join(missingRoot, "templates"), kind: serveWatchInputDir},
-		{path: filepath.Join(missingRoot, "extra-watch", "explicit-input.txt"), kind: serveWatchInputFile},
-	})
-	if err != nil {
-		t.Fatalf("watchDirsForInputs() error = %v", err)
-	}
-	if len(got) != 0 {
-		t.Fatalf("watchDirsForInputs() = %#v, want no filesystem-root fallback watches for fully missing external inputs", got)
 	}
 }
 
@@ -1147,14 +927,6 @@ func (w *fakeFileWatcher) send(event fsnotify.Event) {
 	w.events <- event
 }
 
-func (w *fakeFileWatcher) sendIfWatched(event fsnotify.Event) bool {
-	if !w.isWatchingPath(event.Name) {
-		return false
-	}
-	w.send(event)
-	return true
-}
-
 func (w *fakeFileWatcher) setRemoveErr(path string, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -1206,20 +978,6 @@ func (w *fakeFileWatcher) countCloseCalls() int {
 	return w.closeCalls
 }
 
-func (w *fakeFileWatcher) isWatchingPath(path string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	cleanPath := filepath.Clean(path)
-	for watchedPath := range w.active {
-		if pathWithinRoot(watchedPath, cleanPath) {
-			return true
-		}
-	}
-
-	return false
-}
-
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -1259,22 +1017,6 @@ func waitForLockedBufferContainsWithin(t *testing.T, buffer *lockedBuffer, want 
 			t.Fatalf("timed out waiting for output containing %q; got %q", want, buffer.String())
 		case <-ticker.C:
 		}
-	}
-}
-
-func mkdirServeWatchDir(t *testing.T, path string) {
-	t.Helper()
-
-	if err := os.Mkdir(path, 0o755); err != nil {
-		t.Fatalf("os.Mkdir(%q) error = %v", path, err)
-	}
-}
-
-func sendServeWatchCreateFromWatchedParent(t *testing.T, watcher *fakeFileWatcher, path string) {
-	t.Helper()
-
-	if !watcher.sendIfWatched(fsnotify.Event{Name: path, Op: fsnotify.Create}) {
-		t.Fatalf("create event for %q is not covered by any active watch", path)
 	}
 }
 
@@ -1376,14 +1118,4 @@ func drainServeWatchSignals(signal <-chan struct{}) {
 			return
 		}
 	}
-}
-
-func filesystemRootForPath(path string) string {
-	cleanPath := filepath.Clean(path)
-	volume := filepath.VolumeName(cleanPath)
-	if volume != "" {
-		return volume + string(filepath.Separator)
-	}
-
-	return string(filepath.Separator)
 }

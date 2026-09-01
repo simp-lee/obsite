@@ -22,8 +22,13 @@ func TestPortableSitePathComponents(t *testing.T) {
 		{path: "notes/com1.txt/index.html"},
 		{path: "notes/COM¹/index.html"},
 		{path: "notes/lpt².txt/index.html"},
+		{path: "notes/CONIN$/index.html"},
+		{path: "notes/conout$.txt/index.html"},
+		{path: "notes/CON .txt/index.html"},
 		{path: "notes/trailing./index.html"},
 		{path: "notes/archive*/index.html"},
+		{path: "notes/topic#draft/index.html"},
+		{path: "notes/topic%2Fd/index.html"},
 	}
 	for _, tt := range tests {
 		if got := IsPortableSitePath(tt.path); got != tt.want {
