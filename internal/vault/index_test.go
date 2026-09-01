@@ -1014,12 +1014,12 @@ func TestBuildIndexWithOptionsHonorsBoundedPassOneConcurrency(t *testing.T) {
 	var maxSeen atomic.Int32
 
 	var (
-		idx *model.VaultIndex
-		err error
+		result IndexResult
+		err    error
 	)
 
 	go func() {
-		idx, err = buildIndexWithOptions(scanResult, frontmatterResult, diag.NewCollector(), indexBuildOptions{
+		result, err = buildIndexResultWithOptions(scanResult, frontmatterResult, diag.NewCollector(), indexBuildOptions{
 			concurrency: 2,
 			onNoteStart: func(note *model.Note) {
 				active := current.Add(1)
@@ -1067,11 +1067,11 @@ func TestBuildIndexWithOptionsHonorsBoundedPassOneConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("buildIndexWithOptions() error = %v", err)
 	}
-	if idx == nil {
-		t.Fatal("buildIndexWithOptions() index = nil, want index")
+	if result.Index == nil {
+		t.Fatal("buildIndexResultWithOptions() index = nil, want index")
 	}
-	if len(idx.Notes) != 4 {
-		t.Fatalf("len(idx.Notes) = %d, want %d", len(idx.Notes), 4)
+	if len(result.Index.Notes) != 4 {
+		t.Fatalf("len(result.Index.Notes) = %d, want %d", len(result.Index.Notes), 4)
 	}
 	if maxSeen.Load() > 2 {
 		t.Fatalf("max pass-1 workers = %d, want <= %d", maxSeen.Load(), 2)
@@ -1079,7 +1079,8 @@ func TestBuildIndexWithOptionsHonorsBoundedPassOneConcurrency(t *testing.T) {
 }
 
 func buildIndexForTest(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector) (*model.VaultIndex, error) {
-	return BuildIndexWithConcurrency(scanResult, frontmatterResult, diagCollector, 1)
+	result, err := BuildIndex(scanResult, frontmatterResult, diagCollector, BuildIndexOptions{Concurrency: 1})
+	return result.Index, err
 }
 
 func prepareIndexInputs(t *testing.T, vaultPath string) (ScanResult, FrontmatterResult) {

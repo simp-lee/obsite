@@ -56,18 +56,6 @@ func BuildIndex(scanResult ScanResult, frontmatterResult FrontmatterResult, diag
 	})
 }
 
-// BuildIndexWithConcurrency applies bounded per-note concurrency during pass 1
-// while preserving the legacy index-only handoff.
-func BuildIndexWithConcurrency(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, concurrency int) (*model.VaultIndex, error) {
-	result, err := BuildIndex(scanResult, frontmatterResult, diagCollector, BuildIndexOptions{Concurrency: concurrency})
-	return result.Index, err
-}
-
-func buildIndexWithOptions(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options indexBuildOptions) (*model.VaultIndex, error) {
-	result, err := buildIndexResultWithOptions(scanResult, frontmatterResult, diagCollector, options)
-	return result.Index, err
-}
-
 func buildIndexResultWithOptions(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options indexBuildOptions) (IndexResult, error) {
 	idx := &model.VaultIndex{
 		AttachmentFolderPath: scanResult.AttachmentFolderPath,

@@ -430,7 +430,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	var relatedRanking *recommend.EngineResult
 	if cfg.Related.Enabled {
 		sourceGraph := link.BuildSourceGraph(idx)
-		relatedRanking, err = preparePreRenderRelatedRanking(
+		relatedRanking, err = recommend.BuildEngineFromSemanticOwner(
 			&indexResult.RelatedSemantic,
 			idx,
 			sourceGraph,
@@ -1874,7 +1874,9 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, baseRelPath, currentPage, len(paginatedNotes)),
 		}
-		signature, err := buildInputSignature(input)
+		signatureInput := input
+		signatureInput.Site = cachePageSiteConfig(input.Site)
+		signature, err := buildInputSignature(signatureInput)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build index page signature %q: %w", currentRelPath, err)
 		}
@@ -1930,7 +1932,9 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, tagPageRelPath, currentPage, len(paginatedNotes)),
 			}
-			signature, err := buildInputSignature(input)
+			signatureInput := input
+			signatureInput.Site = cachePageSiteConfig(input.Site)
+			signature, err := buildInputSignature(signatureInput)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build tag page signature %q: %w", currentRelPath, err)
 			}
@@ -1984,7 +1988,9 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, folderPageRelPath, currentPage, len(paginatedNotes)),
 			}
-			signature, err := buildInputSignature(input)
+			signatureInput := input
+			signatureInput.Site = cachePageSiteConfig(input.Site)
+			signature, err := buildInputSignature(signatureInput)
 			if err != nil {
 				return nil, nil, fmt.Errorf("build folder page signature %q: %w", currentRelPath, err)
 			}
@@ -2037,7 +2043,9 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPa
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, timelineRelPath, currentPage, len(paginatedNotes)),
 		}
-		signature, err := buildInputSignature(input)
+		signatureInput := input
+		signatureInput.Site = cachePageSiteConfig(input.Site)
+		signature, err := buildInputSignature(signatureInput)
 		if err != nil {
 			return nil, nil, fmt.Errorf("build timeline page signature %q: %w", currentRelPath, err)
 		}

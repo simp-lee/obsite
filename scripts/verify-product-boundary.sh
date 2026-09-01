@@ -20,6 +20,25 @@ check_packages() {
     printf 'public product packages remain:\n%s\n' "$public" >&2
     exit 1
   fi
+
+  imports=$(go list -f '{{.ImportPath}}|{{join .Imports " "}}' ./...)
+  cmd_product_imports=$(printf '%s\n' "$imports" | awk -F'|' '$1 == "github.com/simp-lee/obsite/cmd/obsite" {print $2}' | tr ' ' '\n' | grep '^github.com/simp-lee/obsite/' || true)
+  if [ "$cmd_product_imports" != "github.com/simp-lee/obsite/internal/cli" ]; then
+    printf 'cmd/obsite product imports must contain only internal/cli, got:\n%s\n' "$cmd_product_imports" >&2
+    exit 1
+  fi
+
+  invalid_cli=$(printf '%s\n' "$imports" | awk -F'|' '$1 != "github.com/simp-lee/obsite/cmd/obsite" && $2 ~ /github.com\/simp-lee\/obsite\/internal\/cli/ {print $1}')
+  if [ -n "$invalid_cli" ]; then
+    printf 'packages outside cmd/obsite import internal/cli:\n%s\n' "$invalid_cli" >&2
+    exit 1
+  fi
+
+  invalid_build=$(printf '%s\n' "$imports" | awk -F'|' '$1 != "github.com/simp-lee/obsite/internal/build" && $1 != "github.com/simp-lee/obsite/internal/cli" && $2 ~ /github.com\/simp-lee\/obsite\/internal\/build/ {print $1}')
+  if [ -n "$invalid_build" ]; then
+    printf 'lower packages import internal/build:\n%s\n' "$invalid_build" >&2
+    exit 1
+  fi
 }
 
 case "$mode" in

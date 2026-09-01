@@ -48,7 +48,7 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 		"b.md": {RelPath: "b.md", Slug: "b"},
 	}}
 	sourceGraph := link.BuildSourceGraph(idx)
-	result, err := preparePreRenderRelatedRanking(&semantics, idx, sourceGraph, recommend.EngineParameters{
+	result, err := recommend.BuildEngineFromSemanticOwner(&semantics, idx, sourceGraph, recommend.EngineParameters{
 		Features:    recommend.FeatureParameters{MaxFeatures: 32, MaxDFRatio: 0.40},
 		Content:     recommend.ContentParameters{MinCosine: 0.05, MaxSingleTermRatio: 0.10},
 		Count:       1,
@@ -74,7 +74,7 @@ func TestPreRenderRelatedRanking(t *testing.T) {
 
 	singletonOwner := []model.RelatedSemanticDocument{{RelPath: "a.md", Body: "database"}}
 	singletonBacking := singletonOwner
-	singleton, err := preparePreRenderRelatedRanking(&singletonOwner, idx, sourceGraph, recommend.EngineParameters{})
+	singleton, err := recommend.BuildEngineFromSemanticOwner(&singletonOwner, idx, sourceGraph, recommend.EngineParameters{})
 	if err != nil || singleton == nil || len(singleton.Documents) != 0 {
 		t.Fatalf("preparePreRenderRelatedRanking(singleton) = %#v, %v; want empty result", singleton, err)
 	}
@@ -90,7 +90,7 @@ func TestNoRecommendationFallback(t *testing.T) {
 	t.Parallel()
 
 	semanticOwner := []model.RelatedSemanticDocument{{RelPath: "a.md"}, {RelPath: "b.md"}}
-	if result, err := preparePreRenderRelatedRanking(&semanticOwner, nil, nil, recommend.EngineParameters{}); err == nil || result != nil {
+	if result, err := recommend.BuildEngineFromSemanticOwner(&semanticOwner, nil, nil, recommend.EngineParameters{}); err == nil || result != nil {
 		t.Fatalf("preparePreRenderRelatedRanking(invalid engine) = %#v, %v; want hard error without fallback", result, err)
 	}
 	if semanticOwner != nil {

@@ -441,6 +441,13 @@ func collectBuildABISourceFiles(repoRoot string) ([]string, error) {
 	return files, nil
 }
 
+func cachePageSiteConfig(cfg model.SiteConfig) model.SiteConfig {
+	cfg.ThemeDir = ""
+	cfg.ThemeCSS = ""
+	cfg.CustomCSS = ""
+	return cfg
+}
+
 func buildInputSignature(value any) (string, error) {
 	data, err := json.Marshal(value)
 	if err != nil {

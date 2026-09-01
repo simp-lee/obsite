@@ -9,17 +9,6 @@ import (
 
 const maxRelatedArticleTags = 8
 
-// preparePreRenderRelatedRanking consumes pass-1 source semantics and the
-// source-only graph, returning only compact document IDs/scores.
-func preparePreRenderRelatedRanking(
-	semanticOwner *[]model.RelatedSemanticDocument,
-	idx *model.VaultIndex,
-	sourceGraph *model.LinkGraph,
-	parameters recommend.EngineParameters,
-) (*recommend.EngineResult, error) {
-	return recommend.BuildEngineFromSemanticOwner(semanticOwner, idx, sourceGraph, parameters)
-}
-
 func materializeRelatedArticlesByPath(cfg model.SiteConfig, idx *model.VaultIndex, ranking *recommend.EngineResult, summaryByPath map[string]string) (map[string][]model.RelatedArticle, map[string]string) {
 	if !cfg.Related.Enabled || idx == nil {
 		return map[string][]model.RelatedArticle{}, map[string]string{}
