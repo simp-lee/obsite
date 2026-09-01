@@ -3328,6 +3328,374 @@ New note that must not publish on failure.
 	}
 }
 
+func TestStagedOutputPublisherRemovesFirstPublicationWhenRenameMovesThenReportsError(t *testing.T) {
+	root := t.TempDir()
+	vaultPath := filepath.Join(root, "vault")
+	outputPath := filepath.Join(root, "site")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := prepareStagedOutputPublisher(vaultPath, outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stagingPath := publisher.stagingPath
+	if err := os.WriteFile(filepath.Join(stagingPath, "index.html"), []byte("unconfirmed output"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	publishErr := errors.New("first publish rename reported failure after move")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return err
+			}
+			return publishErr
+		}
+		return os.Rename(oldPath, newPath)
+	}, nil, nil)
+
+	err = publisher.Finalize(true)
+	if !errors.Is(err, publishErr) {
+		t.Fatalf("Finalize() error = %v, want %v", err, publishErr)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("rename calls = %d, want publish attempt plus quarantine", renameCalls)
+	}
+	if _, err := os.Stat(outputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("formal first output = %v, want absent after failed publish", err)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging output = %v, want absent", err)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(root, managedOutputTempPattern(outputPath, "failed"))); len(matches) != 0 {
+		t.Fatalf("failed-output quarantine paths = %#v, want cleaned", matches)
+	}
+}
+
+func TestStagedOutputPublisherPreservesConcurrentFirstBuildDestination(t *testing.T) {
+	root := t.TempDir()
+	vaultPath := filepath.Join(root, "vault")
+	outputPath := filepath.Join(root, "site")
+	if err := os.MkdirAll(vaultPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	publisher, err := prepareStagedOutputPublisher(vaultPath, outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(publisher.stagingPath, "index.html"), []byte("staged"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	publishErr := errors.New("publish rename failed")
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		if err := os.MkdirAll(newPath, 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(newPath, "user.txt"), []byte("concurrent"), 0o644); err != nil {
+			return err
+		}
+		return publishErr
+	}, nil, nil)
+
+	err = publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !strings.Contains(err.Error(), "different filesystem object") {
+		t.Fatalf("Finalize() error = %v, want publish/concurrent destination errors", err)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "user.txt")); got != "concurrent" {
+		t.Fatalf("concurrent destination = %q, want preserved", got)
+	}
+}
+
+func TestStagedOutputPublisherPreservesConcurrentReplacementAndBackup(t *testing.T) {
+	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
+	publishErr := errors.New("publish rename failed")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 {
+			if err := os.MkdirAll(newPath, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(newPath, "user.txt"), []byte("replacement"), 0o644); err != nil {
+				return err
+			}
+			return publishErr
+		}
+		return os.Rename(oldPath, newPath)
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !strings.Contains(err.Error(), "different filesystem object") {
+		t.Fatalf("Finalize() error = %v, want publish/concurrent replacement errors", err)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "user.txt")); got != "replacement" {
+		t.Fatalf("concurrent replacement = %q, want preserved", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup")))
+	if globErr != nil || len(matches) != 1 {
+		t.Fatalf("recoverable backup paths = %#v, %v", matches, globErr)
+	}
+	if got := string(readBuildOutputFile(t, matches[0], "index.html")); got != "stable output" {
+		t.Fatalf("backup = %q, want stable output", got)
+	}
+}
+
+func TestStagedOutputPublisherRestoresConcurrentObjectMovedByQuarantineRace(t *testing.T) {
+	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
+	publishErr := errors.New("publish rename reported failure after move")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		switch renameCalls {
+		case 2:
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return err
+			}
+			return publishErr
+		case 3:
+			if err := os.RemoveAll(oldPath); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(oldPath, 0o755); err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(oldPath, "user.txt"), []byte("concurrent after identity check"), 0o644); err != nil {
+				return err
+			}
+			return os.Rename(oldPath, newPath)
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !strings.Contains(err.Error(), "different filesystem object") {
+		t.Fatalf("Finalize() error = %v, want publish/quarantine race errors", err)
+	}
+	if renameCalls != 4 {
+		t.Fatalf("rename calls = %d, want backup, publish, quarantine, concurrent restore", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "user.txt")); got != "concurrent after identity check" {
+		t.Fatalf("concurrent output = %q, want restored", got)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup")))
+	if globErr != nil || len(matches) != 1 {
+		t.Fatalf("recoverable backup paths = %#v, %v", matches, globErr)
+	}
+}
+
+func TestStagedOutputPublisherLeavesOldOutputUntouchedWhenBackupRenameFails(t *testing.T) {
+	publisher, outputPath, stagingPath := prepareStagedOutputPublisherForFailureTest(t)
+	backupErr := errors.New("backup rename failed")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			return backupErr
+		}
+		return os.Rename(oldPath, newPath)
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, backupErr) {
+		t.Fatalf("Finalize() error = %v, want %v", err, backupErr)
+	}
+	if renameCalls != 1 {
+		t.Fatalf("rename calls = %d, want 1", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "index.html")); got != "stable output" {
+		t.Fatalf("old output = %q, want untouched stable output", got)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging path cleanup error = %v", err)
+	}
+}
+
+func TestStagedOutputPublisherRestoresOldOutputWhenBackupRenameMovesThenReportsError(t *testing.T) {
+	publisher, outputPath, stagingPath := prepareStagedOutputPublisherForFailureTest(t)
+	backupErr := errors.New("backup rename reported failure after move")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		if renameCalls == 1 {
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return err
+			}
+			return backupErr
+		}
+		return os.Rename(oldPath, newPath)
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, backupErr) {
+		t.Fatalf("Finalize() error = %v, want %v", err, backupErr)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("rename calls = %d, want uncertain backup rename plus restore", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "index.html")); got != "stable output" {
+		t.Fatalf("formal output = %q, want restored stable output", got)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging path cleanup error = %v", err)
+	}
+}
+
+func TestStagedOutputPublisherKeepsCommittedSiteWhenPartialBackupCleanupFails(t *testing.T) {
+	publisher, outputPath, stagingPath := prepareStagedOutputPublisherForFailureTest(t)
+	cleanupErr := errors.New("partial backup cleanup failed")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t,
+		func(oldPath string, newPath string) error {
+			renameCalls++
+			return os.Rename(oldPath, newPath)
+		},
+		func(target string) error {
+			if strings.Contains(filepath.Base(target), "-obsite-backup-") {
+				_ = os.Remove(filepath.Join(target, "index.html"))
+				return cleanupErr
+			}
+			return os.RemoveAll(target)
+		},
+		nil,
+	)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, cleanupErr) {
+		t.Fatalf("Finalize() error = %v, want %v", err, cleanupErr)
+	}
+	if renameCalls != 2 {
+		t.Fatalf("rename calls = %d, want committed old->backup and stage->output only", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "index.html")); got != "new output" {
+		t.Fatalf("formal output = %q, want intact committed new output", got)
+	}
+	if _, err := os.Stat(stagingPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("staging path = %v, want removed", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup")))
+	if globErr != nil || len(matches) != 1 {
+		t.Fatalf("partial obsolete backup paths = %#v, %v; want one retained cleanup artifact", matches, globErr)
+	}
+}
+
+func TestStagedOutputPublisherRestoresOldOutputBeforePartialQuarantineCleanupFailure(t *testing.T) {
+	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
+	publishErr := errors.New("publish rename reported failure after moving output")
+	quarantineCleanupErr := errors.New("partial quarantine cleanup failed")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t,
+		func(oldPath string, newPath string) error {
+			renameCalls++
+			if renameCalls == 2 {
+				if err := os.Rename(oldPath, newPath); err != nil {
+					return err
+				}
+				return publishErr
+			}
+			return os.Rename(oldPath, newPath)
+		},
+		func(target string) error {
+			if strings.Contains(filepath.Base(target), "-obsite-failed-") {
+				_ = os.Remove(filepath.Join(target, "index.html"))
+				return quarantineCleanupErr
+			}
+			return os.RemoveAll(target)
+		},
+		nil,
+	)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !errors.Is(err, quarantineCleanupErr) {
+		t.Fatalf("Finalize() error = %v, want joined publish/quarantine errors", err)
+	}
+	if renameCalls != 4 {
+		t.Fatalf("rename calls = %d, want full quarantine/restore transaction", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "index.html")); got != "stable output" {
+		t.Fatalf("formal output = %q, want restored stable output", got)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup"))); len(matches) != 0 {
+		t.Fatalf("backup paths after restore = %#v", matches)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "failed")))
+	if globErr != nil || len(matches) != 1 {
+		t.Fatalf("failed-output quarantine paths = %#v, %v; want one partial quarantine", matches, globErr)
+	}
+}
+
+func TestStagedOutputPublisherRestoresBackupWhenQuarantineRenameMovesThenReportsError(t *testing.T) {
+	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
+	publishErr := errors.New("publish rename reported failure after move")
+	quarantineErr := errors.New("quarantine rename reported failure after move")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 || renameCalls == 3 {
+			if err := os.Rename(oldPath, newPath); err != nil {
+				return err
+			}
+			if renameCalls == 2 {
+				return publishErr
+			}
+			return quarantineErr
+		}
+		return os.Rename(oldPath, newPath)
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !errors.Is(err, quarantineErr) {
+		t.Fatalf("Finalize() error = %v, want joined publish/quarantine errors", err)
+	}
+	if renameCalls != 4 {
+		t.Fatalf("rename calls = %d, want backup, uncertain publish, uncertain quarantine, restore", renameCalls)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, "index.html")); got != "stable output" {
+		t.Fatalf("formal output = %q, want restored stable output", got)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup"))); len(matches) != 0 {
+		t.Fatalf("backup paths = %#v, want none", matches)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "failed"))); len(matches) != 0 {
+		t.Fatalf("failed-output paths = %#v, want cleaned", matches)
+	}
+}
+
+func TestStagedOutputPublisherJoinsRestoreFailureAfterPublishRenameError(t *testing.T) {
+	publisher, outputPath, _ := prepareStagedOutputPublisherForFailureTest(t)
+	publishErr := errors.New("publish rename failed")
+	restoreErr := errors.New("restore rename failed")
+	renameCalls := 0
+	overrideStagedOutputFileOps(t, func(oldPath string, newPath string) error {
+		renameCalls++
+		switch renameCalls {
+		case 2:
+			return publishErr
+		case 3:
+			return restoreErr
+		default:
+			return os.Rename(oldPath, newPath)
+		}
+	}, nil, nil)
+
+	err := publisher.Finalize(true)
+	if !errors.Is(err, publishErr) || !errors.Is(err, restoreErr) {
+		t.Fatalf("Finalize() error = %v, want joined publish/restore errors", err)
+	}
+	if _, err := os.Stat(outputPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("formal output after failed restore = %v, want absent rather than mixed", err)
+	}
+	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup")))
+	if globErr != nil || len(matches) != 1 {
+		t.Fatalf("recoverable backup paths = %#v, %v; want one retained backup", matches, globErr)
+	}
+	if got := string(readBuildOutputFile(t, matches[0], "index.html")); got != "stable output" {
+		t.Fatalf("retained backup = %q, want stable output", got)
+	}
+}
+
 func TestStagedOutputPublisherRestoresBackupAndCleansStageWhenPublishFailsAfterBackupCreation(t *testing.T) {
 	publisher, outputPath, stagingPath := prepareStagedOutputPublisherForFailureTest(t)
 	publishErr := errors.New("publish rename failed")

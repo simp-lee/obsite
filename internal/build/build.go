@@ -113,11 +113,14 @@ type managedOutputDirState struct {
 }
 
 type stagedOutputPublisher struct {
-	outputPath        string
-	stagingPath       string
-	backupPath        string
-	createdParentDirs []string
-	initialOutput     managedOutputDirState
+	outputPath           string
+	stagingPath          string
+	backupPath           string
+	createdParentDirs    []string
+	initialOutput        managedOutputDirState
+	committed            bool
+	publicationAttempted bool
+	publicationSource    os.FileInfo
 }
 
 var (
@@ -807,6 +810,9 @@ func (publisher *stagedOutputPublisher) Finalize(success bool) error {
 	}
 	if success {
 		if err := publisher.publish(); err != nil {
+			if publisher.committed {
+				return err
+			}
 			rollbackErr := publisher.rollback()
 			if rollbackErr != nil {
 				return errors.Join(err, rollbackErr)
@@ -833,16 +839,23 @@ func (publisher *stagedOutputPublisher) publish() error {
 		if err != nil {
 			return err
 		}
+		publisher.backupPath = backupPath
 		if err := stagedOutputRename(publisher.outputPath, backupPath); err != nil {
 			return fmt.Errorf("backup managed output %q: %w", publisher.outputPath, err)
 		}
-		publisher.backupPath = backupPath
 	}
+	publicationSource, err := stagedOutputStat(publisher.stagingPath)
+	if err != nil {
+		return fmt.Errorf("stat staged output %q before publication: %w", publisher.stagingPath, err)
+	}
+	publisher.publicationSource = publicationSource
+	publisher.publicationAttempted = true
 	if err := stagedOutputRename(publisher.stagingPath, publisher.outputPath); err != nil {
 		return fmt.Errorf("publish staged output %q -> %q: %w", publisher.stagingPath, publisher.outputPath, err)
 	}
 	publisher.stagingPath = ""
 	publisher.createdParentDirs = nil
+	publisher.committed = true
 	if publisher.backupPath != "" {
 		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
 			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
@@ -925,13 +938,25 @@ func (publisher *stagedOutputPublisher) rollback() (cleanupErr error) {
 		cleanupErr = errors.Join(cleanupErr, publisher.removeCreatedOutputParents())
 	}()
 
+	publishedStageAtOutput, identityErr := publisher.publicationAtOutput()
+	cleanupErr = errors.Join(cleanupErr, identityErr)
 	if publisher.stagingPath != "" {
 		if err := stagedOutputRemoveAll(publisher.stagingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove staged output %q: %w", publisher.stagingPath, err))
 		}
 		publisher.stagingPath = ""
 	}
+
 	if publisher.backupPath == "" {
+		if publishedStageAtOutput && !publisher.initialOutput.exists {
+			failedPath, moved, quarantineErr := publisher.quarantinePublication()
+			cleanupErr = errors.Join(cleanupErr, quarantineErr)
+			if moved {
+				if removeErr := stagedOutputRemoveAll(failedPath); removeErr != nil {
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove unconfirmed output quarantine %q: %w", failedPath, removeErr))
+				}
+			}
+		}
 		return cleanupErr
 	}
 
@@ -942,25 +967,75 @@ func (publisher *stagedOutputPublisher) rollback() (cleanupErr error) {
 		publisher.backupPath = ""
 		return cleanupErr
 	}
-
-	if _, err := stagedOutputStat(publisher.outputPath); errors.Is(err, os.ErrNotExist) {
-		if restoreErr := stagedOutputRename(publisher.backupPath, publisher.outputPath); restoreErr != nil {
-			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore previous output %q: %w", publisher.outputPath, restoreErr))
-		} else {
-			publisher.backupPath = ""
-		}
-		return cleanupErr
-	} else if err != nil {
-		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("stat output path %q: %w", publisher.outputPath, err))
+	if identityErr != nil {
 		return cleanupErr
 	}
 
-	if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
-		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err))
+	failedOutputPath := ""
+	if publishedStageAtOutput {
+		var moved bool
+		var quarantineErr error
+		failedOutputPath, moved, quarantineErr = publisher.quarantinePublication()
+		cleanupErr = errors.Join(cleanupErr, quarantineErr)
+		if !moved {
+			return cleanupErr
+		}
+	}
+
+	if restoreErr := stagedOutputRename(publisher.backupPath, publisher.outputPath); restoreErr != nil {
+		cleanupErr = errors.Join(cleanupErr, fmt.Errorf("restore previous output %q: %w", publisher.outputPath, restoreErr))
 	} else {
 		publisher.backupPath = ""
 	}
+	if failedOutputPath != "" {
+		if removeErr := stagedOutputRemoveAll(failedOutputPath); removeErr != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("remove quarantined failed output %q: %w", failedOutputPath, removeErr))
+		}
+	}
 	return cleanupErr
+}
+
+func (publisher *stagedOutputPublisher) publicationAtOutput() (bool, error) {
+	if publisher == nil || !publisher.publicationAttempted || publisher.publicationSource == nil {
+		return false, nil
+	}
+	current, err := stagedOutputStat(publisher.outputPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, fmt.Errorf("stat output path %q after failed publication: %w", publisher.outputPath, err)
+	}
+	if os.SameFile(publisher.publicationSource, current) {
+		return true, nil
+	}
+	return false, fmt.Errorf("output path %q is occupied by a different filesystem object after failed publication", publisher.outputPath)
+}
+
+func (publisher *stagedOutputPublisher) quarantinePublication() (string, bool, error) {
+	failedPath, err := reserveManagedOutputPath(publisher.outputPath, "failed")
+	if err != nil {
+		return "", false, err
+	}
+	var quarantineErr error
+	if err := stagedOutputRename(publisher.outputPath, failedPath); err != nil {
+		quarantineErr = fmt.Errorf("quarantine failed published output %q: %w", publisher.outputPath, err)
+	}
+	current, statErr := stagedOutputStat(failedPath)
+	if statErr != nil {
+		if !errors.Is(statErr, os.ErrNotExist) {
+			quarantineErr = errors.Join(quarantineErr, fmt.Errorf("stat quarantined failed output %q: %w", failedPath, statErr))
+		}
+		return "", false, quarantineErr
+	}
+	if publisher.publicationSource == nil || !os.SameFile(publisher.publicationSource, current) {
+		conflictErr := fmt.Errorf("quarantine path %q contains a different filesystem object", failedPath)
+		if restoreErr := stagedOutputRename(failedPath, publisher.outputPath); restoreErr != nil {
+			conflictErr = errors.Join(conflictErr, fmt.Errorf("restore concurrent output %q: %w", publisher.outputPath, restoreErr))
+		}
+		return "", false, errors.Join(quarantineErr, conflictErr)
+	}
+	return failedPath, true, quarantineErr
 }
 
 func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
