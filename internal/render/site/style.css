@@ -985,7 +985,7 @@ samp {
   background: var(--page-surface-soft);
   box-shadow: var(--shadow-lg);
   color: var(--ink);
-  pointer-events: none;
+  pointer-events: auto;
   backdrop-filter: blur(18px);
 }
 

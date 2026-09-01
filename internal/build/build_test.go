@@ -2344,45 +2344,43 @@ Beta body.
 		}
 	}
 
-	assertPopoverRuntime := func(t *testing.T, relPath string, siteRootRel string, popoverRoot string) []byte {
+	assertPopoverMount := func(t *testing.T, relPath string) []byte {
 		t.Helper()
 
 		html := readBuildOutputFile(t, outputPath, relPath)
-		if !containsAny(html, `data-popover-card`, `data-popover-card=""`) {
-			t.Fatalf("%s missing popover card marker\n%s", relPath, html)
+		if !containsAny(html, `data-obsite-popover`, `data-obsite-popover=""`) {
+			t.Fatalf("%s missing Popover runtime flag\n%s", relPath, html)
 		}
-		if !containsAny(html, `data-site-root-rel="`+siteRootRel+`"`, `data-site-root-rel=`+siteRootRel) {
-			t.Fatalf("%s missing site-root-relative popover context\n%s", relPath, html)
+		if !containsAny(html, `id="obsite-popover-card"`, `id=obsite-popover-card`) || !containsAny(html, `role="tooltip"`, `role=tooltip`) {
+			t.Fatalf("%s missing accessible Popover mount\n%s", relPath, html)
 		}
-		if !containsAny(html, `data-popover-root="`+popoverRoot+`"`, `data-popover-root=`+popoverRoot) {
-			t.Fatalf("%s missing popover root context\n%s", relPath, html)
+		for _, forbidden := range [][]byte{[]byte("mouseenter"), []byte("focusin"), []byte("window.fetch"), []byte("data-popover-root"), []byte("data-site-root-rel")} {
+			if bytes.Contains(html, forbidden) {
+				t.Fatalf("%s retains inline Popover runtime %q\n%s", relPath, forbidden, html)
+			}
 		}
-		if !bytes.Contains(html, []byte("mouseenter")) {
-			t.Fatalf("%s missing hover listener wiring\n%s", relPath, html)
-		}
-		if !bytes.Contains(html, []byte("focusin")) {
-			t.Fatalf("%s missing focus listener wiring\n%s", relPath, html)
-		}
-
 		return html
 	}
 
-	noteHTML := assertPopoverRuntime(t, "alpha/index.html", "../", "../_popover/")
-	indexHTML := assertPopoverRuntime(t, "index.html", "./", "./_popover/")
-	tagHTML := assertPopoverRuntime(t, "tags/topic/index.html", "../../", "../../_popover/")
-	folderHTML := assertPopoverRuntime(t, "journal/index.html", "../", "../_popover/")
-	timelineHTML := assertPopoverRuntime(t, "notes/index.html", "../", "../_popover/")
-	notFoundHTML := assertPopoverRuntime(t, "404.html", "./", "./_popover/")
-	if !bytes.Contains(notFoundHTML, []byte("document.baseURI")) {
-		t.Fatalf("404 page popover URL resolution does not honor document base URI\n%s", notFoundHTML)
-	}
+	noteHTML := assertPopoverMount(t, "alpha/index.html")
+	indexHTML := assertPopoverMount(t, "index.html")
+	tagHTML := assertPopoverMount(t, "tags/topic/index.html")
+	folderHTML := assertPopoverMount(t, "journal/index.html")
+	timelineHTML := assertPopoverMount(t, "notes/index.html")
+	notFoundHTML := assertPopoverMount(t, "404.html")
 
-	if !containsAny(
-		noteHTML,
-		`querySelectorAll("[data-popover-path]")`,
-		`querySelectorAll('[data-popover-path]')`,
-	) {
-		t.Fatalf("note page missing build-time popover link selector\n%s", noteHTML)
+	runtimePath, err := internalrender.SharedRuntimeOutputPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeJS := readBuildOutputFile(t, outputPath, runtimePath)
+	for _, want := range [][]byte{[]byte(`document.addEventListener("mouseover"`), []byte(`document.addEventListener("focusin"`), []byte("Popover request failed."), []byte(`target.closest("[data-popover-path]")`)} {
+		if !bytes.Contains(runtimeJS, want) {
+			t.Fatalf("shared runtime missing delegated Popover behavior %q", want)
+		}
+	}
+	if bytes.Contains(runtimeJS, []byte("cache.delete(popoverURL)")) {
+		t.Fatal("shared runtime retries failed Popover requests")
 	}
 	if !containsAny(
 		noteHTML,
@@ -2390,12 +2388,6 @@ Beta body.
 		`data-popover-path=beta`,
 	) {
 		t.Fatalf("note page missing build-time popover link annotation for resolved note links\n%s", noteHTML)
-	}
-	if bytes.Contains(noteHTML, []byte("normalizeTargetPath")) {
-		t.Fatalf("note page unexpectedly retains runtime path guessing\n%s", noteHTML)
-	}
-	if !bytes.Contains(noteHTML, []byte("cache.delete(popoverURL)")) {
-		t.Fatalf("note page missing failed-popover cache eviction\n%s", noteHTML)
 	}
 	for _, html := range [][]byte{indexHTML, tagHTML, folderHTML, timelineHTML, notFoundHTML} {
 		if !containsAny(html, `data-popover-path=`, `data-popover-path="`) {
@@ -2409,6 +2401,9 @@ Beta body.
 	}
 	if !bytes.Contains(styleCSS, []byte(".popover-card-tag{")) {
 		t.Fatalf("style.css missing popover tag styles\n%s", styleCSS)
+	}
+	if !bytes.Contains(styleCSS, []byte("pointer-events:auto")) {
+		t.Fatalf("style.css prevents Popover hover persistence\n%s", styleCSS)
 	}
 }
 
@@ -2622,8 +2617,8 @@ Alpha summary body.
 	}
 
 	noteHTML := readBuildOutputFile(t, outputPath, "alpha/index.html")
-	if containsAny(noteHTML, `data-popover-card`, `data-popover-root=`) {
-		t.Fatalf("note page unexpectedly includes popover wiring when disabled\n%s", noteHTML)
+	if containsAny(noteHTML, `data-obsite-popover`, `data-popover-card`, `data-popover-root=`, `data-popover-path=`) {
+		t.Fatalf("note page unexpectedly includes Popover wiring when disabled\n%s", noteHTML)
 	}
 }
 
@@ -6438,20 +6433,6 @@ func writeBuildSymlinkOrSkip(t *testing.T, targetPath string, linkPath string) {
 	}
 }
 
-func htmlAttrValue(node *xhtml.Node, key string) string {
-	if node == nil {
-		return ""
-	}
-
-	for _, attr := range node.Attr {
-		if strings.EqualFold(attr.Key, key) {
-			return attr.Val
-		}
-	}
-
-	return ""
-}
-
 func findSidebarNodeByURL(nodes []model.SidebarNode, url string) *model.SidebarNode {
 	for index := range nodes {
 		if nodes[index].URL == url {
@@ -6514,32 +6495,6 @@ func captureRenderedMarkdownNotePaths(t *testing.T) func() []string {
 		renderedMu.Lock()
 		defer renderedMu.Unlock()
 		return uniqueSortedStrings(append([]string(nil), rendered...))
-	}
-}
-
-func captureRenderedNotePageCalls(t *testing.T) func() []string {
-	t.Helper()
-	lockBuildTestRenderHooks(t)
-
-	originalRenderNotePage := renderNotePage
-	var renderedMu sync.Mutex
-	rendered := make([]string, 0, 8)
-	renderNotePage = func(input internalrender.NotePageInput) (internalrender.RenderedPage, error) {
-		if input.Note != nil {
-			renderedMu.Lock()
-			rendered = append(rendered, input.Note.RelPath)
-			renderedMu.Unlock()
-		}
-		return originalRenderNotePage(input)
-	}
-	t.Cleanup(func() {
-		renderNotePage = originalRenderNotePage
-	})
-
-	return func() []string {
-		renderedMu.Lock()
-		defer renderedMu.Unlock()
-		return sortedStrings(append([]string(nil), rendered...))
 	}
 }
 

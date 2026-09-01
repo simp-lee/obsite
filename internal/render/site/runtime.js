@@ -413,6 +413,266 @@
     }
   }
 
+  function initPopover() {
+    if (!root.hasAttribute("data-obsite-popover")) {
+      return;
+    }
+    var card = document.querySelector("[data-popover-card]");
+    if (!card || !servedSiteRootURL) {
+      report("error", "Popover mount point is unavailable.");
+      return;
+    }
+
+    var cache = new Map();
+    var showTimer = 0;
+    var hideTimer = 0;
+    var activeLink = null;
+    var activeDescribedBy = null;
+    var hoveredLink = null;
+    var focusedLink = null;
+    var cardHovered = false;
+    var cardFocused = false;
+    var activeRequest = 0;
+
+    function popoverLink(target) {
+      return target && typeof target.closest === "function" ? target.closest("[data-popover-path]") : null;
+    }
+
+    function clearTimers() {
+      window.clearTimeout(showTimer);
+      window.clearTimeout(hideTimer);
+    }
+
+    function restoreActiveDescription() {
+      if (!activeLink) {
+        activeDescribedBy = null;
+        return;
+      }
+      if (activeDescribedBy === null) {
+        activeLink.removeAttribute("aria-describedby");
+      } else {
+        activeLink.setAttribute("aria-describedby", activeDescribedBy);
+      }
+      activeDescribedBy = null;
+    }
+
+    function hidePopover() {
+      clearTimers();
+      restoreActiveDescription();
+      activeLink = null;
+      activeRequest += 1;
+      card.hidden = true;
+      card.setAttribute("aria-hidden", "true");
+      card.textContent = "";
+      card.style.left = "";
+      card.style.top = "";
+    }
+
+    function scheduleHideIfIdle() {
+      if (hoveredLink || focusedLink || cardHovered || cardFocused) {
+        window.clearTimeout(hideTimer);
+        return;
+      }
+      window.clearTimeout(hideTimer);
+      hideTimer = window.setTimeout(hidePopover, 90);
+    }
+
+    function syncPopoverTarget() {
+      var nextLink = focusedLink || hoveredLink;
+      if (nextLink) {
+        window.clearTimeout(hideTimer);
+        if (activeLink !== nextLink || card.hidden) {
+          showPopover(nextLink);
+        }
+        return;
+      }
+      scheduleHideIfIdle();
+    }
+
+    function transitionInside(link, relatedTarget) {
+      return !!(link && relatedTarget && typeof link.contains === "function" && link.contains(relatedTarget));
+    }
+
+    function resolvePopoverURL(link) {
+      var notePath = link ? (link.getAttribute("data-popover-path") || "").trim().replace(/^\/+|\/+$/g, "") : "";
+      if (!notePath || notePath.indexOf("\\") !== -1 || notePath.split("/").some(function (segment) { return !segment || segment === "." || segment === ".."; })) {
+        return "";
+      }
+      var encoded = notePath.split("/").map(encodeURIComponent).join("/");
+      return new URL("_popover/" + encoded + ".json", servedSiteRootURL).href;
+    }
+
+    function loadPopover(popoverURL) {
+      if (cache.has(popoverURL)) {
+        return cache.get(popoverURL);
+      }
+      var pending = window.fetch(popoverURL, {
+        headers: {Accept: "application/json"}
+      }).then(function (response) {
+        if (!response.ok) {
+          throw new Error("Popover data returned HTTP " + response.status);
+        }
+        return response.json();
+      }).then(function (payload) {
+        if (!payload || typeof payload.title !== "string" || typeof payload.summary !== "string" || !Array.isArray(payload.tags)) {
+          throw new Error("Popover data has an invalid shape");
+        }
+        return {
+          title: payload.title,
+          summary: payload.summary,
+          tags: payload.tags.filter(function (tag) { return typeof tag === "string" && tag.trim() !== ""; })
+        };
+      }).catch(function (error) {
+        report("error", "Popover request failed.", error);
+        return null;
+      });
+      cache.set(popoverURL, pending);
+      return pending;
+    }
+
+    function renderPopover(payload) {
+      if (!payload || !payload.title) {
+        hidePopover();
+        return false;
+      }
+      card.textContent = "";
+      var title = document.createElement("p");
+      title.className = "popover-card-title";
+      title.textContent = payload.title;
+      card.appendChild(title);
+      if (payload.summary) {
+        var summary = document.createElement("p");
+        summary.className = "popover-card-summary";
+        summary.textContent = payload.summary;
+        card.appendChild(summary);
+      }
+      if (payload.tags.length) {
+        var tags = document.createElement("div");
+        tags.className = "popover-card-tags";
+        for (var index = 0; index < payload.tags.length; index += 1) {
+          var pill = document.createElement("span");
+          pill.className = "popover-card-tag";
+          pill.textContent = "#" + payload.tags[index];
+          tags.appendChild(pill);
+        }
+        card.appendChild(tags);
+      }
+      card.style.left = "-9999px";
+      card.style.top = "0";
+      card.hidden = false;
+      card.setAttribute("aria-hidden", "false");
+      return true;
+    }
+
+    function positionPopover(link) {
+      if (!link || card.hidden) {
+        return;
+      }
+      var rect = link.getBoundingClientRect();
+      var gap = 14;
+      var viewportPadding = 16;
+      var left = rect.left;
+      var top = rect.bottom + gap;
+      if (left + card.offsetWidth > window.innerWidth - viewportPadding) {
+        left = window.innerWidth - card.offsetWidth - viewportPadding;
+      }
+      if (left < viewportPadding) {
+        left = viewportPadding;
+      }
+      if (top + card.offsetHeight > window.innerHeight - viewportPadding) {
+        top = rect.top - card.offsetHeight - gap;
+      }
+      if (top < viewportPadding) {
+        top = viewportPadding;
+      }
+      card.style.left = Math.round(left) + "px";
+      card.style.top = Math.round(top) + "px";
+    }
+
+    function showPopover(link) {
+      var popoverURL = resolvePopoverURL(link);
+      if (!popoverURL) {
+        return;
+      }
+      if (activeLink !== link) {
+        restoreActiveDescription();
+        cardHovered = false;
+        cardFocused = false;
+        activeLink = link;
+        activeDescribedBy = link.getAttribute("aria-describedby");
+      }
+      activeRequest += 1;
+      var requestID = activeRequest;
+      window.clearTimeout(hideTimer);
+      window.clearTimeout(showTimer);
+      card.hidden = true;
+      card.setAttribute("aria-hidden", "true");
+      card.textContent = "";
+      showTimer = window.setTimeout(function () {
+        loadPopover(popoverURL).then(function (payload) {
+          if (requestID !== activeRequest || activeLink !== link || !renderPopover(payload)) {
+            return;
+          }
+          var descriptions = activeDescribedBy ? activeDescribedBy.trim().split(/\s+/) : [];
+          if (descriptions.indexOf(card.id) === -1) {
+            descriptions.push(card.id);
+          }
+          link.setAttribute("aria-describedby", descriptions.join(" "));
+          positionPopover(link);
+        });
+      }, 150);
+    }
+
+    document.addEventListener("mouseover", function (event) {
+      var link = popoverLink(event.target);
+      if (link && !transitionInside(link, event.relatedTarget)) {
+        hoveredLink = link;
+        syncPopoverTarget();
+      }
+    });
+    document.addEventListener("mouseout", function (event) {
+      var link = popoverLink(event.target);
+      if (link && !transitionInside(link, event.relatedTarget) && hoveredLink === link) {
+        hoveredLink = null;
+        syncPopoverTarget();
+      }
+    });
+    document.addEventListener("focusin", function (event) {
+      var link = popoverLink(event.target);
+      if (link && !transitionInside(link, event.relatedTarget)) {
+        focusedLink = link;
+        syncPopoverTarget();
+      }
+    });
+    document.addEventListener("focusout", function (event) {
+      var link = popoverLink(event.target);
+      if (link && !transitionInside(link, event.relatedTarget) && focusedLink === link) {
+        focusedLink = null;
+        syncPopoverTarget();
+      }
+    });
+    card.addEventListener("mouseenter", function () { cardHovered = true; window.clearTimeout(hideTimer); });
+    card.addEventListener("mouseleave", function () { cardHovered = false; scheduleHideIfIdle(); });
+    card.addEventListener("focusin", function () { cardFocused = true; window.clearTimeout(hideTimer); });
+    card.addEventListener("focusout", function (event) {
+      if (!event.relatedTarget || !card.contains(event.relatedTarget)) {
+        cardFocused = false;
+        scheduleHideIfIdle();
+      }
+    });
+    document.addEventListener("keydown", function (event) {
+      if (event.key === "Escape") {
+        hoveredLink = null;
+        focusedLink = null;
+        cardHovered = false;
+        cardFocused = false;
+        hidePopover();
+      }
+    });
+    window.addEventListener("scroll", function () { if (activeLink && !card.hidden) positionPopover(activeLink); });
+    window.addEventListener("resize", function () { if (activeLink && !card.hidden) positionPopover(activeLink); });
+  }
+
   function initMath() {
     if (!root.hasAttribute("data-obsite-math") || !vendorBaseURL) {
       return;
@@ -499,6 +759,7 @@
   onReady(function () {
     initThemeToggle();
     initSidebar();
+    initPopover();
     initMath();
     initMermaid();
   });

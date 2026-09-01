@@ -21,6 +21,9 @@ function Element(tag) {
   this.textContent = "";
   this.hidden = false;
   this.style = {};
+  this.id = "";
+  this.offsetWidth = 240;
+  this.offsetHeight = 120;
   var self = this;
   this.classList = {
     add: function (name) {
@@ -30,7 +33,7 @@ function Element(tag) {
   };
 }
 Element.prototype.appendChild = function (child) { child.parentNode = this; this.children.push(child); return child; };
-Element.prototype.setAttribute = function (name, value) { this.attributes[name] = String(value); };
+Element.prototype.setAttribute = function (name, value) { this.attributes[name] = String(value); if (name === "id") this.id = String(value); };
 Element.prototype.getAttribute = function (name) { return Object.prototype.hasOwnProperty.call(this.attributes, name) ? this.attributes[name] : null; };
 Element.prototype.hasAttribute = function (name) { return Object.prototype.hasOwnProperty.call(this.attributes, name); };
 Element.prototype.removeAttribute = function (name) { delete this.attributes[name]; };
@@ -48,10 +51,13 @@ Element.prototype.closest = function (selector) {
   var current = this;
   while (current) {
     if (selector === "a.sidebar-link" && current.tagName === "A" && current.classList.contains("sidebar-link")) return current;
+    if (selector === "[data-popover-path]" && current.hasAttribute("data-popover-path")) return current;
     current = current.parentNode;
   }
   return null;
 };
+Element.prototype.getBoundingClientRect = function () { return {left: 20, top: 20, bottom: 40}; };
+Element.prototype.contains = function (candidate) { var current = candidate; while (current) { if (current === this) return true; current = current.parentNode; } return false; };
 function findByTag(node, tag) {
   for (var i = 0; i < node.children.length; i++) {
     if (node.children[i].tagName === tag) return node.children[i];
@@ -89,11 +95,13 @@ var closeButton = new Element("button");
 var overlay = new Element("div"); overlay.hidden = true;
 var body = new Element("body");
 var head = new Element("head");
+var popoverCard = new Element("aside"); popoverCard.id = "obsite-popover-card"; popoverCard.hidden = true; popoverCard.setAttribute("aria-hidden", "true");
+var staticLink = new Element("a"); staticLink.textContent = "Static Link"; staticLink.setAttribute("data-popover-path", "reference"); staticLink.setAttribute("aria-describedby", "authored-help");
 var documentListeners = {};
 var document = {
   documentElement: root, currentScript: runtimeScript, readyState: "complete", body: body, head: head, baseURI: "https://example.test/blog/guide/",
   querySelector: function (selector) {
-    return {"[data-theme-toggle]": null,"[data-sidebar-shell]": shell,"[data-sidebar-root]": sidebarRoot,"[data-site-body]": siteBody,"[data-sidebar-toggle]": toggle,"[data-sidebar-close]": closeButton,"[data-sidebar-overlay]": overlay,"[data-page-content]": null}[selector] || null;
+    return {"[data-theme-toggle]": null,"[data-sidebar-shell]": shell,"[data-sidebar-root]": sidebarRoot,"[data-site-body]": siteBody,"[data-sidebar-toggle]": toggle,"[data-sidebar-close]": closeButton,"[data-sidebar-overlay]": overlay,"[data-popover-card]": fixture.popover ? popoverCard : null,"[data-page-content]": null}[selector] || null;
   },
   querySelectorAll: function () { return []; },
   createElement: function (tag) { return new Element(tag); },
@@ -103,13 +111,24 @@ window.document = document;
 window.location = {pathname: fixture.pathname || "/blog/guide/"};
 var media = {matches: !!fixture.mobile, listeners: [], addEventListener: function (_, listener) { this.listeners.push(listener); }, addListener: function (listener) { this.listeners.push(listener); }};
 window.matchMedia = function () { return media; };
+var windowListeners = {};
+window.addEventListener = function (name, listener) { (windowListeners[name] || (windowListeners[name] = [])).push(listener); };
+window.innerWidth = 1280; window.innerHeight = 800;
+var timers = {}; var nextTimer = 1;
+window.setTimeout = function (callback, delay) { var id = nextTimer++; if (delay >= 150) callback(); else timers[id] = callback; return id; };
+window.clearTimeout = function (id) { delete timers[id]; };
+function flushTimers() { var pending = timers; timers = {}; Object.keys(pending).forEach(function (id) { pending[id](); }); };
 var storage = fixture.storage || {};
 window.localStorage = {getItem: function (key) { return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; }, setItem: function (key, value) { storage[key] = String(value); }};
 var logs = [];
 window.console = {error: function (message, error) { logs.push(String(message) + " " + String(error || "")); }, warn: function (message, error) { logs.push(String(message) + " " + String(error || "")); }};
 var fetchCalls = [];
 window.fetch = function (url, options) {
-  fetchCalls.push({url: String(url), cache: options && options.cache});
+  url = String(url); fetchCalls.push({url: url, cache: options && options.cache});
+  if (url.indexOf("/_popover/") !== -1) {
+    if (fixture.failPopover) return Promise.reject(new Error("popover offline"));
+    return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve(fixture.popoverPayload || {title: "Reference", summary: "Preview summary", tags: ["field"]}); }});
+  }
   if (fixture.failFetch) return Promise.reject(new Error("offline"));
   return Promise.resolve({ok: true, status: 200, json: function () { return Promise.resolve(fixture.nodes); }});
 };
@@ -124,12 +143,24 @@ window.__sidebarSharedTest = {
       guideCurrent: guide ? guide.getAttribute("aria-current") : null, guideHref: guide ? guide.href : null,
       gardenCurrent: garden ? garden.getAttribute("aria-current") : null, gardenExpanded: gardenItem ? gardenItem.getAttribute("data-expanded") : null,
       toggleHidden: toggle.hidden, toggleExpanded: toggle.getAttribute("aria-expanded"), overlayHidden: overlay.hidden,
-      shellAriaHidden: shell.getAttribute("aria-hidden"), shellInert: shell.hasAttribute("inert"), bodyOpen: body.getAttribute("data-sidebar-open"), storage: storage
+      shellAriaHidden: shell.getAttribute("aria-hidden"), shellInert: shell.hasAttribute("inert"), bodyOpen: body.getAttribute("data-sidebar-open"), storage: storage,
+      popoverHidden: popoverCard.hidden, popoverAriaHidden: popoverCard.getAttribute("aria-hidden"), popoverText: popoverCard.children.map(function (child) { return child.textContent; }).join("|"),
+      staticDescribedBy: staticLink.getAttribute("aria-describedby"), staticPopoverPath: staticLink.getAttribute("data-popover-path"), sidebarDescribedBy: findByText(sidebarRoot, "A", "Reference") ? findByText(sidebarRoot, "A", "Reference").getAttribute("aria-describedby") : null
     };
   },
   clickBranch: function (label) { var item = findItem(label); var row = item && directChild(item, "DIV"); var button = row && directChild(row, "BUTTON"); if (!button) return false; button.dispatch("click"); return true; },
   clickLaunch: function () { toggle.dispatch("click"); },
   clickOverlay: function () { overlay.dispatch("click"); },
+  hoverStatic: function () { var list = documentListeners.mouseover || []; for (var i = 0; i < list.length; i++) list[i]({target: staticLink, relatedTarget: null}); },
+  leaveStatic: function (relatedTarget) { var list = documentListeners.mouseout || []; for (var i = 0; i < list.length; i++) list[i]({target: staticLink, relatedTarget: relatedTarget || null}); },
+  focusStatic: function () { var list = documentListeners.focusin || []; for (var i = 0; i < list.length; i++) list[i]({target: staticLink, relatedTarget: null}); },
+  blurStatic: function () { var list = documentListeners.focusout || []; for (var i = 0; i < list.length; i++) list[i]({target: staticLink, relatedTarget: null}); },
+  enterCard: function () { popoverCard.dispatch("mouseenter", {target: popoverCard}); },
+  leaveCard: function () { popoverCard.dispatch("mouseleave", {target: popoverCard}); },
+  flushTimers: function () { flushTimers(); },
+  hoverSidebar: function (label) { var link = findByText(sidebarRoot, "A", label); var list = documentListeners.mouseover || []; for (var i = 0; i < list.length; i++) list[i]({target: link, relatedTarget: null}); },
+  focusSidebar: function (label) { var link = findByText(sidebarRoot, "A", label); var out = documentListeners.focusout || []; for (var i = 0; i < out.length; i++) out[i]({target: staticLink, relatedTarget: link}); var input = documentListeners.focusin || []; for (var j = 0; j < input.length; j++) input[j]({target: link, relatedTarget: staticLink}); },
+  blurSidebar: function (label) { var link = findByText(sidebarRoot, "A", label); var list = documentListeners.focusout || []; for (var i = 0; i < list.length; i++) list[i]({target: link, relatedTarget: null}); },
   escape: function () { var list = documentListeners.keydown || []; for (var i = 0; i < list.length; i++) list[i]({key: "Escape"}); }
 };
 `
@@ -139,22 +170,28 @@ type sharedSidebarSnapshot struct {
 		URL   string `json:"url"`
 		Cache string `json:"cache"`
 	} `json:"fetchCalls"`
-	Logs            []string          `json:"logs"`
-	Ready           string            `json:"ready"`
-	ShellHidden     bool              `json:"shellHidden"`
-	NotesExpanded   string            `json:"notesExpanded"`
-	BranchHidden    bool              `json:"branchHidden"`
-	GuideCurrent    string            `json:"guideCurrent"`
-	GuideHref       string            `json:"guideHref"`
-	GardenCurrent   string            `json:"gardenCurrent"`
-	GardenExpanded  string            `json:"gardenExpanded"`
-	ToggleHidden    bool              `json:"toggleHidden"`
-	ToggleExpanded  string            `json:"toggleExpanded"`
-	OverlayHidden   bool              `json:"overlayHidden"`
-	ShellAriaHidden string            `json:"shellAriaHidden"`
-	ShellInert      bool              `json:"shellInert"`
-	BodyOpen        string            `json:"bodyOpen"`
-	Storage         map[string]string `json:"storage"`
+	Logs               []string          `json:"logs"`
+	Ready              string            `json:"ready"`
+	ShellHidden        bool              `json:"shellHidden"`
+	NotesExpanded      string            `json:"notesExpanded"`
+	BranchHidden       bool              `json:"branchHidden"`
+	GuideCurrent       string            `json:"guideCurrent"`
+	GuideHref          string            `json:"guideHref"`
+	GardenCurrent      string            `json:"gardenCurrent"`
+	GardenExpanded     string            `json:"gardenExpanded"`
+	ToggleHidden       bool              `json:"toggleHidden"`
+	ToggleExpanded     string            `json:"toggleExpanded"`
+	OverlayHidden      bool              `json:"overlayHidden"`
+	ShellAriaHidden    string            `json:"shellAriaHidden"`
+	ShellInert         bool              `json:"shellInert"`
+	BodyOpen           string            `json:"bodyOpen"`
+	Storage            map[string]string `json:"storage"`
+	PopoverHidden      bool              `json:"popoverHidden"`
+	PopoverAriaHidden  string            `json:"popoverAriaHidden"`
+	PopoverText        string            `json:"popoverText"`
+	StaticDescribedBy  string            `json:"staticDescribedBy"`
+	StaticPopoverPath  string            `json:"staticPopoverPath"`
+	SidebarDescribedBy string            `json:"sidebarDescribedBy"`
 }
 
 func TestSharedRuntimeFetchesSidebarAndComputesCurrentAncestors(t *testing.T) {
@@ -233,6 +270,111 @@ func TestSharedRuntimeSidebarMobileAccessibilityAndEscape(t *testing.T) {
 	state = sharedSidebarState(t, vm)
 	if state.ToggleExpanded != "false" || !state.OverlayHidden || state.ShellAriaHidden != "true" || !state.ShellInert || state.BodyOpen != "" {
 		t.Fatalf("Escape-closed mobile Sidebar state = %#v", state)
+	}
+}
+
+func TestSharedRuntimePopoverDelegatesToStaticAndAsyncSidebarLinks(t *testing.T) {
+	t.Parallel()
+	vm := runSharedSidebarRuntime(t, map[string]any{
+		"basePath": "/blog/", "pathname": "/blog/guide/", "popover": true,
+		"nodes": []map[string]any{{"name": "Reference", "url": "reference/", "isDir": false}},
+	})
+	if _, err := vm.RunString(`__sidebarSharedTest.focusStatic()`); err != nil {
+		t.Fatal(err)
+	}
+	state := sharedSidebarState(t, vm)
+	if state.PopoverHidden || state.PopoverAriaHidden != "false" || !strings.Contains(state.PopoverText, "Reference|Preview summary") || state.StaticDescribedBy != "authored-help obsite-popover-card" {
+		t.Fatalf("focused static-link Popover state = %#v", state)
+	}
+	if _, err := vm.RunString(`__sidebarSharedTest.leaveStatic(); __sidebarSharedTest.flushTimers()`); err != nil {
+		t.Fatal(err)
+	}
+	if state = sharedSidebarState(t, vm); state.PopoverHidden {
+		t.Fatalf("focused Popover closed on pointer exit: %#v", state)
+	}
+	if _, err := vm.RunString(`__sidebarSharedTest.escape(); __sidebarSharedTest.hoverStatic(); __sidebarSharedTest.leaveStatic(); __sidebarSharedTest.enterCard(); __sidebarSharedTest.flushTimers()`); err != nil {
+		t.Fatal(err)
+	}
+	if state = sharedSidebarState(t, vm); state.PopoverHidden {
+		t.Fatalf("hovered card did not cancel hide: %#v", state)
+	}
+	if _, err := vm.RunString(`__sidebarSharedTest.leaveCard(); __sidebarSharedTest.flushTimers(); __sidebarSharedTest.hoverStatic(); __sidebarSharedTest.hoverSidebar("Reference")`); err != nil {
+		t.Fatal(err)
+	}
+	state = sharedSidebarState(t, vm)
+	if state.PopoverHidden || state.StaticDescribedBy != "authored-help" || state.SidebarDescribedBy != "obsite-popover-card" {
+		t.Fatalf("async Sidebar-link Popover switch state = %#v", state)
+	}
+	popoverRequests := 0
+	for _, call := range state.FetchCalls {
+		if strings.Contains(call.URL, "/_popover/") {
+			popoverRequests++
+			if call.URL != "https://example.test/blog/_popover/reference.json" {
+				t.Fatalf("Popover URL = %q", call.URL)
+			}
+		}
+	}
+	if popoverRequests != 1 {
+		t.Fatalf("Popover request count = %d, want cached single request; calls=%#v", popoverRequests, state.FetchCalls)
+	}
+}
+
+func TestSharedRuntimePopoverClearsCardHoverOnKeyboardTargetSwitch(t *testing.T) {
+	t.Parallel()
+	vm := runSharedSidebarRuntime(t, map[string]any{
+		"basePath": "/blog/", "pathname": "/blog/guide/", "popover": true,
+		"nodes": []map[string]any{{"name": "Reference", "url": "reference/", "isDir": false}},
+	})
+	if _, err := vm.RunString(`__sidebarSharedTest.focusStatic(); __sidebarSharedTest.enterCard(); __sidebarSharedTest.focusSidebar("Reference"); __sidebarSharedTest.blurSidebar("Reference"); __sidebarSharedTest.flushTimers()`); err != nil {
+		t.Fatal(err)
+	}
+	state := sharedSidebarState(t, vm)
+	if !state.PopoverHidden || state.StaticDescribedBy != "authored-help" || state.SidebarDescribedBy != "" {
+		t.Fatalf("keyboard-switched Popover state = %#v", state)
+	}
+}
+
+func TestSharedRuntimePopoverFailureDoesNotRetryOrAlterLink(t *testing.T) {
+	t.Parallel()
+	vm := runSharedSidebarRuntime(t, map[string]any{"basePath": "/blog/", "pathname": "/blog/", "popover": true, "failPopover": true, "nodes": []any{}})
+	if _, err := vm.RunString(`__sidebarSharedTest.hoverStatic(); __sidebarSharedTest.hoverStatic()`); err != nil {
+		t.Fatal(err)
+	}
+	state := sharedSidebarState(t, vm)
+	popoverRequests := 0
+	for _, call := range state.FetchCalls {
+		if strings.Contains(call.URL, "/_popover/") {
+			popoverRequests++
+		}
+	}
+	if popoverRequests != 1 || !state.PopoverHidden || state.StaticDescribedBy != "authored-help" || state.StaticPopoverPath != "reference" {
+		t.Fatalf("failed Popover state = %#v", state)
+	}
+	var diagnostics int
+	for _, message := range state.Logs {
+		if strings.Contains(message, "Popover request failed") {
+			diagnostics++
+		}
+	}
+	if diagnostics != 1 {
+		t.Fatalf("Popover diagnostics = %d, logs=%#v", diagnostics, state.Logs)
+	}
+}
+
+func TestSharedRuntimePopoverDisabledMakesNoRequest(t *testing.T) {
+	t.Parallel()
+	vm := runSharedSidebarRuntime(t, map[string]any{"basePath": "/blog/", "pathname": "/blog/", "nodes": []any{}})
+	if _, err := vm.RunString(`__sidebarSharedTest.hoverStatic()`); err != nil {
+		t.Fatal(err)
+	}
+	state := sharedSidebarState(t, vm)
+	for _, call := range state.FetchCalls {
+		if strings.Contains(call.URL, "/_popover/") {
+			t.Fatalf("disabled Popover requested %q", call.URL)
+		}
+	}
+	if state.StaticDescribedBy != "authored-help" {
+		t.Fatalf("disabled Popover changed authored description: %#v", state)
 	}
 }
 
