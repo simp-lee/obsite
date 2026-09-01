@@ -3,7 +3,6 @@ package render
 import (
 	"bytes"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html/template"
@@ -108,7 +107,6 @@ var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 
 func parseEmbeddedTemplates() (*template.Template, error) {
 	return template.New(baseTemplateName).Funcs(template.FuncMap{
-		"toJSON":        templateJSON,
 		"pageAssetURL":  pageAssetURL,
 		"siteBasePath":  siteBasePath,
 		"slotData":      projectSlotData,
@@ -131,7 +129,6 @@ type NotePageInput struct {
 	Backlinks       []model.BacklinkEntry
 	RelatedArticles []model.RelatedArticle
 	Breadcrumbs     []model.Breadcrumb
-	SidebarTree     []model.SidebarNode
 }
 
 // TagPageInput supplies the data needed to render a tag archive page.
@@ -144,7 +141,6 @@ type TagPageInput struct {
 	LastModified time.Time
 	RelPath      string
 	Pagination   *model.PaginationData
-	SidebarTree  []model.SidebarNode
 }
 
 // FolderPageInput supplies the data needed to render a folder listing page.
@@ -156,7 +152,6 @@ type FolderPageInput struct {
 	LastModified time.Time
 	RelPath      string
 	Pagination   *model.PaginationData
-	SidebarTree  []model.SidebarNode
 }
 
 // TimelinePageInput supplies the data needed to render a recent-notes timeline page.
@@ -168,7 +163,6 @@ type TimelinePageInput struct {
 	AsHomepage   bool
 	RelPath      string
 	Pagination   *model.PaginationData
-	SidebarTree  []model.SidebarNode
 }
 
 // IndexPageInput supplies the data needed to render the index page.
@@ -178,7 +172,6 @@ type IndexPageInput struct {
 	LastModified time.Time
 	RelPath      string
 	Pagination   *model.PaginationData
-	SidebarTree  []model.SidebarNode
 }
 
 // NotFoundPageInput supplies the data needed to render the 404 page.
@@ -186,7 +179,6 @@ type NotFoundPageInput struct {
 	Site         model.SiteConfig
 	RecentNotes  []model.NoteSummary
 	LastModified time.Time
-	SidebarTree  []model.SidebarNode
 }
 
 // RenderNote renders a note page to HTML using the embedded default templates.
@@ -237,7 +229,6 @@ func RenderNote(input NotePageInput) (RenderedPage, error) {
 		HasThemeCSS:     hasThemeCSS(input.Site),
 		HasCustomCSS:    hasCustomCSS(input.Site),
 		Breadcrumbs:     defaultNoteBreadcrumbs(input.Breadcrumbs, relPath, input.Note, displayTitle),
-		SidebarTree:     cloneSidebarTree(input.SidebarTree),
 	}
 	if page.Description == "" {
 		page.Description = summary
@@ -852,7 +843,6 @@ func RenderTagPage(input TagPageInput) (RenderedPage, error) {
 		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
 		Breadcrumbs:  defaultTagBreadcrumbs(input.Breadcrumbs, relPath, input.Tag),
-		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
 
 	return renderPage(page, nil)
@@ -885,7 +875,6 @@ func RenderFolderPage(input FolderPageInput) (RenderedPage, error) {
 		HasThemeCSS:    hasThemeCSS(input.Site),
 		HasCustomCSS:   hasCustomCSS(input.Site),
 		Breadcrumbs:    defaultFolderBreadcrumbs(input.Breadcrumbs, relPath, folderPath, title),
-		SidebarTree:    cloneSidebarTree(input.SidebarTree),
 	}
 
 	return renderPage(page, nil)
@@ -917,7 +906,6 @@ func RenderTimelinePage(input TimelinePageInput) (RenderedPage, error) {
 		HasThemeCSS:   hasThemeCSS(input.Site),
 		HasCustomCSS:  hasCustomCSS(input.Site),
 		Breadcrumbs:   defaultTimelineBreadcrumbs(relPath, input.AsHomepage),
-		SidebarTree:   cloneSidebarTree(input.SidebarTree),
 	}
 
 	return renderPage(page, nil)
@@ -938,7 +926,6 @@ func RenderIndex(input IndexPageInput) (RenderedPage, error) {
 		Pagination:   clonePagination(input.Pagination),
 		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
-		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
 
 	return renderPage(page, nil)
@@ -957,7 +944,6 @@ func Render404(input NotFoundPageInput) (RenderedPage, error) {
 		LastModified: input.LastModified,
 		HasThemeCSS:  hasThemeCSS(input.Site),
 		HasCustomCSS: hasCustomCSS(input.Site),
-		SidebarTree:  cloneSidebarTree(input.SidebarTree),
 	}
 
 	return renderPage(page, nil)
@@ -1136,15 +1122,6 @@ func htmlTemplateAssetNames(names []string) []string {
 		}
 	}
 	return filtered
-}
-
-func templateJSON(value any) (template.JS, error) {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return "", err
-	}
-
-	return template.JS(data), nil
 }
 
 func defaultNoteBreadcrumbs(existing []model.Breadcrumb, relPath string, note *model.Note, title string) []model.Breadcrumb {
@@ -1538,18 +1515,4 @@ func clonePagination(src *model.PaginationData) *model.PaginationData {
 	}
 
 	return &dst
-}
-
-func cloneSidebarTree(src []model.SidebarNode) []model.SidebarNode {
-	if len(src) == 0 {
-		return nil
-	}
-
-	dst := make([]model.SidebarNode, len(src))
-	for index := range src {
-		dst[index] = src[index]
-		dst[index].Children = cloneSidebarTree(src[index].Children)
-	}
-
-	return dst
 }

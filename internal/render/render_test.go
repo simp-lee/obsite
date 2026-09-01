@@ -316,54 +316,6 @@ func TestRenderNoteInjectsReadingTimeAndWordCount(t *testing.T) {
 	}
 }
 
-func TestRenderNoteClonesSidebarTree(t *testing.T) {
-	t.Parallel()
-
-	sidebarTree := []model.SidebarNode{{
-		Name:  "notes",
-		URL:   "notes/",
-		IsDir: true,
-		Children: []model.SidebarNode{{
-			Name:     "Guide",
-			URL:      "guide/",
-			IsActive: true,
-		}},
-	}}
-
-	got, err := RenderNote(NotePageInput{
-		Site: testSiteConfig(),
-		Note: &model.Note{
-			RelPath:     "notes/guide.md",
-			Slug:        "guide",
-			HTMLContent: "<p>Rendered note body.</p>",
-			Frontmatter: model.Frontmatter{Title: "Guide"},
-		},
-		SidebarTree: sidebarTree,
-	})
-	if err != nil {
-		t.Fatalf("RenderNote() error = %v", err)
-	}
-
-	if len(got.Page.SidebarTree) != 1 {
-		t.Fatalf("len(RenderNote().Page.SidebarTree) = %d, want %d", len(got.Page.SidebarTree), 1)
-	}
-	if got.Page.SidebarTree[0].Name != "notes" || !got.Page.SidebarTree[0].IsDir {
-		t.Fatalf("RenderNote().Page.SidebarTree[0] = %#v, want directory sidebar node", got.Page.SidebarTree[0])
-	}
-	if len(got.Page.SidebarTree[0].Children) != 1 || !got.Page.SidebarTree[0].Children[0].IsActive {
-		t.Fatalf("RenderNote().Page.SidebarTree children = %#v, want active nested note", got.Page.SidebarTree[0].Children)
-	}
-
-	sidebarTree[0].Name = "changed"
-	sidebarTree[0].Children[0].Name = "changed child"
-	if got.Page.SidebarTree[0].Name != "notes" {
-		t.Fatalf("RenderNote().Page.SidebarTree[0].Name = %q after input mutation, want cloned value", got.Page.SidebarTree[0].Name)
-	}
-	if got.Page.SidebarTree[0].Children[0].Name != "Guide" {
-		t.Fatalf("RenderNote().Page.SidebarTree[0].Children[0].Name = %q after input mutation, want cloned value", got.Page.SidebarTree[0].Children[0].Name)
-	}
-}
-
 func TestRenderNoteCountsCollapsedCalloutSummaryOnly(t *testing.T) {
 	t.Parallel()
 

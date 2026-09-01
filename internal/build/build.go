@@ -169,6 +169,7 @@ const (
 	managedOutputMarkerFilename = ".obsite-output"
 	managedOutputMarkerContents = "managed by obsite\n"
 	customCSSOutputPath         = "assets/custom.css"
+	sidebarJSONOutputPath       = "assets/obsite/sidebar.json"
 )
 
 var paginationGeneratedHrefPattern = regexp.MustCompile(`(<(?:link\b[^>]*\brel=(?:"(?:prev|next)"|(?:prev|next))\b[^>]*|a\b[^>]*\bclass=(?:"[^"]*\bpagination-(?:link|page)\b[^"]*"|'[^']*\bpagination-(?:link|page)\b[^']*'|[^\s>]*pagination-(?:link|page)[^\s>]*)[^>]*?)\bhref=)(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
@@ -341,7 +342,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, fmt.Errorf("resolve shared runtime: %w", err)
 	}
-	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme)
+	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme, cfg.Sidebar.Enabled)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
 	if err != nil {
@@ -426,7 +427,10 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 
 	folderPages := buildFolderPageSpecs(idx)
-	sidebarTree := buildSidebarTree(idx)
+	var sidebarTree []model.SidebarNode
+	if cfg.Sidebar.Enabled {
+		sidebarTree = buildSidebarTree(idx)
+	}
 	if err := detectFolderPageConflicts(idx, folderPages, diagnostics); err != nil {
 		return result, fmt.Errorf("build folder pages: %w", err)
 	}
@@ -442,7 +446,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		return result, err
 	}
 	noteRenderSignatures := buildNoteRenderSignatures(idx, noteHashes)
-	noteDerivedSignatures := buildNoteDerivedSignatures(idx)
+	noteDerivedSignatures := make(map[string]map[string]string)
 	hashSnapshot := diffNoteHashes(previousManifest, noteHashes)
 
 	assetCollector, err := internalasset.NewCollectorWithResourceFiles(scanResult.VaultPath, idx.Assets, reservedAssetOutputPaths, nil)
@@ -527,17 +531,22 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := writeManagedOutputMarker(stagingOutputPath); err != nil {
 		return result, err
 	}
+	if cfg.Sidebar.Enabled {
+		if err := writeSidebarJSON(stagingOutputPath, sidebarTree); err != nil {
+			return result, err
+		}
+	}
 	writeSitePages := func(pageDiagnostics *diag.Collector) ([]model.PageData, map[string]string, error) {
 		sitemapPages := make([]model.PageData, 0, len(noteStatesByPath)+len(idx.Tags)+len(folderPages)+2)
 		pageSignatures := make(map[string]string)
 
-		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, sidebarTree, notePageDirty, noteStatesByPath, relatedArticlesByPath, options.testNotePageHook)
+		notePages, err := writeNotePages(cfg, idx, renderedByPath, result.Graph, previousOutputPath, stagingOutputPath, options.minifier, pageDiagnostics, popoverMarker, notePageDirty, noteStatesByPath, relatedArticlesByPath, options.testNotePageHook)
 		if err != nil {
 			return nil, nil, err
 		}
 		sitemapPages = append(sitemapPages, notePages...)
 
-		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, fullDirty)
+		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -545,14 +554,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result.TagPages = len(tagPages)
 		sitemapPages = append(sitemapPages, tagPages...)
 
-		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, sidebarTree, fullDirty)
+		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
 		mergePageSignatures(pageSignatures, folderSignatures)
 		sitemapPages = append(sitemapPages, renderedFolderPages...)
 
-		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, fullDirty)
+		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, fullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -560,7 +569,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages = append(sitemapPages, timelinePages...)
 
 		if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
-			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, sidebarTree, fullDirty)
+			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, fullDirty)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -572,7 +581,6 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			Site:         cfg,
 			RecentNotes:  append([]model.NoteSummary(nil), recentNotes...),
 			LastModified: siteLastModified,
-			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
 		})
 		if err != nil {
 			return nil, nil, fmt.Errorf("render 404 page: %w", err)
@@ -1104,11 +1112,6 @@ func determineDirtyNotePages(
 			return allPublicNotePathSet(idx)
 		}
 	}
-	sidebarTreeDirty := cfg.Sidebar.Enabled && sidebarDerivedSignaturesChanged(idx, currentDerivedSignatures, previous)
-	if sidebarTreeDirty {
-		return allPublicNotePathSet(idx)
-	}
-
 	backlinkDirtyPaths := map[string]struct{}{}
 	if len(contentDirtyPaths) > 0 || len(removedPaths) > 0 {
 		var comparable bool
@@ -1296,7 +1299,6 @@ func writeNotePages(
 	minifier *minify.M,
 	diagnostics *diag.Collector,
 	popoverMarker *popoverLinkMarker,
-	sidebarTree []model.SidebarNode,
 	notePageDirty map[string]struct{},
 	noteStates map[string]*noteBuildState,
 	relatedArticlesByPath map[string][]model.RelatedArticle,
@@ -1336,7 +1338,6 @@ func writeNotePages(
 			Tags:            buildTagLinks(notePageRelPath(renderedNote.rendered), idx, renderedNote.rendered.Tags),
 			Backlinks:       buildBacklinks(notePageRelPath(renderedNote.rendered), idx, graph, renderedNote.source.RelPath),
 			RelatedArticles: cloneRelatedArticles(relatedArticlesByPath[renderedNote.source.RelPath]),
-			SidebarTree:     sidebarTreeForPage(cfg, sidebarTree, renderedNote.rendered.Slug),
 		}
 		if notePageHook != nil {
 			notePageHook(renderInput)
@@ -1685,6 +1686,21 @@ func setHTMLAttr(node *xhtml.Node, key string, value string) bool {
 	return true
 }
 
+func writeSidebarJSON(outputPath string, tree []model.SidebarNode) error {
+	if tree == nil {
+		tree = []model.SidebarNode{}
+	}
+	data, err := json.Marshal(tree)
+	if err != nil {
+		return fmt.Errorf("marshal Sidebar data: %w", err)
+	}
+	data = append(data, '\n')
+	if err := writeOutputFile(outputPath, sidebarJSONOutputPath, data); err != nil {
+		return fmt.Errorf("write Sidebar data: %w", err)
+	}
+	return nil
+}
+
 func writePopoverPayloads(cfg model.SiteConfig, renderedByPath map[string]*renderedNote, outputPath string) error {
 	if !cfg.Popover.Enabled {
 		return nil
@@ -1730,7 +1746,7 @@ func writePopoverPayloads(cfg model.SiteConfig, renderedByPath map[string]*rende
 	return nil
 }
 
-func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	recentNotes := recentPublicNotes(idx)
 	paginatedNotes := paginate(recentNotes, cfg.Pagination.PageSize)
 	pages := make([]model.PageData, 0, len(paginatedNotes))
@@ -1746,7 +1762,6 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 			LastModified: lastModified,
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, baseRelPath, currentPage, len(paginatedNotes)),
-			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
 		}
 		signature, err := buildInputSignature(input)
 		if err != nil {
@@ -1777,7 +1792,7 @@ func writeIndexPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath 
 	return pages, signatures, nil
 }
 
-func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	tagNames := sortedTagNames(idx)
 	pages := make([]model.PageData, 0, len(tagNames))
 	signatures := make(map[string]string)
@@ -1803,7 +1818,6 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 				LastModified: lastModified,
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, tagPageRelPath, currentPage, len(paginatedNotes)),
-				SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
 			}
 			signature, err := buildInputSignature(input)
 			if err != nil {
@@ -1835,7 +1849,7 @@ func writeTagPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath ma
 	return pages, signatures, nil
 }
 
-func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, folders []folderPageSpec, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	pages := make([]model.PageData, 0, len(folders))
 	signatures := make(map[string]string)
 
@@ -1858,7 +1872,6 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 				LastModified: lastModified,
 				RelPath:      currentRelPath,
 				Pagination:   buildPaginationData(currentRelPath, folderPageRelPath, currentPage, len(paginatedNotes)),
-				SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, folderPath),
 			}
 			signature, err := buildInputSignature(input)
 			if err != nil {
@@ -1890,7 +1903,7 @@ func writeFolderPages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath
 	return pages, signatures, nil
 }
 
-func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, sidebarTree []model.SidebarNode, fullDirty bool) ([]model.PageData, map[string]string, error) {
+func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPath map[string]string, previous *CacheManifest, previousOutputPath string, outputPath string, minifier *minify.M, lastModified time.Time, popoverMarker *popoverLinkMarker, fullDirty bool) ([]model.PageData, map[string]string, error) {
 	if !cfg.Timeline.Enabled {
 		return nil, nil, nil
 	}
@@ -1912,7 +1925,6 @@ func writeTimelinePages(cfg model.SiteConfig, idx *model.VaultIndex, summaryByPa
 			AsHomepage:   cfg.Timeline.AsHomepage,
 			RelPath:      currentRelPath,
 			Pagination:   buildPaginationData(currentRelPath, timelineRelPath, currentPage, len(paginatedNotes)),
-			SidebarTree:  sidebarTreeForPage(cfg, sidebarTree, ""),
 		}
 		signature, err := buildInputSignature(input)
 		if err != nil {
@@ -1969,9 +1981,9 @@ func minifyCSSFile(filePath string, minifier *minify.M) error {
 	return nil
 }
 
-func buildReservedAssetOutputPaths(customCSSPath string, theme themeInputs) []string {
-	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+2)
-	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+2)
+func buildReservedAssetOutputPaths(customCSSPath string, theme themeInputs, sidebarEnabled bool) []string {
+	reserved := make([]string, 0, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+3)
+	seen := make(map[string]struct{}, len(render.RuntimeAssetOutputPaths())+len(theme.assets)+3)
 	appendReserved := func(value string) {
 		trimmed := strings.TrimSpace(value)
 		if trimmed == "" {
@@ -1995,6 +2007,9 @@ func buildReservedAssetOutputPaths(customCSSPath string, theme themeInputs) []st
 	}
 	if strings.TrimSpace(customCSSPath) != "" {
 		appendReserved(customCSSOutputPath)
+	}
+	if sidebarEnabled {
+		appendReserved(sidebarJSONOutputPath)
 	}
 
 	return reserved
@@ -2564,30 +2579,6 @@ func sidebarPathSegments(raw string) []string {
 	}
 
 	return filtered
-}
-
-func pageSidebarTree(tree []model.SidebarNode, activeSitePath string) []model.SidebarNode {
-	if len(tree) == 0 {
-		return nil
-	}
-
-	activeSitePath = cleanSitePath(activeSitePath)
-	result := make([]model.SidebarNode, len(tree))
-	for index := range tree {
-		result[index] = tree[index]
-		result[index].IsActive = activeSitePath != "" && cleanSitePath(tree[index].URL) == activeSitePath
-		result[index].Children = pageSidebarTree(tree[index].Children, activeSitePath)
-	}
-
-	return result
-}
-
-func sidebarTreeForPage(cfg model.SiteConfig, tree []model.SidebarNode, activeSitePath string) []model.SidebarNode {
-	if !cfg.Sidebar.Enabled {
-		return nil
-	}
-
-	return pageSidebarTree(tree, activeSitePath)
 }
 
 func folderAncestors(folderPath string) []string {

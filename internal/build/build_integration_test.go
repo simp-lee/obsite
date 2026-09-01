@@ -603,6 +603,10 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 			}
 		}
 
+		deployed := httptest.NewServer(http.StripPrefix("/blog/", http.FileServer(http.Dir(outputPath))))
+		defer deployed.Close()
+		mustHTTPStatus(t, deployed.Client(), deployed.URL+"/blog/assets/obsite/sidebar.json", http.StatusOK, `"name":"notes"`)
+
 		popoverJSON := readBuildOutputFile(t, outputPath, "_popover/updated-story.json")
 		popover := mustUnmarshalJSON[popoverPreviewPayload](t, popoverJSON)
 		if popover.Title != "Updated Story" {
@@ -693,22 +697,25 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 			{Name: "Updated Story", URL: "https://example.com/blog/updated-story/"},
 		})
 
-		sidebarTree := mustSidebarTree(t, updatedHTML)
+		sidebarTree := mustUnmarshalJSON[[]internalmodel.SidebarNode](t, readBuildOutputFile(t, outputPath, sidebarJSONOutputPath))
 		notesNode := mustSidebarNode(t, sidebarTree, "notes")
-		if !notesNode.IsDir || notesNode.URL != "notes/" || notesNode.IsActive || len(notesNode.Children) == 0 {
-			t.Fatalf("sidebar notes node = %#v, want nested inactive directory at notes/", *notesNode)
+		if !notesNode.IsDir || notesNode.URL != "notes/" || len(notesNode.Children) == 0 {
+			t.Fatalf("sidebar notes node = %#v, want nested directory at notes/", *notesNode)
 		}
 		gardenNode := mustSidebarNode(t, sidebarTree, "notes", "garden")
-		if !gardenNode.IsDir || gardenNode.URL != "notes/garden/" || gardenNode.IsActive || len(gardenNode.Children) < 3 {
-			t.Fatalf("sidebar garden node = %#v, want nested inactive directory with note children", *gardenNode)
+		if !gardenNode.IsDir || gardenNode.URL != "notes/garden/" || len(gardenNode.Children) < 3 {
+			t.Fatalf("sidebar garden node = %#v, want nested directory with note children", *gardenNode)
 		}
 		updatedNode := mustSidebarNode(t, sidebarTree, "notes", "garden", "Updated Story")
-		if updatedNode.IsDir || updatedNode.URL != "updated-story/" || !updatedNode.IsActive {
-			t.Fatalf("sidebar updated-story node = %#v, want active note leaf", *updatedNode)
+		if updatedNode.IsDir || updatedNode.URL != "updated-story/" {
+			t.Fatalf("sidebar updated-story node = %#v, want note leaf", *updatedNode)
 		}
 		referenceNode := mustSidebarNode(t, sidebarTree, "notes", "garden", "Reference Guide")
-		if referenceNode.IsDir || referenceNode.IsActive {
-			t.Fatalf("sidebar reference-guide node = %#v, want inactive note sibling", *referenceNode)
+		if referenceNode.IsDir {
+			t.Fatalf("sidebar reference-guide node = %#v, want note sibling", *referenceNode)
+		}
+		if bytes.Contains(readBuildOutputFile(t, outputPath, sidebarJSONOutputPath), []byte("isActive")) {
+			t.Fatal("sidebar.json contains per-page active state")
 		}
 	})
 
@@ -1348,15 +1355,6 @@ func assertBreadcrumbListItems(t *testing.T, payloads []structuredDataPayload, w
 			t.Fatalf("BreadcrumbList.itemListElement[%d].item = %q, want %q", index, got.Item, wantCrumb.URL)
 		}
 	}
-}
-
-func mustSidebarTree(t *testing.T, document []byte) []internalmodel.SidebarNode {
-	t.Helper()
-
-	raw := mustScriptText(t, document, func(node *xhtml.Node) bool {
-		return integrationHTMLAttrValue(node, "id") == "sidebar-data"
-	}, "sidebar-data")
-	return mustUnmarshalJSON[[]internalmodel.SidebarNode](t, []byte(raw))
 }
 
 func mustSidebarNode(t *testing.T, nodes []internalmodel.SidebarNode, names ...string) *internalmodel.SidebarNode {

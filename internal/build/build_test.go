@@ -2507,45 +2507,54 @@ Private note.
 		t.Fatal("buildWithOptions() = nil result, want build result")
 	}
 
-	guideNodes := readSidebarNodesFromHTML(t, readBuildOutputFile(t, outputPath, "guide/index.html"))
-	if len(guideNodes) != 3 {
-		t.Fatalf("len(sidebar nodes on guide page) = %d, want %d", len(guideNodes), 3)
+	sidebarJSON := readBuildOutputFile(t, outputPath, sidebarJSONOutputPath)
+	var nodes []model.SidebarNode
+	if err := json.Unmarshal(sidebarJSON, &nodes); err != nil {
+		t.Fatalf("json.Unmarshal(sidebar.json) error = %v\n%s", err, sidebarJSON)
 	}
-	if guide := findSidebarNodeByURL(guideNodes, "guide/"); guide == nil || !guide.IsActive {
-		t.Fatalf("guide sidebar node = %#v, want active guide node", guide)
+	if len(nodes) != 3 {
+		t.Fatalf("len(sidebar nodes) = %d, want %d", len(nodes), 3)
 	}
-	if notes := findSidebarNodeByURL(guideNodes, "notes/"); notes == nil || !notes.IsDir || len(notes.Children) != 1 || notes.Children[0].Name != "Guide" {
+	if guide := findSidebarNodeByURL(nodes, "guide/"); guide == nil || guide.IsDir {
+		t.Fatalf("guide sidebar node = %#v, want note leaf", guide)
+	}
+	if notes := findSidebarNodeByURL(nodes, "notes/"); notes == nil || !notes.IsDir || len(notes.Children) != 1 || notes.Children[0].Name != "Guide" {
 		t.Fatalf("notes sidebar node = %#v, want notes directory with only the published guide child", notes)
 	}
-	if docs := findSidebarNodeByURL(guideNodes, "docs/"); docs == nil || !docs.IsDir || len(docs.Children) != 1 || docs.Children[0].Name != "Reference" {
+	if docs := findSidebarNodeByURL(nodes, "docs/"); docs == nil || !docs.IsDir || len(docs.Children) != 1 || docs.Children[0].Name != "Reference" {
 		t.Fatalf("docs sidebar node = %#v, want docs directory with reference child", docs)
 	}
-	if draft := findSidebarNodeByURL(guideNodes, "drafts/"); draft != nil {
+	if draft := findSidebarNodeByURL(nodes, "drafts/"); draft != nil {
 		t.Fatalf("drafts sidebar node = %#v, want unpublished-only directory to be excluded", draft)
 	}
-	if root := findSidebarNodeByURL(guideNodes, "root/"); root == nil || root.IsDir || root.Name != "Root" {
+	if root := findSidebarNodeByURL(nodes, "root/"); root == nil || root.IsDir || root.Name != "Root" {
 		t.Fatalf("root sidebar node = %#v, want published root note node", root)
 	}
-
-	docsNodes := readSidebarNodesFromHTML(t, readBuildOutputFile(t, outputPath, "docs/index.html"))
-	if docs := findSidebarNodeByURL(docsNodes, "docs/"); docs == nil || !docs.IsActive {
-		t.Fatalf("docs sidebar node on folder page = %#v, want active folder node", docs)
+	if bytes.Contains(sidebarJSON, []byte("isActive")) {
+		t.Fatalf("sidebar.json contains per-page active state\n%s", sidebarJSON)
 	}
 
-	notFoundNodes := readSidebarNodesFromHTML(t, readBuildOutputFile(t, outputPath, "404.html"))
-	if len(notFoundNodes) != len(guideNodes) {
-		t.Fatalf("len(sidebar nodes on 404 page) = %d, want %d", len(notFoundNodes), len(guideNodes))
-	}
-	if hasActiveSidebarNode(notFoundNodes) {
-		t.Fatalf("404 sidebar tree = %#v, want no active nodes", notFoundNodes)
+	for _, relPath := range []string{"guide/index.html", "docs/index.html", "404.html"} {
+		html := readBuildOutputFile(t, outputPath, relPath)
+		if !containsAny(html, `data-sidebar-toggle`, `data-sidebar-toggle=""`) {
+			t.Fatalf("%s missing sidebar toggle markup\n%s", relPath, html)
+		}
+		for _, forbidden := range [][]byte{[]byte(`id="sidebar-data"`), []byte(`id=sidebar-data`), []byte(`"children"`), []byte("obsite.sidebar.expanded.v1")} {
+			if bytes.Contains(html, forbidden) {
+				t.Fatalf("%s embeds Sidebar data/runtime %q\n%s", relPath, forbidden, html)
+			}
+		}
 	}
 
-	guideHTML := readBuildOutputFile(t, outputPath, "guide/index.html")
-	if !containsAny(guideHTML, `data-sidebar-toggle`, `data-sidebar-toggle=""`) {
-		t.Fatalf("guide page missing sidebar toggle markup\n%s", guideHTML)
+	cfg.Sidebar.Enabled = false
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatalf("disabled Sidebar rebuild error = %v", err)
 	}
-	if !bytes.Contains(guideHTML, []byte("obsite.sidebar.expanded.v1")) {
-		t.Fatalf("guide page missing sidebar persistence script\n%s", guideHTML)
+	if _, err := os.Stat(filepath.Join(outputPath, filepath.FromSlash(sidebarJSONOutputPath))); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("os.Stat(sidebar.json) error = %v, want not-exist when disabled", err)
+	}
+	if html := readBuildOutputFile(t, outputPath, "guide/index.html"); bytes.Contains(html, []byte("data-obsite-sidebar")) || bytes.Contains(html, []byte("data-sidebar-shell")) {
+		t.Fatalf("disabled Sidebar page retains mount points\n%s", html)
 	}
 }
 
@@ -6075,52 +6084,44 @@ Updated body.
 	}
 }
 
-func TestBuildRerendersAllPublicNotePagesWhenSidebarDerivedSignatureChanges(t *testing.T) {
+func TestBuildAddingSidebarNodeKeepsExistingNotePagesByteIdentical(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
-title: Alpha
----
-# Alpha
-
-Body.
-`)
-	writeBuildTestFile(t, vaultPath, "notes/beta.md", `---
-title: Beta
----
-# Beta
-
-Body.
-`)
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nBody.\n")
+	writeBuildTestFile(t, vaultPath, "notes/beta.md", "# Beta\n\nBody.\n")
 
 	cfg := testBuildSiteConfig()
 	cfg.Sidebar.Enabled = true
-
+	cfg.Related.Enabled = false
 	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
 		t.Fatalf("first buildWithOptions() error = %v", err)
 	}
+	alphaBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, "alpha/index.html")...)
+	betaBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, "beta/index.html")...)
+	sidebarBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, sidebarJSONOutputPath)...)
 
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", `---
-title: Alpha Updated
----
-# Alpha
-
-Body.
-`)
-
+	writeBuildTestFile(t, vaultPath, "notes/gamma.md", "# Gamma\n\nBody.\n")
 	getRenderedPaths := captureRenderedNotePagePaths(t)
 	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
 	if err != nil {
 		t.Fatalf("second buildWithOptions() error = %v", err)
 	}
-	got := getRenderedPaths()
-	want := []string{"notes/alpha.md", "notes/beta.md"}
-	if result.NotePages != len(want) {
-		t.Fatalf("result.NotePages = %d, want %d", result.NotePages, len(want))
+	if result.NotePages != 1 {
+		t.Fatalf("result.NotePages = %d, want 1 for the new note only", result.NotePages)
 	}
-	if !reflect.DeepEqual(got, want) {
+	if got, want := getRenderedPaths(), []string{"notes/gamma.md"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("rendered note pages = %#v, want %#v", got, want)
+	}
+	if got := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Equal(got, alphaBefore) {
+		t.Fatalf("alpha page changed after unrelated Sidebar node addition")
+	}
+	if got := readBuildOutputFile(t, outputPath, "beta/index.html"); !bytes.Equal(got, betaBefore) {
+		t.Fatalf("beta page changed after unrelated Sidebar node addition")
+	}
+	sidebarAfter := readBuildOutputFile(t, outputPath, sidebarJSONOutputPath)
+	if bytes.Equal(sidebarAfter, sidebarBefore) || !bytes.Contains(sidebarAfter, []byte(`"url":"gamma/"`)) {
+		t.Fatalf("sidebar.json did not update for gamma\n%s", sidebarAfter)
 	}
 }
 
@@ -6174,8 +6175,8 @@ Body.
 			t.Fatalf("manifest.Pages[%q] = %q, want non-empty page signature", relPath, manifest.Pages[relPath])
 		}
 	}
-	if strings.TrimSpace(manifest.Notes["alpha/one.md"].DerivedSignatures[derivedSignatureKeySidebar]) == "" {
-		t.Fatalf("manifest.Notes[alpha/one.md].DerivedSignatures[%q] = %q, want non-empty signature", derivedSignatureKeySidebar, manifest.Notes["alpha/one.md"].DerivedSignatures[derivedSignatureKeySidebar])
+	if _, ok := manifest.Notes["alpha/one.md"].DerivedSignatures["sidebar"]; ok {
+		t.Fatalf("manifest note retains obsolete per-page Sidebar signature: %#v", manifest.Notes["alpha/one.md"].DerivedSignatures)
 	}
 	if strings.TrimSpace(manifest.Notes["alpha/one.md"].DerivedSignatures[derivedSignatureKeyRelated]) == "" {
 		t.Fatalf("manifest.Notes[alpha/one.md].DerivedSignatures[%q] = %q, want non-empty signature", derivedSignatureKeyRelated, manifest.Notes["alpha/one.md"].DerivedSignatures[derivedSignatureKeyRelated])
@@ -6437,51 +6438,6 @@ func writeBuildSymlinkOrSkip(t *testing.T, targetPath string, linkPath string) {
 	}
 }
 
-func readSidebarNodesFromHTML(t *testing.T, html []byte) []model.SidebarNode {
-	t.Helper()
-
-	doc, err := xhtml.Parse(bytes.NewReader(html))
-	if err != nil {
-		t.Fatalf("xhtml.Parse() error = %v", err)
-	}
-
-	payload := findScriptTextByID(doc, "sidebar-data")
-	if payload == "" {
-		t.Fatalf("sidebar-data script payload missing\n%s", html)
-	}
-
-	var nodes []model.SidebarNode
-	if err := json.Unmarshal([]byte(payload), &nodes); err != nil {
-		t.Fatalf("json.Unmarshal(sidebar-data) error = %v\npayload: %s", err, payload)
-	}
-
-	return nodes
-}
-
-func findScriptTextByID(node *xhtml.Node, id string) string {
-	if node == nil {
-		return ""
-	}
-
-	if node.Type == xhtml.ElementNode && node.Data == "script" && htmlAttrValue(node, "id") == id {
-		var builder strings.Builder
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			if child.Type == xhtml.TextNode {
-				builder.WriteString(child.Data)
-			}
-		}
-		return builder.String()
-	}
-
-	for child := node.FirstChild; child != nil; child = child.NextSibling {
-		if found := findScriptTextByID(child, id); found != "" {
-			return found
-		}
-	}
-
-	return ""
-}
-
 func htmlAttrValue(node *xhtml.Node, key string) string {
 	if node == nil {
 		return ""
@@ -6507,16 +6463,6 @@ func findSidebarNodeByURL(nodes []model.SidebarNode, url string) *model.SidebarN
 	}
 
 	return nil
-}
-
-func hasActiveSidebarNode(nodes []model.SidebarNode) bool {
-	for _, node := range nodes {
-		if node.IsActive || hasActiveSidebarNode(node.Children) {
-			return true
-		}
-	}
-
-	return false
 }
 
 func captureRenderedNotePagePaths(t *testing.T) func() []string {

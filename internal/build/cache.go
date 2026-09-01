@@ -34,10 +34,8 @@ const (
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
 	cacheManifestVersion         = 3
 	defaultTemplateSigKey        = "default"
-	missingTemplateSigKey        = "missing"
 	cacheSignatureSaltKey        = "phase-21-step-50"
 	derivedSignatureKeyBacklinks = "backlinks"
-	derivedSignatureKeySidebar   = "sidebar"
 	derivedSignatureKeyRelated   = "related"
 )
 
@@ -446,33 +444,6 @@ func buildNoteRenderSignatures(idx *model.VaultIndex, noteHashes map[string]stri
 	return signatures
 }
 
-func buildNoteDerivedSignatures(idx *model.VaultIndex) map[string]map[string]string {
-	if idx == nil || len(idx.Notes) == 0 {
-		return map[string]map[string]string{}
-	}
-
-	derived := make(map[string]map[string]string, len(idx.Notes))
-	for _, note := range allPublicNotes(idx) {
-		if note == nil || strings.TrimSpace(note.RelPath) == "" {
-			continue
-		}
-
-		derived[note.RelPath] = map[string]string{
-			derivedSignatureKeySidebar: buildSidebarDerivedSignature(note),
-		}
-	}
-
-	return derived
-}
-
-func buildSidebarDerivedSignature(note *model.Note) string {
-	hasher := newCacheSignatureHasher("sidebar")
-	cacheHashWriteString(hasher, strings.TrimSpace(noteDisplayTitle(note)))
-	cacheHashWriteString(hasher, strings.TrimSpace(note.RelPath))
-	cacheHashWriteString(hasher, strings.TrimSpace(note.Slug))
-	return hex.EncodeToString(hasher.Sum(nil))
-}
-
 func buildBacklinkDerivedSignature(entries []model.BacklinkEntry) string {
 	hasher := newCacheSignatureHasher("backlinks")
 	cacheHashWriteInt(hasher, len(entries))
@@ -807,35 +778,6 @@ func shouldReuseCachedPage(manifest *CacheManifest, relPath string, signature st
 	}
 
 	return cacheManifestPageSignature(manifest, relPath) == signature
-}
-
-func sidebarDerivedSignaturesChanged(idx *model.VaultIndex, current map[string]map[string]string, previous *CacheManifest) bool {
-	if idx == nil {
-		return false
-	}
-
-	currentPaths := allPublicNotePathSet(idx)
-	for relPath := range currentPaths {
-		currentSignatures := current[relPath]
-		previousEntry, ok := cacheManifestEntry(previous, relPath)
-		if !ok {
-			return true
-		}
-		if derivedSignatureValue(currentSignatures, derivedSignatureKeySidebar) != derivedSignatureValue(previousEntry.DerivedSignatures, derivedSignatureKeySidebar) {
-			return true
-		}
-	}
-
-	if previous == nil {
-		return false
-	}
-	for relPath := range previous.Notes {
-		if _, ok := currentPaths[relPath]; !ok {
-			return true
-		}
-	}
-
-	return false
 }
 
 func backlinkDerivedSignaturesChanged(idx *model.VaultIndex, current map[string]map[string]string, previous *CacheManifest, contentDirtyPaths map[string]struct{}) (map[string]struct{}, bool) {

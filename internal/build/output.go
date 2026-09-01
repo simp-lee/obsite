@@ -19,6 +19,7 @@ const (
 	outputOwnerPopover    outputOwner = "popover data"
 	outputOwnerStyle      outputOwner = "site stylesheet"
 	outputOwnerRuntime    outputOwner = "runtime assets"
+	outputOwnerSidebar    outputOwner = "Sidebar data"
 	outputOwnerThemeCSS   outputOwner = "theme stylesheet"
 	outputOwnerThemeAsset outputOwner = "theme assets"
 	outputOwnerCustomCSS  outputOwner = "custom stylesheet"
@@ -155,6 +156,11 @@ func validateOutputDestinations(cfg model.SiteConfig, idx *model.VaultIndex, fol
 	}
 	for _, relPath := range render.RuntimeAssetOutputPaths() {
 		if err := plan.claimFile(relPath, outputOwnerRuntime, relPath); err != nil {
+			return err
+		}
+	}
+	if cfg.Sidebar.Enabled {
+		if err := plan.claimFile(sidebarJSONOutputPath, outputOwnerSidebar, "public navigation tree"); err != nil {
 			return err
 		}
 	}

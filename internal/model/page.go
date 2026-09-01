@@ -54,7 +54,6 @@ type PageData struct {
 	RecentNotes   []NoteSummary
 	TimelineNotes []NoteSummary
 	Pagination    *PaginationData
-	SidebarTree   []SidebarNode
 
 	OG          OpenGraph
 	TwitterCard string
@@ -113,7 +112,6 @@ type SidebarNode struct {
 	Name     string        `json:"name"`
 	URL      string        `json:"url"`
 	IsDir    bool          `json:"isDir"`
-	IsActive bool          `json:"isActive"`
 	Children []SidebarNode `json:"children,omitempty"`
 }
 

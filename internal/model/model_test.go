@@ -128,15 +128,6 @@ func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
 			NextURL:     "../page/3/",
 			Pages:       []PageLink{{Number: 1, URL: "../"}, {Number: 2, URL: "./"}, {Number: 3, URL: "../page/3/"}},
 		},
-		SidebarTree: []SidebarNode{{
-			Name:  "notes",
-			IsDir: true,
-			Children: []SidebarNode{{
-				Name:     "guide",
-				URL:      "../guide/",
-				IsActive: true,
-			}},
-		}},
 		HasCustomCSS: true,
 		HasRSS:       true,
 		FolderPath:   "notes/backend",
@@ -166,9 +157,6 @@ func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
 	}
 	if page.Pagination == nil || page.Pagination.Pages[1].Number != 2 {
 		t.Fatalf("Pagination = %#v, want numbered page links", page.Pagination)
-	}
-	if len(page.SidebarTree) != 1 || !page.SidebarTree[0].IsDir || !page.SidebarTree[0].Children[0].IsActive {
-		t.Fatalf("SidebarTree = %#v, want active nested directory tree", page.SidebarTree)
 	}
 	if got := page.RelatedArticles[0].Tags[0].Name; got != "go" {
 		t.Fatalf("RelatedArticles[0].Tags[0].Name = %q, want %q", got, "go")

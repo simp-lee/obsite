@@ -448,7 +448,7 @@ func TestDefaultTemplatesRenderPaginationHeadLinksAndNavigation(t *testing.T) {
 	assertContains(t, got, `<a class="pagination-link pagination-link-next" href="../3/" rel="next">Next</a>`)
 }
 
-func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
+func TestDefaultTemplatesConditionallyRenderSidebarMounts(t *testing.T) {
 	t.Parallel()
 
 	tmpl := parseDefaultTemplateSet(t)
@@ -456,51 +456,41 @@ func TestDefaultTemplatesConditionallyRenderSidebarNavigation(t *testing.T) {
 		Kind:        model.PageNote,
 		SiteRootRel: "../",
 		Site: model.SiteConfig{
-			Title:    "Field Notes",
-			BaseURL:  "https://example.com/blog/",
-			Language: "en",
-			Sidebar:  model.SidebarConfig{Enabled: true},
+			Title:        "Field Notes",
+			BaseURL:      "https://example.com/blog/",
+			Language:     "en",
+			RuntimeJSURL: "assets/obsite/runtime.test.js",
+			Sidebar:      model.SidebarConfig{Enabled: true},
 		},
 		Title:   "Guide",
 		Content: template.HTML("<p>Body.</p>"),
-		SidebarTree: []model.SidebarNode{{
-			Name:  "notes",
-			URL:   "notes/",
-			IsDir: true,
-			Children: []model.SidebarNode{{
-				Name:     "Guide",
-				URL:      "guide/",
-				IsActive: true,
-			}},
-		}},
 	})
 
+	assertContains(t, enabled, `data-obsite-sidebar`)
 	assertContains(t, enabled, `class="sidebar-launch"`)
 	assertContains(t, enabled, `id="sidebar-panel"`)
 	assertContains(t, enabled, `data-site-root-rel="../"`)
 	assertContains(t, enabled, `data-sidebar-overlay`)
-	assertContains(t, enabled, `id="sidebar-data" type="application/json">[{"name":"notes","url":"notes/","isDir":true,"isActive":false,"children":[{"name":"Guide","url":"guide/","isDir":false,"isActive":true}]}]</script>`)
-	assertContains(t, enabled, `obsite.sidebar.expanded.v1:\/blog\/`)
-	assertContains(t, enabled, `var legacyStorageKey = "obsite.sidebar.expanded.v1"`)
-	assertContains(t, enabled, `localStorage.removeItem(legacyStorageKey)`)
-	assertContains(t, enabled, `JSON.parse(dataNode.textContent || "[]")`)
-	assertContains(t, enabled, `data-sidebar-ready`)
+	assertNotContains(t, enabled, `sidebar-data`)
+	assertNotContains(t, enabled, `"isActive"`)
+	assertNotContains(t, enabled, `obsite.sidebar.expanded.v1`)
+
+	runtimeJS := readTemplateAsset(t, "runtime.js")
+	for _, want := range []string{`new URL("sidebar.json", runtimeScript.src)`, `cache: "no-cache"`, `data-sidebar-ready`, `aria-current`, `Sidebar initialization failed.`} {
+		assertContains(t, runtimeJS, want)
+	}
 
 	disabled := renderTemplate(t, tmpl, model.PageData{
 		Kind:        model.PageNote,
 		SiteRootRel: "../",
-		Site: model.SiteConfig{
-			Title:    "Field Notes",
-			BaseURL:  "https://example.com/blog/",
-			Language: "en",
-		},
-		Title:   "Guide",
-		Content: template.HTML("<p>Body.</p>"),
+		Site:        model.SiteConfig{Title: "Field Notes", BaseURL: "https://example.com/blog/", Language: "en", RuntimeJSURL: "assets/obsite/runtime.test.js"},
+		Title:       "Guide",
+		Content:     template.HTML("<p>Body.</p>"),
 	})
 
-	assertNotContains(t, disabled, `sidebar-data`)
+	assertNotContains(t, disabled, `data-obsite-sidebar`)
 	assertNotContains(t, disabled, `data-sidebar-toggle`)
-	assertNotContains(t, disabled, `obsite.sidebar.expanded.v1:\/blog\/`)
+	assertNotContains(t, disabled, `data-sidebar-shell`)
 }
 
 func TestDefaultTemplatesConditionallyRenderRelatedArticlesSection(t *testing.T) {
@@ -729,7 +719,6 @@ func parseDefaultTemplateSet(t *testing.T) *template.Template {
 
 	root := repoRoot(t)
 	tmpl, err := template.New("base").Funcs(template.FuncMap{
-		"toJSON":        templateJSON,
 		"pageAssetURL":  pageAssetURL,
 		"siteBasePath":  siteBasePath,
 		"slotData":      projectSlotData,
