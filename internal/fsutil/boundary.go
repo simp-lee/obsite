@@ -266,6 +266,8 @@ func ReadContainedRegularFile(vaultRoot string, candidate string) (resolvedPath 
 // IsPortableSitePath reports whether every slash-separated output component is
 // usable as both a relative URL path and a regular filesystem name on supported platforms.
 func IsPortableSitePath(value string) bool {
+	// Raw fragment markers and percent escapes do not identify the same static
+	// resource in a browser as they do on disk, so they are not portable here.
 	for component := range strings.SplitSeq(value, "/") {
 		if component == "" || strings.ContainsAny(component, `<>:"\|?*#%`) || strings.TrimRight(component, " .") != component {
 			return false

@@ -76,8 +76,10 @@ func (plan *outputDestinationPlan) claimFile(relPath string, owner outputOwner, 
 	}
 
 	if node.file != nil {
-		if node.file.owner == claim.owner && node.file.path == claim.path && node.file.source == claim.source {
-			return nil
+		if node.file.owner == claim.owner && node.file.path == claim.path {
+			if node.file.source == claim.source || claim.owner == outputOwnerVaultAsset {
+				return nil
+			}
 		}
 		return outputClaimConflict(*node.file, claim)
 	}

@@ -5857,6 +5857,36 @@ publish: false
 	}
 }
 
+func TestBuildDeduplicatesEqualContentAssetDestinations(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "images/photo.png", "identical-image")
+	writeBuildTestFile(t, vaultPath, "attachments/photo.png", "identical-image")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\n![Photo](../images/photo.png)\n")
+	writeBuildTestFile(t, vaultPath, "notes/beta.md", "# Beta\n\n![Photo](../attachments/photo.png)\n")
+
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+	if err != nil {
+		t.Fatalf("buildWithOptions() error = %v", err)
+	}
+	left := result.Assets["images/photo.png"]
+	right := result.Assets["attachments/photo.png"]
+	if left == nil || right == nil || left.DstPath == "" || left.DstPath != right.DstPath {
+		t.Fatalf("equal-content asset destinations = %#v, %#v, want one shared output", left, right)
+	}
+	if got := string(readBuildOutputFile(t, outputPath, left.DstPath)); got != "identical-image" {
+		t.Fatalf("shared asset content = %q, want identical-image", got)
+	}
+	for _, relPath := range []string{"alpha/index.html", "beta/index.html"} {
+		html := readBuildOutputFile(t, outputPath, relPath)
+		if !containsAny(html, `src="../`+left.DstPath+`"`, `src=../`+left.DstPath) {
+			t.Fatalf("%s missing shared asset destination %q\n%s", relPath, left.DstPath, html)
+		}
+	}
+}
+
 func TestBuildRerendersCleanMarkdownImageNotesWhenAssetPlanChanges(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
