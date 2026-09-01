@@ -362,10 +362,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}()
 
-	configSignature, err := buildConfigSignature(cfg)
-	if err != nil {
-		return result, err
-	}
+	notePageSignature := buildNotePageConfigSignature(cfg)
 	disableCacheReuse := false
 	buildABISignature, err := readBuildABISignature()
 	if err != nil {
@@ -382,6 +379,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err != nil {
 		return result, err
 	}
+	pageInputSignature := buildPageInputSignature(cfg)
 
 	var previousManifest *CacheManifest
 	if !options.force && !disableCacheReuse {
@@ -392,7 +390,8 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			warnCacheManifestLoadFailure(diagnostics, loadErr)
 		}
 	}
-	fullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature || previousManifest.ConfigSignature != configSignature || previousManifest.TemplateSignature != templateSignature
+	noteFullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature
+	pageFullDirty := noteFullDirty || previousManifest.TemplateSignature != templateSignature || previousManifest.PageInputSignature != pageInputSignature
 
 	scanResult, err := vault.ScanWithOptions(normalizedVaultPath, vault.ScanOptions{OutputPath: normalizedOutputPath})
 	if err != nil {
@@ -476,7 +475,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if len(temporaryDefaultImagePeers) > 0 {
 		idx.SetAssets(idx.Assets)
 	}
-	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, fullDirty)
+	noteStates, renderErr := buildNoteStates(idx, assetCollector, options.concurrency, previousManifest, noteHashes, noteRenderSignatures, noteDerivedSignatures, noteFullDirty)
 	if renderErr != nil {
 		for _, state := range noteStates {
 			if state == nil {
@@ -540,8 +539,8 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyBacklinks, backlinkSignatures)
 	relatedArticlesByPath, relatedSignatures := materializeRelatedArticlesByPath(cfg, idx, relatedRanking, summaryByPath)
 	mergeDerivedSignatures(noteDerivedSignatures, noteStatesByPath, derivedSignatureKeyRelated, relatedSignatures)
-	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, noteDerivedSignatures, fullDirty)
-	if previousManifest != nil && previousManifest.DefaultImagePath != cfg.DefaultImg {
+	notePageDirty := determineDirtyNotePages(cfg, idx, contentDirtyPaths, hashSnapshot.removed, previousManifest, noteDerivedSignatures, pageFullDirty)
+	if previousManifest != nil && (previousManifest.NotePageSignature != notePageSignature || previousManifest.DefaultImagePath != cfg.DefaultImg) {
 		for relPath := range allPublicNotePathSet(idx) {
 			notePageDirty[relPath] = struct{}{}
 		}
@@ -582,7 +581,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 		sitemapPages = append(sitemapPages, notePages...)
 
-		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, fullDirty)
+		tagPages, tagSignatures, err := writeTagPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -590,14 +589,14 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		result.TagPages = len(tagPages)
 		sitemapPages = append(sitemapPages, tagPages...)
 
-		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, fullDirty)
+		renderedFolderPages, folderSignatures, err := writeFolderPages(cfg, idx, summaryByPath, folderPages, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, popoverMarker, pageFullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
 		mergePageSignatures(pageSignatures, folderSignatures)
 		sitemapPages = append(sitemapPages, renderedFolderPages...)
 
-		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, fullDirty)
+		timelinePages, timelineSignatures, err := writeTimelinePages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -605,7 +604,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		sitemapPages = append(sitemapPages, timelinePages...)
 
 		if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage {
-			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, fullDirty)
+			indexPages, indexSignatures, err := writeIndexPages(cfg, idx, summaryByPath, previousManifest, previousOutputPath, stagingOutputPath, options.minifier, siteLastModified, popoverMarker, pageFullDirty)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -683,7 +682,11 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 
 	if !disableCacheReuse {
-		manifest := buildCacheManifest(buildABISignature, configSignature, templateSignature, cfg.DefaultImg, result.Graph, noteStatesByPath, pageSignatures)
+		managedAssetSignatures, err := buildManagedAssetSignatures(stagingOutputPath, cfg, theme)
+		if err != nil {
+			return result, err
+		}
+		manifest := buildCacheManifest(buildABISignature, notePageSignature, templateSignature, pageInputSignature, cfg.DefaultImg, managedAssetSignatures, noteStatesByPath, pageSignatures)
 		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
 			return result, err
 		}

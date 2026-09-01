@@ -1,6 +1,9 @@
 package build
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,22 +12,69 @@ import (
 
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/model"
+	internalrender "github.com/simp-lee/obsite/internal/render"
 )
 
-func TestTemplateAssetNamesForCacheSignatureExcludesStyleCSS(t *testing.T) {
+func TestTemplateAssetNamesForCacheSignatureIncludesOnlyHTMLTemplates(t *testing.T) {
 	originalListTemplateAssetsForSignature := listTemplateAssetsForSignature
 	t.Cleanup(func() {
 		listTemplateAssetsForSignature = originalListTemplateAssetsForSignature
 	})
 
 	listTemplateAssetsForSignature = func() []string {
-		return []string{"base.html", "style.css", "note.html"}
+		return []string{"base.html", "style.css", "runtime.js", "note.html"}
 	}
 
 	got := templateAssetNamesForCacheSignature()
 	want := []string{"base.html", "note.html"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("templateAssetNamesForCacheSignature() = %#v, want %#v", got, want)
+	}
+}
+
+func TestBuildConfigAndPageInputSignaturesSeparateOutputOwners(t *testing.T) {
+	t.Parallel()
+
+	base := testBuildSiteConfig()
+	baseNoteSignature := buildNotePageConfigSignature(base)
+	ownerVariant := base
+	ownerVariant.DefaultImg = "images/hero.png"
+	ownerVariant.ThemeDir = "/vault/.obsite/theme"
+	ownerVariant.ThemeCSS = "/vault/.obsite/theme/theme.css"
+	ownerVariant.ThemeSlots = `{{define "obsite-head-end"}}slot{{end}}`
+	ownerVariant.CustomCSS = "/vault/custom.css"
+	ownerVariant.RuntimeJSURL = "assets/obsite/runtime.changed.js"
+	ownerVariant.Pagination.PageSize++
+	ownerVariant.Timeline.Enabled = !ownerVariant.Timeline.Enabled
+	ownerVariant.Related.Count++
+	if ownerSignature := buildNotePageConfigSignature(ownerVariant); ownerSignature != baseNoteSignature {
+		t.Fatalf("non-note owners changed note page signature: %q != %q", ownerSignature, baseNoteSignature)
+	}
+	for _, mutate := range []func(*model.SiteConfig){
+		func(cfg *model.SiteConfig) { cfg.Title = "Changed" },
+		func(cfg *model.SiteConfig) { cfg.Popover.Enabled = !cfg.Popover.Enabled },
+		func(cfg *model.SiteConfig) { cfg.RSS.Enabled = !cfg.RSS.Enabled },
+		func(cfg *model.SiteConfig) { cfg.Related.Enabled = !cfg.Related.Enabled },
+	} {
+		candidate := base
+		mutate(&candidate)
+		if buildNotePageConfigSignature(candidate) == baseNoteSignature {
+			t.Fatal("note page input did not change note page signature")
+		}
+	}
+
+	baselinePage := buildPageInputSignature(base)
+	for _, mutate := range []func(*model.SiteConfig){
+		func(cfg *model.SiteConfig) { cfg.ThemeCSS = "/vault/.obsite/theme/theme.css" },
+		func(cfg *model.SiteConfig) { cfg.CustomCSS = "/vault/custom.css" },
+		func(cfg *model.SiteConfig) { cfg.ThemeSlots = `{{define "obsite-head-end"}}slot{{end}}` },
+		func(cfg *model.SiteConfig) { cfg.RuntimeJSURL = "assets/obsite/runtime.changed.js" },
+	} {
+		candidate := base
+		mutate(&candidate)
+		if buildPageInputSignature(candidate) == baselinePage {
+			t.Fatal("page-owned input did not change page input signature")
+		}
 	}
 }
 
@@ -85,6 +135,39 @@ func TestBuildEmbeddedTemplateSignatureIgnoresStyleCSS(t *testing.T) {
 	}
 	if changed != baseline {
 		t.Fatalf("buildEmbeddedTemplateSignature() = %q, want unchanged baseline %q when only embedded style.css changes", changed, baseline)
+	}
+}
+
+func TestCacheManifestTracksConcreteManagedAssetOwners(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n")
+	writeBuildTestFile(t, vaultPath, "custom.css", "body { color: tomato; }\n")
+	writeBuildTestFile(t, vaultPath, ".obsite/theme/theme.css", ":root { --obsite-accent: purple; }\n")
+	writeBuildTestFile(t, vaultPath, ".obsite/theme/assets/fixed.txt", "fixed\n")
+	cfg := testBuildSiteConfig()
+	cfg.Sidebar.Enabled = true
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	var manifest CacheManifest
+	if err := json.Unmarshal(readBuildOutputFile(t, outputPath, cacheManifestRelPath), &manifest); err != nil {
+		t.Fatal(err)
+	}
+	expected := []string{"style.css", sidebarJSONOutputPath, themeCSSOutputPath, "assets/theme/fixed.txt", customCSSOutputPath}
+	expected = append(expected, internalrender.RuntimeAssetOutputPaths()...)
+	for _, relPath := range expected {
+		data := readBuildOutputFile(t, outputPath, relPath)
+		want := fmt.Sprintf("%x", sha256.Sum256(data))
+		if got := manifest.ManagedAssetSignatures[relPath]; got != want {
+			t.Fatalf("managed signature %q = %q, want %q", relPath, got, want)
+		}
+	}
+	if len(manifest.ManagedAssetSignatures) != len(expected) {
+		t.Fatalf("managed signatures = %#v, want exactly %d concrete outputs", manifest.ManagedAssetSignatures, len(expected))
 	}
 }
 
@@ -206,7 +289,7 @@ func TestBuildRefreshesImageEmbedDiagnosticsWhenAssetInventoryChangesWithoutNote
 		}
 
 		state := states[0]
-		manifest := buildCacheManifest("abi", "config", "template", "", nil, map[string]*noteBuildState{noteRelPath: state}, nil)
+		manifest := buildCacheManifest("abi", "config", "template", "", "", nil, map[string]*noteBuildState{noteRelPath: state}, nil)
 		entry, ok := manifest.Notes[noteRelPath]
 		if !ok {
 			t.Fatalf("manifest missing %q entry", noteRelPath)

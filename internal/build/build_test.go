@@ -124,6 +124,38 @@ func TestRelatedDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildDisablingRelatedRemovesCachedNoteSectionsWithoutMarkdownRerender(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nshared database protocol consistency\n")
+	writeBuildTestFile(t, vaultPath, "notes/beta.md", "# Beta\n\nshared database protocol consistency\n")
+	cfg := testBuildSiteConfig()
+	cfg.Related.Enabled = true
+	cfg.Related.Count = 1
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Contains(html, []byte("Related Articles")) {
+		t.Fatalf("enabled related section missing\n%s", html)
+	}
+
+	cfg.Related.Enabled = false
+	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(getRenderedMarkdown()) != 0 {
+		t.Fatalf("related toggle rerendered Markdown: %#v", getRenderedMarkdown())
+	}
+	if result.NotePages != 2 {
+		t.Fatalf("result.NotePages = %d, want both note pages rewritten", result.NotePages)
+	}
+	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); bytes.Contains(html, []byte("Related Articles")) {
+		t.Fatalf("disabled related section remained cached\n%s", html)
+	}
+}
+
 func TestRelatedTagLimit(t *testing.T) {
 	t.Parallel()
 
@@ -5000,6 +5032,46 @@ Body.
 	}
 }
 
+func TestBuildTreatsSameVersionPartialManifestAsCompleteMiss(t *testing.T) {
+	for _, missingField := range []string{"pageInputSignature", "managedAssetSignatures", "notePageSignature", "notes.guide.htmlContent"} {
+		t.Run(missingField, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			outputPath := filepath.Join(t.TempDir(), "site")
+			writeBuildTestFile(t, vaultPath, "notes/guide.md", "# Guide\n\nBody.\n")
+			if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(readBuildOutputFile(t, outputPath, cacheManifestRelPath), &raw); err != nil {
+				t.Fatal(err)
+			}
+			if missingField == "notes.guide.htmlContent" {
+				notes := raw["notes"].(map[string]any)
+				guide := notes["notes/guide.md"].(map[string]any)
+				delete(guide, "htmlContent")
+			} else {
+				delete(raw, missingField)
+			}
+			data, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(outputPath, cacheManifestRelPath), data, 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
+			result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.NotePages != 1 || !reflect.DeepEqual(getRenderedMarkdown(), []string{"notes/guide.md"}) {
+				t.Fatalf("partial manifest reused cache: NotePages=%d markdown=%#v", result.NotePages, getRenderedMarkdown())
+			}
+		})
+	}
+}
+
 func TestBuildWarnsAndFallsBackToFullRebuildWhenManifestIsCorrupt(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
@@ -6486,6 +6558,35 @@ func TestBuildAddingSidebarNodeKeepsExistingNotePagesByteIdentical(t *testing.T)
 	if bytes.Equal(sidebarAfter, sidebarBefore) || !bytes.Contains(sidebarAfter, []byte(`"url":"gamma/"`)) {
 		t.Fatalf("sidebar.json did not update for gamma\n%s", sidebarAfter)
 	}
+}
+
+func TestBuildPaginationChangeDoesNotRerenderMarkdownOrNotePages(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		writeBuildTestFile(t, vaultPath, "notes/"+name+".md", "# "+name+"\n\nBody.\n")
+	}
+	cfg := testBuildSiteConfig()
+	cfg.Pagination.PageSize = 20
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	alphaBefore := append([]byte(nil), readBuildOutputFile(t, outputPath, "alpha/index.html")...)
+
+	cfg.Pagination.PageSize = 2
+	getRenderedMarkdown := captureRenderedMarkdownNotePaths(t)
+	getRenderedPages := captureRenderedNotePagePaths(t)
+	result, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NotePages != 0 || len(getRenderedMarkdown()) != 0 || len(getRenderedPages()) != 0 {
+		t.Fatalf("pagination change rerendered notes: NotePages=%d markdown=%#v pages=%#v", result.NotePages, getRenderedMarkdown(), getRenderedPages())
+	}
+	if got := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Equal(got, alphaBefore) {
+		t.Fatal("pagination change altered note page bytes")
+	}
+	_ = readBuildOutputFile(t, outputPath, "page/2/index.html")
 }
 
 func TestBuildSelectivelyReusesArchivePagesAndPersistsPageAndDerivedSignatures(t *testing.T) {

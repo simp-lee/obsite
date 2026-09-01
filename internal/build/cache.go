@@ -32,7 +32,7 @@ import (
 const (
 	cacheManifestDir             = ".obsite-cache"
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion         = 4
+	cacheManifestVersion         = 6
 	defaultTemplateSigKey        = "default"
 	cacheSignatureSaltKey        = "phase-21-step-50"
 	derivedSignatureKeyBacklinks = "backlinks"
@@ -73,10 +73,9 @@ func templateAssetNamesForCacheSignature() []string {
 	names := listTemplateAssetsForSignature()
 	filtered := make([]string, 0, len(names))
 	for _, name := range names {
-		if strings.EqualFold(strings.TrimSpace(name), "style.css") {
-			continue
+		if strings.EqualFold(filepath.Ext(strings.TrimSpace(name)), ".html") {
+			filtered = append(filtered, name)
 		}
-		filtered = append(filtered, name)
 	}
 	return filtered
 }
@@ -95,14 +94,15 @@ type Options struct {
 
 // CacheManifest stores the incremental-build state that can be safely reused on the next run.
 type CacheManifest struct {
-	Version           int                          `json:"version"`
-	BuildABISignature string                       `json:"buildABISignature"`
-	ConfigSignature   string                       `json:"configSignature"`
-	TemplateSignature string                       `json:"templateSignature"`
-	DefaultImagePath  string                       `json:"defaultImagePath,omitempty"`
-	Graph             model.LinkGraph              `json:"graph"`
-	Pages             map[string]string            `json:"pages,omitempty"`
-	Notes             map[string]cacheManifestNote `json:"notes"`
+	Version                int                          `json:"version"`
+	BuildABISignature      string                       `json:"buildABISignature"`
+	NotePageSignature      string                       `json:"notePageSignature"`
+	TemplateSignature      string                       `json:"templateSignature"`
+	PageInputSignature     string                       `json:"pageInputSignature"`
+	DefaultImagePath       string                       `json:"defaultImagePath,omitempty"`
+	ManagedAssetSignatures map[string]string            `json:"managedAssetSignatures,omitempty"`
+	Pages                  map[string]string            `json:"pages,omitempty"`
+	Notes                  map[string]cacheManifestNote `json:"notes"`
 }
 
 type cacheManifestNote struct {
@@ -141,19 +141,30 @@ func loadCacheManifest(outputRoot string) (*CacheManifest, error) {
 	if manifest.Version != cacheManifestVersion {
 		return nil, nil
 	}
-	if manifest.Notes == nil {
-		manifest.Notes = map[string]cacheManifestNote{}
+	if strings.TrimSpace(manifest.BuildABISignature) == "" || strings.TrimSpace(manifest.NotePageSignature) == "" || strings.TrimSpace(manifest.TemplateSignature) == "" || strings.TrimSpace(manifest.PageInputSignature) == "" || manifest.ManagedAssetSignatures == nil || manifest.Notes == nil || manifest.Pages == nil {
+		return nil, nil
 	}
-	if manifest.Pages == nil {
-		manifest.Pages = map[string]string{}
+	var raw struct {
+		Notes map[string]json.RawMessage `json:"notes"`
 	}
-	if manifest.Graph.Forward == nil {
-		manifest.Graph.Forward = map[string][]string{}
+	if err := json.Unmarshal(data, &raw); err != nil || raw.Notes == nil {
+		return nil, nil
 	}
-	if manifest.Graph.Backward == nil {
-		manifest.Graph.Backward = map[string][]string{}
+	for relPath, noteData := range raw.Notes {
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(noteData, &fields); err != nil {
+			return nil, nil
+		}
+		for _, required := range []string{"contentHash", "renderSignature", "htmlContent"} {
+			if _, ok := fields[required]; !ok {
+				return nil, nil
+			}
+		}
+		entry := manifest.Notes[relPath]
+		if strings.TrimSpace(entry.ContentHash) == "" || strings.TrimSpace(entry.RenderSignature) == "" {
+			return nil, nil
+		}
 	}
-
 	return &manifest, nil
 }
 
@@ -196,13 +207,6 @@ func writeCacheManifest(outputRoot string, manifest *CacheManifest) error {
 	if manifest.Pages == nil {
 		manifest.Pages = map[string]string{}
 	}
-	if manifest.Graph.Forward == nil {
-		manifest.Graph.Forward = map[string][]string{}
-	}
-	if manifest.Graph.Backward == nil {
-		manifest.Graph.Backward = map[string][]string{}
-	}
-
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal cache manifest: %w", err)
@@ -212,19 +216,62 @@ func writeCacheManifest(outputRoot string, manifest *CacheManifest) error {
 	return writeOutputFile(outputRoot, cacheManifestRelPath, data)
 }
 
-func buildConfigSignature(cfg model.SiteConfig) (string, error) {
-	cfg.DefaultImg = ""
-	cfg.DefaultImgExternal = false
-	data, err := json.Marshal(cfg)
-	if err != nil {
-		return "", fmt.Errorf("marshal config signature: %w", err)
+func buildNotePageConfigSignature(cfg model.SiteConfig) string {
+	hasher := newCacheSignatureHasher("note-page-config")
+	cacheHashWriteString(hasher, cfg.Title)
+	cacheHashWriteString(hasher, cfg.BaseURL)
+	cacheHashWriteString(hasher, cfg.Author)
+	cacheHashWriteString(hasher, cfg.Description)
+	cacheHashWriteString(hasher, cfg.Language)
+	cacheHashWriteBool(hasher, cfg.Sidebar.Enabled)
+	cacheHashWriteBool(hasher, cfg.Popover.Enabled)
+	cacheHashWriteBool(hasher, cfg.RSS.Enabled)
+	cacheHashWriteBool(hasher, cfg.Related.Enabled)
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func buildPageInputSignature(cfg model.SiteConfig) string {
+	hasher := newCacheSignatureHasher("page-inputs")
+	cacheHashWriteBool(hasher, strings.TrimSpace(cfg.ThemeCSS) != "")
+	cacheHashWriteBool(hasher, strings.TrimSpace(cfg.CustomCSS) != "")
+	cacheHashWriteString(hasher, cfg.ThemeSlots)
+	cacheHashWriteString(hasher, strings.TrimSpace(cfg.RuntimeJSURL))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func buildManagedAssetSignatures(outputRoot string, cfg model.SiteConfig, theme themeInputs) (map[string]string, error) {
+	pathSet := map[string]struct{}{"style.css": {}}
+	for _, relPath := range internalrender.RuntimeAssetOutputPaths() {
+		pathSet[relPath] = struct{}{}
+	}
+	if cfg.Sidebar.Enabled {
+		pathSet[sidebarJSONOutputPath] = struct{}{}
+	}
+	if theme.stylesheet != "" {
+		pathSet[themeCSSOutputPath] = struct{}{}
+	}
+	for _, asset := range theme.assets {
+		pathSet[asset.outputPath] = struct{}{}
+	}
+	if strings.TrimSpace(cfg.CustomCSS) != "" {
+		pathSet[customCSSOutputPath] = struct{}{}
 	}
 
-	hasher := sha256.New()
-	_, _ = hasher.Write([]byte(cacheSignatureSaltKey))
-	_, _ = hasher.Write([]byte{0})
-	_, _ = hasher.Write(data)
-	return hex.EncodeToString(hasher.Sum(nil)), nil
+	paths := make([]string, 0, len(pathSet))
+	for relPath := range pathSet {
+		paths = append(paths, relPath)
+	}
+	sort.Strings(paths)
+	signatures := make(map[string]string, len(paths))
+	for _, relPath := range paths {
+		data, err := os.ReadFile(filepath.Join(outputRoot, filepath.FromSlash(relPath)))
+		if err != nil {
+			return nil, fmt.Errorf("read managed owner output %q: %w", relPath, err)
+		}
+		hash := sha256.Sum256(data)
+		signatures[relPath] = hex.EncodeToString(hash[:])
+	}
+	return signatures, nil
 }
 
 func buildEmbeddedTemplateSignature() (string, error) {
@@ -902,29 +949,6 @@ func cacheManifestAssetList(assets map[string]*model.Asset) []model.Asset {
 	return list
 }
 
-func cloneLinkGraph(graph *model.LinkGraph) model.LinkGraph {
-	if graph == nil {
-		return model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}
-	}
-
-	return model.LinkGraph{
-		Forward:  cloneStringSlices(graph.Forward),
-		Backward: cloneStringSlices(graph.Backward),
-	}
-}
-
-func cloneStringSlices(values map[string][]string) map[string][]string {
-	if len(values) == 0 {
-		return map[string][]string{}
-	}
-
-	cloned := make(map[string][]string, len(values))
-	for key, members := range values {
-		cloned[key] = append([]string(nil), members...)
-	}
-	return cloned
-}
-
 func cloneLinkRefs(values []model.LinkRef) []model.LinkRef {
 	if len(values) == 0 {
 		return nil
@@ -982,16 +1006,17 @@ func cacheSeverityOrder(severity diag.Severity) int {
 	}
 }
 
-func buildCacheManifest(buildABISignature string, configSignature string, templateSignature string, defaultImagePath string, graph *model.LinkGraph, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
+func buildCacheManifest(buildABISignature string, notePageSignature string, templateSignature string, pageInputSignature string, defaultImagePath string, managedAssetSignatures map[string]string, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
 	manifest := &CacheManifest{
-		Version:           cacheManifestVersion,
-		BuildABISignature: strings.TrimSpace(buildABISignature),
-		ConfigSignature:   configSignature,
-		TemplateSignature: templateSignature,
-		DefaultImagePath:  strings.TrimSpace(defaultImagePath),
-		Graph:             cloneLinkGraph(graph),
-		Pages:             cloneSignatureMap(pageSignatures),
-		Notes:             make(map[string]cacheManifestNote, len(noteStates)),
+		Version:                cacheManifestVersion,
+		BuildABISignature:      strings.TrimSpace(buildABISignature),
+		NotePageSignature:      notePageSignature,
+		TemplateSignature:      templateSignature,
+		PageInputSignature:     pageInputSignature,
+		DefaultImagePath:       strings.TrimSpace(defaultImagePath),
+		ManagedAssetSignatures: cloneSignatureMap(managedAssetSignatures),
+		Pages:                  cloneSignatureMap(pageSignatures),
+		Notes:                  make(map[string]cacheManifestNote, len(noteStates)),
 	}
 
 	for _, relPath := range sortedNoteBuildStatePaths(noteStates) {
