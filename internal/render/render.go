@@ -2,6 +2,7 @@ package render
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,10 @@ const (
 	notFoundDescription  = "The requested page could not be found."
 	summaryRuneLimit     = 150
 	tagsRootOutputPrefix = "tags"
+	katexCSSOutputPath   = "assets/obsite-runtime/katex.min.css"
+	katexJSOutputPath    = "assets/obsite-runtime/katex.min.js"
+	katexAutoOutputPath  = "assets/obsite-runtime/auto-render.min.js"
+	mermaidJSOutputPath  = "assets/obsite-runtime/mermaid.min.js"
 )
 
 var embeddedTemplateAssetNames = []string{
@@ -44,6 +49,7 @@ var embeddedTemplateAssetNames = []string{
 	"timeline.html",
 	"404.html",
 	"style.css",
+	"runtime.js",
 }
 
 var embeddedHTMLTemplateNames = htmlTemplateAssetNames(embeddedTemplateAssetNames)
@@ -63,10 +69,10 @@ type embeddedOutputAsset struct {
 
 var runtimeTemplateAssets = func() []embeddedOutputAsset {
 	assets := []embeddedOutputAsset{
-		{name: "vendor/katex/katex.min.css", outputPath: "assets/obsite-runtime/katex.min.css"},
-		{name: "vendor/katex/katex.min.js", outputPath: "assets/obsite-runtime/katex.min.js"},
-		{name: "vendor/katex/contrib/auto-render.min.js", outputPath: "assets/obsite-runtime/auto-render.min.js"},
-		{name: "vendor/mermaid/mermaid.min.js", outputPath: "assets/obsite-runtime/mermaid.min.js"},
+		{name: "vendor/katex/katex.min.css", outputPath: katexCSSOutputPath},
+		{name: "vendor/katex/katex.min.js", outputPath: katexJSOutputPath},
+		{name: "vendor/katex/contrib/auto-render.min.js", outputPath: katexAutoOutputPath},
+		{name: "vendor/mermaid/mermaid.min.js", outputPath: mermaidJSOutputPath},
 	}
 	fonts, _ := fs.Glob(embeddedSiteFS, "vendor/katex/fonts/*")
 	for _, name := range fonts {
@@ -74,6 +80,27 @@ var runtimeTemplateAssets = func() []embeddedOutputAsset {
 	}
 	return assets
 }()
+
+type sharedRuntimeFile struct {
+	outputPath string
+	data       []byte
+}
+
+var loadSharedRuntimeFile = sync.OnceValues(func() (sharedRuntimeFile, error) {
+	data, err := readEmbeddedAsset("runtime.js")
+	if err != nil {
+		return sharedRuntimeFile{}, err
+	}
+	return sharedRuntimeFile{
+		outputPath: contentAddressedRuntimePath(data),
+		data:       data,
+	}, nil
+})
+
+func contentAddressedRuntimePath(data []byte) string {
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("assets/obsite/runtime.%x.js", hash)
+}
 
 var parseDefaultTemplates = sync.OnceValues(func() (*template.Template, error) {
 	return parseEmbeddedTemplates()
@@ -966,25 +993,50 @@ func EmitRuntimeAssets(outputRoot string) error {
 			return fmt.Errorf("emit runtime assets: %w", err)
 		}
 
-		assetPath := filepath.Join(outputRoot, filepath.FromSlash(asset.outputPath))
-		if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
-			return fmt.Errorf("emit runtime assets: mkdir %q: %w", filepath.Dir(assetPath), err)
-		}
-		if err := os.WriteFile(assetPath, data, 0o644); err != nil {
-			return fmt.Errorf("emit runtime assets: write %q: %w", asset.outputPath, err)
+		if err := writeRuntimeAsset(outputRoot, asset.outputPath, data); err != nil {
+			return err
 		}
 	}
 
+	runtimeFile, err := loadSharedRuntimeFile()
+	if err != nil {
+		return fmt.Errorf("emit shared runtime: %w", err)
+	}
+	if err := writeRuntimeAsset(outputRoot, runtimeFile.outputPath, runtimeFile.data); err != nil {
+		return err
+	}
 	return nil
+}
+
+func writeRuntimeAsset(outputRoot string, outputPath string, data []byte) error {
+	assetPath := filepath.Join(outputRoot, filepath.FromSlash(outputPath))
+	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
+		return fmt.Errorf("emit runtime assets: mkdir %q: %w", filepath.Dir(assetPath), err)
+	}
+	if err := os.WriteFile(assetPath, data, 0o644); err != nil {
+		return fmt.Errorf("emit runtime assets: write %q: %w", outputPath, err)
+	}
+	return nil
+}
+
+// SharedRuntimeOutputPath returns the content-addressed shared browser runtime path.
+func SharedRuntimeOutputPath() (string, error) {
+	runtimeFile, err := loadSharedRuntimeFile()
+	if err != nil {
+		return "", err
+	}
+	return runtimeFile.outputPath, nil
 }
 
 // RuntimeAssetOutputPaths returns the output paths reserved for the embedded offline runtime assets.
 func RuntimeAssetOutputPaths() []string {
-	paths := make([]string, 0, len(runtimeTemplateAssets))
+	paths := make([]string, 0, len(runtimeTemplateAssets)+1)
 	for _, asset := range runtimeTemplateAssets {
 		paths = append(paths, asset.outputPath)
 	}
-
+	if runtimeFile, err := loadSharedRuntimeFile(); err == nil {
+		paths = append(paths, runtimeFile.outputPath)
+	}
 	return paths
 }
 

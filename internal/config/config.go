@@ -27,11 +27,6 @@ const (
 	defaultPaginationPageSize = 20
 	defaultRelatedCount       = 5
 	defaultTimelinePath       = "notes"
-
-	defaultKaTeXCSSURL        = "assets/obsite-runtime/katex.min.css"
-	defaultKaTeXJSURL         = "assets/obsite-runtime/katex.min.js"
-	defaultKaTeXAutoRenderURL = "assets/obsite-runtime/auto-render.min.js"
-	defaultMermaidJSURL       = "assets/obsite-runtime/mermaid.min.js"
 )
 
 type fileConfig struct {
@@ -86,10 +81,6 @@ func Defaults() model.SiteConfig {
 		Timeline: model.TimelineConfig{
 			Path: defaultTimelinePath,
 		},
-		KaTeXCSSURL:        defaultKaTeXCSSURL,
-		KaTeXJSURL:         defaultKaTeXJSURL,
-		KaTeXAutoRenderURL: defaultKaTeXAutoRenderURL,
-		MermaidJSURL:       defaultMermaidJSURL,
 	}
 }
 
@@ -190,18 +181,6 @@ func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 	}
 	if strings.TrimSpace(cfg.Timeline.Path) == "" {
 		cfg.Timeline.Path = defaults.Timeline.Path
-	}
-	if strings.TrimSpace(cfg.KaTeXCSSURL) == "" {
-		cfg.KaTeXCSSURL = defaults.KaTeXCSSURL
-	}
-	if strings.TrimSpace(cfg.KaTeXJSURL) == "" {
-		cfg.KaTeXJSURL = defaults.KaTeXJSURL
-	}
-	if strings.TrimSpace(cfg.KaTeXAutoRenderURL) == "" {
-		cfg.KaTeXAutoRenderURL = defaults.KaTeXAutoRenderURL
-	}
-	if strings.TrimSpace(cfg.MermaidJSURL) == "" {
-		cfg.MermaidJSURL = defaults.MermaidJSURL
 	}
 	return normalizeAndValidate(cfg)
 }

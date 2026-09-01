@@ -3185,8 +3185,8 @@ date: 2026-04-06
 		assetEntryNames = append(assetEntryNames, entry.Name())
 	}
 	sort.Strings(assetEntryNames)
-	if !reflect.DeepEqual(assetEntryNames, []string{"hero.png", "obsite-runtime"}) {
-		t.Fatalf("output asset entries = %#v, want %#v", assetEntryNames, []string{"hero.png", "obsite-runtime"})
+	if !reflect.DeepEqual(assetEntryNames, []string{"hero.png", "obsite", "obsite-runtime"}) {
+		t.Fatalf("output asset entries = %#v, want %#v", assetEntryNames, []string{"hero.png", "obsite", "obsite-runtime"})
 	}
 	if _, err := os.Stat(filepath.Join(outputPath, managedOutputMarkerFilename)); err != nil {
 		t.Fatalf("os.Stat(output marker) error = %v, want managed output marker after rebuild", err)
@@ -3920,36 +3920,40 @@ func TestBuildUsesLoadedConfigDefaultsForMinimalConfig(t *testing.T) {
 	}
 
 	noteHTML := readBuildOutputFile(t, outputPath, "direct-build/index.html")
+	runtimePath, err := internalrender.SharedRuntimeOutputPath()
+	if err != nil {
+		t.Fatalf("render.SharedRuntimeOutputPath() error = %v", err)
+	}
+	const (
+		katexCSSOutputPath  = "assets/obsite-runtime/katex.min.css"
+		katexJSOutputPath   = "assets/obsite-runtime/katex.min.js"
+		katexAutoOutputPath = "assets/obsite-runtime/auto-render.min.js"
+		mermaidJSOutputPath = "assets/obsite-runtime/mermaid.min.js"
+	)
 	for _, want := range []string{
-		"../" + expectedInput.Config.KaTeXCSSURL,
-		"../" + expectedInput.Config.KaTeXJSURL,
-		"../" + expectedInput.Config.KaTeXAutoRenderURL,
+		"../" + runtimePath,
+		"../" + katexCSSOutputPath,
+		"data-obsite-math",
+		"data-obsite-mermaid",
 	} {
 		if !bytes.Contains(noteHTML, []byte(want)) {
-			t.Fatalf("direct build page missing runtime default %q\n%s", want, noteHTML)
+			t.Fatalf("direct build page missing shared runtime contract %q\n%s", want, noteHTML)
 		}
 	}
-	mermaidURL := "../" + expectedInput.Config.MermaidJSURL
-	if !bytes.Contains(noteHTML, []byte(mermaidURL)) {
-		t.Fatalf("direct build page missing runtime default %q\n%s", mermaidURL, noteHTML)
+	for _, forbidden := range [][]byte{[]byte(katexJSOutputPath), []byte(katexAutoOutputPath), []byte(mermaidJSOutputPath), []byte("renderMathInElement"), []byte("window.mermaid.initialize"), []byte("cdn.jsdelivr.net")} {
+		if bytes.Contains(noteHTML, forbidden) {
+			t.Fatalf("direct build page contains duplicated runtime loader %q\n%s", forbidden, noteHTML)
+		}
 	}
-	if !bytes.Contains(noteHTML, []byte("renderMathInElement")) {
-		t.Fatalf("direct build page missing KaTeX runtime bootstrap\n%s", noteHTML)
-	}
-	if !bytes.Contains(noteHTML, []byte("window.mermaid.initialize")) {
-		t.Fatalf("direct build page missing Mermaid initializer\n%s", noteHTML)
-	}
-	if bytes.Contains(noteHTML, []byte("cdn.jsdelivr.net")) {
-		t.Fatalf("direct build page unexpectedly references external CDN\n%s", noteHTML)
-	}
-	for _, relPath := range []string{
-		expectedInput.Config.KaTeXCSSURL,
-		expectedInput.Config.KaTeXJSURL,
-		expectedInput.Config.KaTeXAutoRenderURL,
-		expectedInput.Config.MermaidJSURL,
-	} {
+	for _, relPath := range []string{katexCSSOutputPath, katexJSOutputPath, katexAutoOutputPath, mermaidJSOutputPath, runtimePath} {
 		if _, err := os.Stat(filepath.Join(outputPath, filepath.FromSlash(relPath))); err != nil {
 			t.Fatalf("os.Stat(%q) error = %v", relPath, err)
+		}
+	}
+	runtimeJS := readBuildOutputFile(t, outputPath, runtimePath)
+	for _, want := range [][]byte{[]byte("renderMathInElement"), []byte("window.mermaid.initialize"), []byte("Mermaid could not render diagram"), []byte("KaTeX could not render formula")} {
+		if !bytes.Contains(runtimeJS, want) {
+			t.Fatalf("shared runtime missing %q", want)
 		}
 	}
 }

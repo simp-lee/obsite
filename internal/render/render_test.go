@@ -1753,19 +1753,55 @@ func TestEmitRuntimeAssetsWritesEmbeddedFiles(t *testing.T) {
 			t.Fatalf("EmitRuntimeAssets() wrote empty asset for %q", relPath)
 		}
 	}
+
+	runtimePath, err := SharedRuntimeOutputPath()
+	if err != nil {
+		t.Fatalf("SharedRuntimeOutputPath() error = %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(outputDir, filepath.FromSlash(runtimePath)))
+	if err != nil {
+		t.Fatalf("os.ReadFile(%q) error = %v", runtimePath, err)
+	}
+	want, err := readEmbeddedAsset("runtime.js")
+	if err != nil {
+		t.Fatalf("readEmbeddedAsset(runtime.js) error = %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("shared runtime bytes differ from embedded runtime.js")
+	}
+}
+
+func TestSharedRuntimePathIsDerivedFromExactBytes(t *testing.T) {
+	t.Parallel()
+
+	data, err := readEmbeddedAsset("runtime.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := SharedRuntimeOutputPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := contentAddressedRuntimePath(data); got != want {
+		t.Fatalf("SharedRuntimeOutputPath() = %q, want %q", got, want)
+	}
+	changed := append(append([]byte(nil), data...), '\n')
+	if contentAddressedRuntimePath(changed) == got {
+		t.Fatal("runtime path did not change when emitted bytes changed")
+	}
+	if contentAddressedRuntimePath(append([]byte(nil), data...)) != got {
+		t.Fatal("runtime path changed for identical emitted bytes")
+	}
 }
 
 func testSiteConfig() model.SiteConfig {
 	return model.SiteConfig{
-		Title:              "Field Notes",
-		BaseURL:            "https://example.com/blog/",
-		Author:             "Alice Example",
-		Description:        "An editorial notebook.",
-		Language:           "en",
-		DefaultImg:         "images/default-og.png",
-		KaTeXCSSURL:        "https://cdn.example.test/katex.css",
-		KaTeXJSURL:         "https://cdn.example.test/katex.js",
-		KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
-		MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
+		Title:        "Field Notes",
+		BaseURL:      "https://example.com/blog/",
+		Author:       "Alice Example",
+		Description:  "An editorial notebook.",
+		Language:     "en",
+		DefaultImg:   "images/default-og.png",
+		RuntimeJSURL: "assets/obsite/runtime.test.js",
 	}
 }

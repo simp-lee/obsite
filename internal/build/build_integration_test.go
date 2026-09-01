@@ -19,6 +19,7 @@ import (
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
 	internalmodel "github.com/simp-lee/obsite/internal/model"
+	internalrender "github.com/simp-lee/obsite/internal/render"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	xhtml "golang.org/x/net/html"
 )
@@ -157,14 +158,27 @@ func testBuildIntegrationPublishedFixtureProducesDeployableSite(t *testing.T, va
 	) {
 		t.Fatalf("launch-pad page unexpectedly references external CDN runtime assets\n%s", landingHTML)
 	}
+	runtimePath, err := internalrender.SharedRuntimeOutputPath()
+	if err != nil {
+		t.Fatalf("render.SharedRuntimeOutputPath() error = %v", err)
+	}
 	for _, expected := range [][]string{
 		{`href="../assets/obsite-runtime/katex.min.css"`, `href=../assets/obsite-runtime/katex.min.css`},
-		{`src="../assets/obsite-runtime/katex.min.js"`, `src=../assets/obsite-runtime/katex.min.js`},
-		{`src="../assets/obsite-runtime/auto-render.min.js"`, `src=../assets/obsite-runtime/auto-render.min.js`},
-		{`src="../assets/obsite-runtime/mermaid.min.js"`, `src=../assets/obsite-runtime/mermaid.min.js`},
+		{`src="../` + runtimePath + `"`, `src=../` + runtimePath},
 	} {
 		if !containsAny(landingHTML, expected...) {
 			t.Fatalf("launch-pad page missing local runtime asset reference %q\n%s", expected[0], landingHTML)
+		}
+	}
+	for _, forbidden := range [][]byte{[]byte(`src="../assets/obsite-runtime/katex.min.js"`), []byte(`src=../assets/obsite-runtime/katex.min.js`), []byte(`src="../assets/obsite-runtime/auto-render.min.js"`), []byte(`src=../assets/obsite-runtime/auto-render.min.js`), []byte(`src="../assets/obsite-runtime/mermaid.min.js"`), []byte(`src=../assets/obsite-runtime/mermaid.min.js`)} {
+		if bytes.Contains(landingHTML, forbidden) {
+			t.Fatalf("launch-pad page duplicates vendor loader %q\n%s", forbidden, landingHTML)
+		}
+	}
+	sharedRuntimeJS := readBuildOutputFile(t, outputPath, runtimePath)
+	for _, want := range [][]byte{[]byte("renderMathInElement"), []byte("window.mermaid.initialize")} {
+		if !bytes.Contains(sharedRuntimeJS, want) {
+			t.Fatalf("shared runtime missing %q", want)
 		}
 	}
 	runtimeKatexCSS := readBuildOutputFile(t, outputPath, "assets/obsite-runtime/katex.min.css")
@@ -617,11 +631,15 @@ func TestBuildIntegrationFeatureFixtureCoversAdvancedSiteFeatures(t *testing.T) 
 
 	t.Run("note page", func(t *testing.T) {
 		updatedHTML := readBuildOutputFile(t, outputPath, "updated-story/index.html")
+		runtimePath, err := internalrender.SharedRuntimeOutputPath()
+		if err != nil {
+			t.Fatal(err)
+		}
 
 		for _, snippets := range [][]string{
 			{`data-theme-toggle`, `data-theme-toggle=""`},
-			{`__obsiteInitThemeToggle`, `window.__obsiteInitThemeToggle`},
-			{`localStorage.getItem(storageKey)`},
+			{`data-obsite-base-path="/blog/"`, `data-obsite-base-path=/blog/`},
+			{`src="../` + runtimePath + `"`, `src=../` + runtimePath},
 			{`rel="alternate" type="application/rss+xml" title="Feature Garden RSS" href="../index.xml"`, `rel=alternate type=application/rss+xml title="Feature Garden RSS" href=../index.xml`},
 			{`href="../assets/custom.css"`, `href=../assets/custom.css`},
 			{`1 min read`},

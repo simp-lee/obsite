@@ -5,7 +5,7 @@
 
 {{define "base"}}
 <!doctype html>
-<html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}">
+<html lang="{{if .Site.Language}}{{.Site.Language}}{{else}}en{{end}}" data-obsite-base-path="{{siteBasePath .Site.BaseURL}}"{{if .HasMath}} data-obsite-math{{end}}{{if .HasMermaid}} data-obsite-mermaid{{end}}>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -29,172 +29,14 @@
   {{with .OG.Description}}<meta name="twitter:description" content="{{.}}">{{end}}
   {{with .OG.Image}}<meta name="twitter:image" content="{{.}}">{{end}}
   <meta name="color-scheme" content="light dark">
-
-  <script>
-    (function () {
-      var storageKey = "obsite.theme.v1:{{siteBasePath .Site.BaseURL}}";
-      var legacyStorageKey = "theme";
-      var root = document.documentElement;
-      var media = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
-
-      function isStoredTheme(value) {
-        return value === "light" || value === "dark";
-      }
-
-      function migrateStoredTheme(value) {
-        if (!isStoredTheme(value)) {
-          return "";
-        }
-
-        try {
-          localStorage.setItem(storageKey, value);
-          if (legacyStorageKey !== storageKey) {
-            localStorage.removeItem(legacyStorageKey);
-          }
-        } catch (error) {
-        }
-
-        return value;
-      }
-
-      function readStoredTheme() {
-        try {
-          var value = localStorage.getItem(storageKey);
-          if (isStoredTheme(value)) {
-            return value;
-          }
-
-          value = localStorage.getItem(legacyStorageKey);
-          if (isStoredTheme(value)) {
-            return migrateStoredTheme(value);
-          }
-        } catch (error) {
-        }
-
-        return "";
-      }
-
-      function resolveTheme(preference) {
-        if (preference === "light" || preference === "dark") {
-          return preference;
-        }
-
-        return media && media.matches ? "dark" : "light";
-      }
-
-      function setToggleText(toggle, selector, value) {
-        var element = toggle.querySelector(selector);
-        if (element) {
-          element.textContent = value;
-        }
-      }
-
-      function syncThemeToggle(toggle, preference, resolved) {
-        if (!toggle) {
-          return;
-        }
-
-        setToggleText(toggle, "[data-theme-toggle-value]", resolved === "dark" ? "Dark" : "Light");
-        setToggleText(toggle, "[data-theme-toggle-state]", "Current mode " + resolved + ".");
-        setToggleText(toggle, "[data-theme-toggle-source]", preference ? "Theme locked to " + preference + "." : "Following system preference.");
-        toggle.setAttribute("aria-pressed", String(resolved === "dark"));
-        toggle.hidden = false;
-      }
-
-      function applyTheme(preference) {
-        var resolved = resolveTheme(preference);
-        if (preference === "light" || preference === "dark") {
-          root.setAttribute("data-theme", preference);
-        } else {
-          root.removeAttribute("data-theme");
-        }
-        root.style.colorScheme = resolved;
-
-        var toggle = document.querySelector("[data-theme-toggle]");
-        syncThemeToggle(toggle, preference, resolved);
-      }
-
-      function initThemeToggle() {
-        var toggle = document.querySelector("[data-theme-toggle]");
-        if (!toggle || toggle.getAttribute("data-theme-toggle-ready") === "true") {
-          return;
-        }
-
-        toggle.setAttribute("data-theme-toggle-ready", "true");
-        toggle.addEventListener("click", function () {
-          toggleTheme();
-        });
-        applyTheme(readStoredTheme());
-      }
-
-      function toggleTheme() {
-        var nextTheme = resolveTheme(readStoredTheme()) === "dark" ? "light" : "dark";
-        try {
-          localStorage.setItem(storageKey, nextTheme);
-          if (legacyStorageKey !== storageKey) {
-            localStorage.removeItem(legacyStorageKey);
-          }
-        } catch (error) {
-        }
-
-        applyTheme(nextTheme);
-      }
-
-      applyTheme(readStoredTheme());
-      window.__obsiteInitThemeToggle = initThemeToggle;
-
-      if (media && typeof media.addEventListener === "function") {
-        media.addEventListener("change", function () {
-          if (!readStoredTheme()) {
-            applyTheme("");
-          }
-        });
-      } else if (media && typeof media.addListener === "function") {
-        media.addListener(function () {
-          if (!readStoredTheme()) {
-            applyTheme("");
-          }
-        });
-      }
-    })();
-  </script>
+  {{if .Site.RuntimeJSURL}}<script src="{{pageAssetURL .SiteRootRel .Site.RuntimeJSURL}}"></script>{{end}}
 
   <link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}style.css">
-  {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
-  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel .Site.KaTeXCSSURL}}">
+  {{if .HasMath}}
+  <link rel="stylesheet" href="{{pageAssetURL .SiteRootRel "assets/obsite-runtime/katex.min.css"}}">
   {{end}}
   {{if .HasThemeCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/theme/theme.css">{{end}}
   {{if .HasCustomCSS}}<link rel="stylesheet" href="{{if .SiteRootRel}}{{.SiteRootRel}}{{else}}./{{end}}assets/custom.css">{{end}}
-
-  {{if and .HasMath .Site.KaTeXCSSURL .Site.KaTeXJSURL .Site.KaTeXAutoRenderURL}}
-  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXJSURL}}"></script>
-  <script defer src="{{pageAssetURL .SiteRootRel .Site.KaTeXAutoRenderURL}}"></script>
-  <script>
-    document.addEventListener("DOMContentLoaded", function () {
-      var target = document.querySelector("[data-page-content]");
-      if (target && typeof renderMathInElement === "function") {
-        renderMathInElement(target, {
-          delimiters: [
-            {left: "$$", right: "$$", display: true},
-            {left: "$", right: "$", display: false}
-          ],
-          throwOnError: false
-        });
-      }
-    });
-  </script>
-  {{end}}
-
-  {{if and .HasMermaid .Site.MermaidJSURL}}
-  <script defer src="{{pageAssetURL .SiteRootRel .Site.MermaidJSURL}}"></script>
-  <script>
-    document.addEventListener("DOMContentLoaded", function () {
-      if (window.mermaid) {
-        window.mermaid.initialize({startOnLoad: true, theme: "neutral", securityLevel: "loose"});
-      }
-    });
-  </script>
-  {{end}}
 
   {{if .JSONLD}}<script type="application/ld+json">{{.JSONLD}}</script>{{end}}
   {{template "obsite-head-end" (slotData .)}}
@@ -220,11 +62,6 @@
             <span class="sr-only" id="theme-toggle-state" data-theme-toggle-state>Current mode unavailable.</span>
             <span class="sr-only" id="theme-toggle-source" data-theme-toggle-source>Theme preference syncing.</span>
           </button>
-          <script>
-            if (typeof window.__obsiteInitThemeToggle === "function") {
-              window.__obsiteInitThemeToggle();
-            }
-          </script>
         </div>
         {{with .Site.Description}}<p class="site-description">{{.}}</p>{{end}}
         {{if .Site.Author}}<p class="site-byline">Published by {{.Site.Author}}</p>{{end}}

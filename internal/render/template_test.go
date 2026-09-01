@@ -31,16 +31,13 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				Kind:        model.PageNote,
 				SiteRootRel: "../",
 				Site: model.SiteConfig{
-					Title:              "Field Notes",
-					Description:        "An editorial notebook.",
-					Author:             "Alice Example",
-					Language:           "en",
-					KaTeXCSSURL:        "https://cdn.example.test/katex.css",
-					KaTeXJSURL:         "https://cdn.example.test/katex.js",
-					MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
-					DefaultImg:         "images/default-og.png",
-					BaseURL:            "https://example.com/",
-					KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
+					Title:        "Field Notes",
+					Description:  "An editorial notebook.",
+					Author:       "Alice Example",
+					Language:     "en",
+					RuntimeJSURL: "assets/obsite/runtime.test.js",
+					DefaultImg:   "images/default-og.png",
+					BaseURL:      "https://example.com/",
 				},
 				Title:        "Composable Systems",
 				Description:  "A note about how small parts fit together.",
@@ -86,15 +83,10 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"<meta name=\"twitter:title\" content=\"Composable Systems\">",
 				"<meta name=\"twitter:description\" content=\"A note about how small parts fit together.\">",
 				"<meta name=\"twitter:image\" content=\"https://example.com/images/default-og.png\">",
+				`data-obsite-base-path="/" data-obsite-math data-obsite-mermaid`,
+				"<script src=\"../assets/obsite/runtime.test.js\"></script>",
 				"<link rel=\"stylesheet\" href=\"../style.css\">",
-				"<link rel=\"stylesheet\" href=\"https://cdn.example.test/katex.css\">",
-				"<script defer src=\"https://cdn.example.test/katex.js\"></script>",
-				"<script defer src=\"https://cdn.example.test/auto-render.js\"></script>",
-				"<script defer src=\"https://cdn.example.test/mermaid.min.js\"></script>",
-				"window.mermaid.initialize",
-				"startOnLoad: true",
-				"theme: \"neutral\"",
-				"securityLevel: \"loose\"",
+				"<link rel=\"stylesheet\" href=\"../assets/obsite-runtime/katex.min.css\">",
 				"<script type=\"application/ld+json\">[{\"@context\":\"https://schema.org\",\"@type\":\"Article\"}]</script>",
 				"<nav class=\"breadcrumbs\" aria-label=\"Breadcrumb\">",
 				"<a href=\"../notes/\">notes</a>",
@@ -139,6 +131,7 @@ func TestDefaultTemplatesRenderExpectedHTML(t *testing.T) {
 				"cdn.jsdelivr.net",
 				"renderMathInElement",
 				"window.mermaid",
+				"runtime.test.js",
 			},
 		},
 		{
@@ -294,13 +287,10 @@ func TestDefaultTemplatesOrderStructuralRuntimeThemeAndCustomStyles(t *testing.T
 	t.Parallel()
 	tmpl := parseDefaultTemplateSet(t)
 	site := model.SiteConfig{
-		Title:              "Field Notes",
-		Language:           "en",
-		ThemeCSS:           "/vault/.obsite/theme/theme.css",
-		CustomCSS:          "/vault/custom.css",
-		KaTeXCSSURL:        "assets/obsite-runtime/katex.min.css",
-		KaTeXJSURL:         "assets/obsite-runtime/katex.min.js",
-		KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js",
+		Title:     "Field Notes",
+		Language:  "en",
+		ThemeCSS:  "/vault/.obsite/theme/theme.css",
+		CustomCSS: "/vault/custom.css",
 	}
 	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, SiteRootRel: "../../", Site: site, Title: "Math", Content: template.HTML(`<p>$x$</p>`), HasMath: true, HasThemeCSS: true, HasCustomCSS: true})
 	ordered := []string{
@@ -322,17 +312,19 @@ func TestDefaultTemplatesOrderStructuralRuntimeThemeAndCustomStyles(t *testing.T
 	}
 }
 
-func TestDefaultTemplatesLoadOfficialMermaidBundle(t *testing.T) {
+func TestDefaultTemplatesMarkMermaidForSharedRuntime(t *testing.T) {
 	t.Parallel()
 	tmpl := parseDefaultTemplateSet(t)
-	site := model.SiteConfig{Title: "Field Notes", BaseURL: "https://example.com/", Language: "en", KaTeXCSSURL: "assets/obsite-runtime/katex.min.css", KaTeXJSURL: "assets/obsite-runtime/katex.min.js", KaTeXAutoRenderURL: "assets/obsite-runtime/auto-render.min.js", MermaidJSURL: "assets/obsite-runtime/mermaid.min.js"}
+	site := model.SiteConfig{Title: "Field Notes", BaseURL: "https://example.com/", Language: "en", RuntimeJSURL: "assets/obsite/runtime.test.js"}
 	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, SiteRootRel: "../", Site: site, Title: "Mermaid Note", Content: template.HTML(`<pre class="mermaid">graph TD;A-->B</pre>`), HasMermaid: true})
-	assertContains(t, got, `<script defer src="../assets/obsite-runtime/mermaid.min.js"></script>`)
-	assertContains(t, got, "window.mermaid.initialize")
+	assertContains(t, got, `data-obsite-mermaid`)
+	assertContains(t, got, `<script src="../assets/obsite/runtime.test.js"></script>`)
+	assertNotContains(t, got, `assets/obsite-runtime/mermaid.min.js`)
+	assertNotContains(t, got, "window.mermaid.initialize")
 	assertNotContains(t, got, "cdn.jsdelivr.net")
 }
 
-func TestDefaultTemplatesIncludeThemeToggleAndThemeScript(t *testing.T) {
+func TestDefaultTemplatesIncludeThemeToggleAndSharedRuntime(t *testing.T) {
 	t.Parallel()
 
 	tmpl := parseDefaultTemplateSet(t)
@@ -340,74 +332,51 @@ func TestDefaultTemplatesIncludeThemeToggleAndThemeScript(t *testing.T) {
 		Kind:        model.PageIndex,
 		SiteRootRel: "./",
 		Site: model.SiteConfig{
-			Title:       "Field Notes",
-			BaseURL:     "https://example.com/blog/",
-			Description: "An editorial notebook.",
-			Language:    "en",
+			Title:        "Field Notes",
+			BaseURL:      "https://example.com/blog/",
+			Description:  "An editorial notebook.",
+			Language:     "en",
+			RuntimeJSURL: "assets/obsite/runtime.test.js",
 		},
 		Title: "Field Notes",
 	})
 
 	assertContains(t, got, "<meta name=\"color-scheme\" content=\"light dark\">")
+	assertContains(t, got, `data-obsite-base-path="/blog/"`)
+	assertContains(t, got, `<script src="./assets/obsite/runtime.test.js"></script>`)
 	assertContains(t, got, "data-theme-toggle")
 	assertContains(t, got, "aria-labelledby=\"theme-toggle-name\"")
 	assertContains(t, got, "aria-describedby=\"theme-toggle-state theme-toggle-source\"")
 	assertContains(t, got, "aria-pressed=\"false\"")
 	assertContains(t, got, "hidden>")
 	assertContains(t, got, "data-theme-toggle-value")
-	assertContains(t, got, "<span class=\"theme-toggle-value\" aria-hidden=\"true\" data-theme-toggle-value>Mode</span>")
 	assertContains(t, got, "data-theme-toggle-state")
 	assertContains(t, got, "data-theme-toggle-source")
-	assertContains(t, got, `var storageKey = "obsite.theme.v1:\/blog\/"`)
-	assertContains(t, got, `var legacyStorageKey = "theme"`)
-	assertContains(t, got, "function migrateStoredTheme(value)")
-	assertContains(t, got, "localStorage.removeItem(legacyStorageKey)")
-	assertContains(t, got, "localStorage.getItem(storageKey)")
-	assertContains(t, got, "localStorage.setItem(storageKey, nextTheme)")
-	assertContains(t, got, "prefers-color-scheme: dark")
-	assertContains(t, got, "root.setAttribute(\"data-theme\", preference)")
-	assertContains(t, got, "Current mode ")
-	assertContains(t, got, "Following system preference.")
-	assertContains(t, got, "Theme locked to ")
-	assertContains(t, got, "toggle.hidden = false")
-	assertNotContains(t, got, "toggle.setAttribute(\"aria-label\"")
-	assertNotContains(t, got, "toggle.setAttribute(\"title\"")
-	assertNotContains(t, got, "Switch to dark theme")
-	assertNotContains(t, got, "Switch to light theme")
+	for _, forbidden := range []string{"var storageKey", "migrateStoredTheme", "renderMathInElement", "window.mermaid.initialize", "__obsiteInitThemeToggle"} {
+		assertNotContains(t, got, forbidden)
+	}
 }
 
-func TestDefaultTemplatesInitializeThemeToggleWithoutDOMContentLoaded(t *testing.T) {
+func TestSharedRuntimeAppliesColorBeforeDOMReadyInitialization(t *testing.T) {
 	t.Parallel()
 
+	runtimeJS := readTemplateAsset(t, "runtime.js")
+	assertOrderedStrings(t, runtimeJS, "var initialPreference = readStoredTheme();", "applyTheme(initialPreference);", "onReady(function ()")
+	for _, want := range []string{
+		`var storageKey = "obsite.theme.v1:" + basePath`,
+		`prefers-color-scheme: dark`,
+		`root.setAttribute("data-theme", preference)`,
+		`window.localStorage.setItem(storageKey, value)`,
+		`toggle.hidden = false`,
+	} {
+		assertContains(t, runtimeJS, want)
+	}
+
 	tmpl := parseDefaultTemplateSet(t)
-	got := renderTemplate(t, tmpl, model.PageData{
-		Kind:        model.PageNote,
-		SiteRootRel: "../",
-		Site: model.SiteConfig{
-			Title:              "Field Notes",
-			Language:           "en",
-			KaTeXCSSURL:        "https://cdn.example.test/katex.css",
-			KaTeXJSURL:         "https://cdn.example.test/katex.js",
-			KaTeXAutoRenderURL: "https://cdn.example.test/auto-render.js",
-			MermaidJSURL:       "https://cdn.example.test/mermaid.min.js",
-		},
-		Title:      "Sequenced Theme Toggle",
-		Content:    template.HTML("<p>Rendered note body.</p>"),
-		HasMath:    true,
-		HasMermaid: true,
-	})
-
-	assertContains(t, got, "window.__obsiteInitThemeToggle = initThemeToggle")
-
-	readyPattern := regexp.MustCompile(`(?s)<button class="theme-toggle".*?data-theme-toggle.*?</button>\s*<script>\s*if \(typeof window\.__obsiteInitThemeToggle === "function"\) \{\s*window\.__obsiteInitThemeToggle\(\);\s*\}\s*</script>`)
-	if !readyPattern.MatchString(got) {
-		t.Fatalf("theme toggle initializer script should run immediately after the toggle markup\noutput:\n%s", got)
-	}
-
-	blockedPattern := regexp.MustCompile(`(?s)document\.addEventListener\("DOMContentLoaded", function \(\) \{\s*var toggle = document\.querySelector\("\[data-theme-toggle\]"\)`)
-	if blockedPattern.MatchString(got) {
-		t.Fatalf("theme toggle initialization still depends on DOMContentLoaded\noutput:\n%s", got)
-	}
+	got := renderTemplate(t, tmpl, model.PageData{Kind: model.PageNote, SiteRootRel: "../", Site: model.SiteConfig{Title: "Field Notes", Language: "en", RuntimeJSURL: "assets/obsite/runtime.test.js"}, Title: "Runtime", HasMath: true, HasMermaid: true})
+	assertContains(t, got, `data-obsite-math data-obsite-mermaid`)
+	assertOrderedStrings(t, got, `<script src="../assets/obsite/runtime.test.js"></script>`, `<link rel="stylesheet" href="../style.css">`)
+	assertNotContains(t, got, `<script defer src="../assets/obsite/runtime.test.js"></script>`)
 }
 
 func TestDefaultTemplatesConditionallyRenderRSSAutoDiscoveryLink(t *testing.T) {

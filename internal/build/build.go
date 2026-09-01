@@ -337,6 +337,10 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			return result, fmt.Errorf("validate theme slots %q: %w", theme.slots, err)
 		}
 	}
+	cfg.RuntimeJSURL, err = render.SharedRuntimeOutputPath()
+	if err != nil {
+		return result, fmt.Errorf("resolve shared runtime: %w", err)
+	}
 	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme)
 
 	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)

@@ -21,10 +21,7 @@ type SiteConfig struct {
 	RSS            RSSConfig
 	Timeline       TimelineConfig
 
-	KaTeXCSSURL        string
-	KaTeXJSURL         string
-	KaTeXAutoRenderURL string
-	MermaidJSURL       string
+	RuntimeJSURL string
 }
 
 // PaginationConfig controls list-page pagination behavior.
