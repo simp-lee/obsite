@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/render"
 	internalslug "github.com/simp-lee/obsite/internal/slug"
@@ -100,7 +101,7 @@ func normalizedOutputClaim(relPath string, owner outputOwner, source string) (ou
 		return outputClaim{}, "", fmt.Errorf("invalid output destination %q for %s", relPath, owner)
 	}
 	cleaned := path.Clean(trimmed)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || !internalfsutil.IsPortableSitePath(cleaned) {
 		return outputClaim{}, "", fmt.Errorf("invalid output destination %q for %s", relPath, owner)
 	}
 	key := internalslug.Canonicalize(cleaned)

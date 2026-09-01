@@ -666,6 +666,9 @@ func (loop *serveWatchLoop) shouldTrigger(path string, op fsnotify.Op, wasWatche
 	if relPath == filepath.Join(".obsidian", "app.json") {
 		return true
 	}
+	if relPath == ".obsidian" && obsidianAppInputMayHaveChanged(loop.vaultPath, op, wasWatchedDir) {
+		return true
+	}
 	if !isWatchableVaultPath(relPath) {
 		return false
 	}
@@ -735,6 +738,15 @@ func isWatchableDirectoryEvent(path string, op fsnotify.Op, wasWatchedDir bool) 
 
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()
+}
+
+func obsidianAppInputMayHaveChanged(vaultPath string, op fsnotify.Op, wasWatchedDir bool) bool {
+	if op&(fsnotify.Create|fsnotify.Rename) != 0 {
+		if _, err := os.Lstat(filepath.Join(vaultPath, ".obsidian", "app.json")); err == nil {
+			return true
+		}
+	}
+	return wasWatchedDir && op&(fsnotify.Remove|fsnotify.Rename) != 0
 }
 
 func isWatchableVaultPath(relPath string) bool {

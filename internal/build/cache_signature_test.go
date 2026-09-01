@@ -1,10 +1,6 @@
 package build
 
 import (
-	"crypto/sha256"
-	"encoding/json"
-	"fmt"
-	"path/filepath"
 	"reflect"
 	"runtime/debug"
 	"strings"
@@ -12,7 +8,6 @@ import (
 
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/model"
-	internalrender "github.com/simp-lee/obsite/internal/render"
 )
 
 func TestTemplateAssetNamesForCacheSignatureIncludesOnlyHTMLTemplates(t *testing.T) {
@@ -138,39 +133,6 @@ func TestBuildEmbeddedTemplateSignatureIgnoresStyleCSS(t *testing.T) {
 	}
 }
 
-func TestCacheManifestTracksConcreteManagedAssetOwners(t *testing.T) {
-	t.Parallel()
-
-	vaultPath := t.TempDir()
-	outputPath := filepath.Join(t.TempDir(), "site")
-	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n")
-	writeBuildTestFile(t, vaultPath, "custom.css", "body { color: tomato; }\n")
-	writeBuildTestFile(t, vaultPath, ".obsite/theme/theme.css", ":root { --obsite-accent: purple; }\n")
-	writeBuildTestFile(t, vaultPath, ".obsite/theme/assets/fixed.txt", "fixed\n")
-	cfg := testBuildSiteConfig()
-	cfg.Sidebar.Enabled = true
-	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
-		t.Fatal(err)
-	}
-
-	var manifest CacheManifest
-	if err := json.Unmarshal(readBuildOutputFile(t, outputPath, cacheManifestRelPath), &manifest); err != nil {
-		t.Fatal(err)
-	}
-	expected := []string{"style.css", sidebarJSONOutputPath, themeCSSOutputPath, "assets/theme/fixed.txt", customCSSOutputPath}
-	expected = append(expected, internalrender.RuntimeAssetOutputPaths()...)
-	for _, relPath := range expected {
-		data := readBuildOutputFile(t, outputPath, relPath)
-		want := fmt.Sprintf("%x", sha256.Sum256(data))
-		if got := manifest.ManagedAssetSignatures[relPath]; got != want {
-			t.Fatalf("managed signature %q = %q, want %q", relPath, got, want)
-		}
-	}
-	if len(manifest.ManagedAssetSignatures) != len(expected) {
-		t.Fatalf("managed signatures = %#v, want exactly %d concrete outputs", manifest.ManagedAssetSignatures, len(expected))
-	}
-}
-
 func TestNoteRenderSignatureDistinguishesUnresolvedAndAmbiguousImageEmbedAssetStates(t *testing.T) {
 	note := &model.Note{
 		RelPath:    "notes/gallery.md",
@@ -289,7 +251,7 @@ func TestBuildRefreshesImageEmbedDiagnosticsWhenAssetInventoryChangesWithoutNote
 		}
 
 		state := states[0]
-		manifest := buildCacheManifest("abi", "config", "template", "", "", nil, map[string]*noteBuildState{noteRelPath: state}, nil)
+		manifest := buildCacheManifest("abi", "config", "template", "", "", map[string]*noteBuildState{noteRelPath: state}, nil)
 		entry, ok := manifest.Notes[noteRelPath]
 		if !ok {
 			t.Fatalf("manifest missing %q entry", noteRelPath)
@@ -367,7 +329,7 @@ func assertCachedUnresolvedAssetDiagnosticContains(t *testing.T, entry cacheMani
 	}
 }
 
-func TestBuildABISignatureUsesTargetNeutralProductIdentity(t *testing.T) {
+func TestBuildABISignatureSeparatesProductIdentityFromCacheProvenance(t *testing.T) {
 	t.Parallel()
 
 	baselineInfo := &debug.BuildInfo{
@@ -380,8 +342,8 @@ func TestBuildABISignatureUsesTargetNeutralProductIdentity(t *testing.T) {
 		},
 	}
 	baseline := buildABISignature(baselineInfo)
-	if baseline == "" {
-		t.Fatal("buildABISignature() = empty")
+	if baseline.signature == "" || !baseline.cacheReusable {
+		t.Fatalf("buildABISignature() = %#v, want reusable product identity", baseline)
 	}
 
 	targetVariant := &debug.BuildInfo{
@@ -391,24 +353,42 @@ func TestBuildABISignatureUsesTargetNeutralProductIdentity(t *testing.T) {
 			{Key: "GOARCH", Value: "arm64"},
 			{Key: "GOOS", Value: "windows"},
 			{Key: "CGO_ENABLED", Value: "0"},
-			{Key: "vcs.modified", Value: "true"},
+			{Key: "vcs.modified", Value: "false"},
 			{Key: "vcs.revision", Value: "0123456789abcdef"},
 		},
 	}
-	if got := buildABISignature(targetVariant); got != baseline {
-		t.Fatalf("target-variant build ABI signature = %q, want target-neutral %q", got, baseline)
+	if got := buildABISignature(targetVariant); got.signature != baseline.signature || !got.cacheReusable {
+		t.Fatalf("target-variant build ABI = %#v, want target-neutral reusable %#v", got, baseline)
+	}
+
+	dirtyVariant := *targetVariant
+	dirtyVariant.Settings = append([]debug.BuildSetting(nil), targetVariant.Settings...)
+	dirtyVariant.Settings[3].Value = "true"
+	if got := buildABISignature(&dirtyVariant); got.signature != baseline.signature || got.cacheReusable {
+		t.Fatalf("dirty build ABI = %#v, want same target-neutral identity with cache disabled", got)
 	}
 
 	versionVariant := *baselineInfo
 	versionVariant.Main.Version = "v1.2.4"
-	if got := buildABISignature(&versionVariant); got == baseline {
-		t.Fatal("build ABI signature did not change with product version")
+	if got := buildABISignature(&versionVariant); got.signature == baseline.signature || !got.cacheReusable {
+		t.Fatalf("version-variant build ABI = %#v, want changed reusable identity", got)
 	}
 
 	revisionVariant := *baselineInfo
 	revisionVariant.Settings = append([]debug.BuildSetting(nil), baselineInfo.Settings...)
 	revisionVariant.Settings[2].Value = "fedcba9876543210"
-	if got := buildABISignature(&revisionVariant); got == baseline {
-		t.Fatal("build ABI signature did not change with product revision")
+	if got := buildABISignature(&revisionVariant); got.signature == baseline.signature || !got.cacheReusable {
+		t.Fatalf("revision-variant build ABI = %#v, want changed reusable identity", got)
+	}
+
+	goInstall := buildABISignature(&debug.BuildInfo{Main: debug.Module{Path: baselineInfo.Main.Path, Version: "v1.2.3", Sum: baselineInfo.Main.Sum}})
+	if !goInstall.cacheReusable {
+		t.Fatalf("go-install build ABI = %#v, want module-version provenance", goInstall)
+	}
+	if devel := buildABISignature(&debug.BuildInfo{Main: debug.Module{Path: baselineInfo.Main.Path, Version: "(devel)"}}); devel.cacheReusable {
+		t.Fatalf("unversioned build ABI = %#v, want cache disabled", devel)
+	}
+	if missing := buildABISignature(nil); missing.cacheReusable {
+		t.Fatalf("missing build ABI = %#v, want cache disabled", missing)
 	}
 }

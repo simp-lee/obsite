@@ -263,6 +263,39 @@ func ReadContainedRegularFile(vaultRoot string, candidate string) (resolvedPath 
 	return resolvedPath, data, info, nil
 }
 
+// IsPortableSitePath reports whether every slash-separated output component is
+// usable as both a relative URL path and a regular filesystem name on supported platforms.
+func IsPortableSitePath(value string) bool {
+	for component := range strings.SplitSeq(value, "/") {
+		if component == "" || strings.ContainsAny(component, `<>:"\|?*`) || strings.TrimRight(component, " .") != component {
+			return false
+		}
+		for _, character := range component {
+			if character < 0x20 || character == 0x7f {
+				return false
+			}
+		}
+
+		base := component
+		if dot := strings.IndexByte(base, '.'); dot >= 0 {
+			base = base[:dot]
+		}
+		upperBase := strings.ToUpper(base)
+		switch upperBase {
+		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+			return false
+		}
+		characters := []rune(upperBase)
+		if len(characters) == 4 && (string(characters[:3]) == "COM" || string(characters[:3]) == "LPT") {
+			switch characters[3] {
+			case '¹', '²', '³':
+				return false
+			}
+		}
+	}
+	return true
+}
+
 func samePath(left string, right string) bool {
 	relative, err := filepath.Rel(filepath.Clean(left), filepath.Clean(right))
 	return err == nil && relative == "."

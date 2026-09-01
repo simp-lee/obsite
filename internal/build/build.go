@@ -303,9 +303,26 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	options = normalizeBuildOptions(options)
 	result = &BuildResult{}
 	diagnostics := diag.NewCollector()
+	var publisher *stagedOutputPublisher
 
 	defer func() {
 		result, err = finalizeBuild(result, diagnostics, options.diagnosticsWriter, err)
+		if publisher == nil {
+			return
+		}
+		if finalizeErr := publisher.Finalize(err == nil); finalizeErr != nil {
+			if err == nil {
+				err = finalizeErr
+			} else {
+				err = errors.Join(err, finalizeErr)
+			}
+		}
+		if publisher.cleanupErr != nil {
+			warning := diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindOutputCleanup, Message: publisher.cleanupErr.Error()}
+			diagnostics.Add(warning)
+			populateBuildDiagnostics(result, diagnostics)
+			writePostCommitDiagnostic(options.diagnosticsWriter, warning)
+		}
 	}()
 
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
@@ -348,28 +365,21 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	}
 	reservedAssetOutputPaths := buildReservedAssetOutputPaths(cfg.CustomCSS, theme, cfg.Sidebar.Enabled)
 
-	publisher, err := prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
+	publisher, err = prepareStagedOutputPublisher(normalizedVaultPath, normalizedOutputPath)
 	if err != nil {
 		return result, err
 	}
 	previousOutputPath := previousManagedOutputPath(publisher)
-	defer func() {
-		if finalizeErr := publisher.Finalize(err == nil); finalizeErr != nil {
-			if err == nil {
-				err = finalizeErr
-			} else {
-				err = errors.Join(err, finalizeErr)
-			}
-		}
-		if publisher.cleanupErr != nil {
-			diagnostics.Warningf(diag.KindOutputCleanup, diag.Location{}, "%v", publisher.cleanupErr)
-		}
-	}()
 
 	notePageSignature := buildNotePageConfigSignature(cfg)
-	buildABISignature, err := readBuildABISignature()
+	buildABI, err := readBuildABISignature()
 	if err != nil {
 		return result, fmt.Errorf("compute build ABI signature: %w", err)
+	}
+	buildABISignature := buildABI.signature
+	disableCacheReuse := !buildABI.cacheReusable
+	if disableCacheReuse {
+		warnBuildCacheDisabled(diagnostics)
 	}
 	templateSignature, err := buildEmbeddedTemplateSignature()
 	if err != nil {
@@ -378,7 +388,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	pageInputSignature := buildPageInputSignature(cfg)
 
 	var previousManifest *CacheManifest
-	if !options.force {
+	if !options.force && !disableCacheReuse {
 		loadedManifest, loadErr := loadCacheManifest(previousOutputPath)
 		if loadErr == nil {
 			previousManifest = loadedManifest
@@ -386,7 +396,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			warnCacheManifestLoadFailure(diagnostics, loadErr)
 		}
 	}
-	noteFullDirty := options.force || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature
+	noteFullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature
 	pageFullDirty := noteFullDirty || previousManifest.TemplateSignature != templateSignature || previousManifest.PageInputSignature != pageInputSignature
 
 	scanResult, err := vault.ScanWithOptions(normalizedVaultPath, vault.ScanOptions{OutputPath: normalizedOutputPath})
@@ -555,7 +565,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	siteLastModified := siteLastModified(allPublicNotes(idx))
 	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
 	writeStyleCSS := true
-	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, theme, writeStyleCSS, true); err != nil {
+	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, theme, writeStyleCSS, !disableCacheReuse); err != nil {
 		return result, fmt.Errorf("plan generated output: %w", err)
 	}
 	stagingOutputPath := publisher.OutputPath()
@@ -680,13 +690,11 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}
 
-	managedAssetSignatures, err := buildManagedAssetSignatures(stagingOutputPath, cfg, theme)
-	if err != nil {
-		return result, err
-	}
-	manifest := buildCacheManifest(buildABISignature, notePageSignature, templateSignature, pageInputSignature, cfg.DefaultImg, managedAssetSignatures, noteStatesByPath, pageSignatures)
-	if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
-		return result, err
+	if !disableCacheReuse {
+		manifest := buildCacheManifest(buildABISignature, notePageSignature, templateSignature, pageInputSignature, cfg.DefaultImg, noteStatesByPath, pageSignatures)
+		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
+			return result, err
+		}
 	}
 
 	return result, nil
@@ -1104,9 +1112,7 @@ func finalizeBuild(result *BuildResult, diagnostics *diag.Collector, writer io.W
 		diagnostics = diag.NewCollector()
 	}
 
-	result.Diagnostics = diagnostics.Diagnostics()
-	result.WarningCount = diagnostics.WarningCount()
-	result.ErrorCount = diagnostics.ErrorCount()
+	populateBuildDiagnostics(result, diagnostics)
 
 	if buildErr == nil && diagnostics.HasErrors() {
 		buildErr = diagnosticBuildError{count: diagnostics.ErrorCount()}
@@ -1120,6 +1126,26 @@ func finalizeBuild(result *BuildResult, diagnostics *diag.Collector, writer io.W
 	}
 
 	return result, buildErr
+}
+
+func populateBuildDiagnostics(result *BuildResult, diagnostics *diag.Collector) {
+	if result == nil || diagnostics == nil {
+		return
+	}
+	result.Diagnostics = diagnostics.Diagnostics()
+	result.WarningCount = diagnostics.WarningCount()
+	result.ErrorCount = diagnostics.ErrorCount()
+}
+
+func writePostCommitDiagnostic(writer io.Writer, diagnostic diag.Diagnostic) {
+	// Publication has committed, so a diagnostics sink failure can no longer be
+	// reported as a failed build without contradicting the formal output state.
+	if writer == nil {
+		return
+	}
+	collector := diag.NewCollector()
+	collector.Add(diagnostic)
+	_ = writeDiagnosticsSummary(writer, collector, nil)
 }
 
 func buildNoteStates(idx *model.VaultIndex, assetSink *internalasset.AssetCollector, concurrency int, previous *CacheManifest, noteHashes map[string]string, noteRenderSignatures map[string]string, noteDerivedSignatures map[string]map[string]string, fullDirty bool) ([]*noteBuildState, error) {

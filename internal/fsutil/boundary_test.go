@@ -9,6 +9,29 @@ import (
 	"testing"
 )
 
+func TestPortableSitePathComponents(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		path string
+		want bool
+	}{
+		{path: "notes/archive/index.html", want: true},
+		{path: ".obsite-cache/manifest.json", want: true},
+		{path: "notes/CON/index.html"},
+		{path: "notes/com1.txt/index.html"},
+		{path: "notes/COM¹/index.html"},
+		{path: "notes/lpt².txt/index.html"},
+		{path: "notes/trailing./index.html"},
+		{path: "notes/archive*/index.html"},
+	}
+	for _, tt := range tests {
+		if got := IsPortableSitePath(tt.path); got != tt.want {
+			t.Errorf("IsPortableSitePath(%q) = %v, want %v", tt.path, got, tt.want)
+		}
+	}
+}
+
 func TestResolveVaultOutputBoundary(t *testing.T) {
 	t.Parallel()
 

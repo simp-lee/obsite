@@ -30,7 +30,7 @@ import (
 const (
 	cacheManifestDir             = ".obsite-cache"
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion         = 7
+	cacheManifestVersion         = 8
 	defaultTemplateSigKey        = "default"
 	cacheSignatureSaltKey        = "obsite-cache-signature-v1"
 	buildCacheABIKey             = "obsite-build-cache-abi-v1"
@@ -43,6 +43,11 @@ var listTemplateAssetsForSignature = internalrender.EmbeddedTemplateAssetNames
 var readDefaultTemplateAssetForSignature = internalrender.ReadEmbeddedTemplateAsset
 
 var readBuildABISignature = sync.OnceValues(computeBuildABISignature)
+
+type buildABIState struct {
+	signature     string
+	cacheReusable bool
+}
 
 func templateAssetNamesForCacheSignature() []string {
 	names := listTemplateAssetsForSignature()
@@ -69,15 +74,14 @@ type Options struct {
 
 // CacheManifest stores the incremental-build state that can be safely reused on the next run.
 type CacheManifest struct {
-	Version                int                          `json:"version"`
-	BuildABISignature      string                       `json:"buildABISignature"`
-	NotePageSignature      string                       `json:"notePageSignature"`
-	TemplateSignature      string                       `json:"templateSignature"`
-	PageInputSignature     string                       `json:"pageInputSignature"`
-	DefaultImagePath       string                       `json:"defaultImagePath,omitempty"`
-	ManagedAssetSignatures map[string]string            `json:"managedAssetSignatures,omitempty"`
-	Pages                  map[string]string            `json:"pages,omitempty"`
-	Notes                  map[string]cacheManifestNote `json:"notes"`
+	Version            int                          `json:"version"`
+	BuildABISignature  string                       `json:"buildABISignature"`
+	NotePageSignature  string                       `json:"notePageSignature"`
+	TemplateSignature  string                       `json:"templateSignature"`
+	PageInputSignature string                       `json:"pageInputSignature"`
+	DefaultImagePath   string                       `json:"defaultImagePath,omitempty"`
+	Pages              map[string]string            `json:"pages,omitempty"`
+	Notes              map[string]cacheManifestNote `json:"notes"`
 }
 
 type cacheManifestNote struct {
@@ -116,7 +120,7 @@ func loadCacheManifest(outputRoot string) (*CacheManifest, error) {
 	if manifest.Version != cacheManifestVersion {
 		return nil, nil
 	}
-	if strings.TrimSpace(manifest.BuildABISignature) == "" || strings.TrimSpace(manifest.NotePageSignature) == "" || strings.TrimSpace(manifest.TemplateSignature) == "" || strings.TrimSpace(manifest.PageInputSignature) == "" || manifest.ManagedAssetSignatures == nil || manifest.Notes == nil || manifest.Pages == nil {
+	if strings.TrimSpace(manifest.BuildABISignature) == "" || strings.TrimSpace(manifest.NotePageSignature) == "" || strings.TrimSpace(manifest.TemplateSignature) == "" || strings.TrimSpace(manifest.PageInputSignature) == "" || manifest.Notes == nil || manifest.Pages == nil {
 		return nil, nil
 	}
 	var raw struct {
@@ -154,6 +158,17 @@ func warnCacheManifestLoadFailure(collector *diag.Collector, loadErr error) {
 		"incremental cache manifest could not be loaded (%v); falling back to a full rebuild. Delete %q if this warning repeats",
 		loadErr,
 		cacheManifestRelPath,
+	)
+}
+
+func warnBuildCacheDisabled(collector *diag.Collector) {
+	if collector == nil {
+		return
+	}
+	collector.Warningf(
+		diag.KindStructuredData,
+		diag.Location{Path: cacheManifestRelPath},
+		"build provenance is incomplete or modified; incremental cache reuse is disabled for this run",
 	)
 }
 
@@ -201,41 +216,6 @@ func buildPageInputSignature(cfg model.SiteConfig) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func buildManagedAssetSignatures(outputRoot string, cfg model.SiteConfig, theme themeInputs) (map[string]string, error) {
-	pathSet := map[string]struct{}{"style.css": {}}
-	for _, relPath := range internalrender.RuntimeAssetOutputPaths() {
-		pathSet[relPath] = struct{}{}
-	}
-	if cfg.Sidebar.Enabled {
-		pathSet[sidebarJSONOutputPath] = struct{}{}
-	}
-	if theme.stylesheet != "" {
-		pathSet[themeCSSOutputPath] = struct{}{}
-	}
-	for _, asset := range theme.assets {
-		pathSet[asset.outputPath] = struct{}{}
-	}
-	if strings.TrimSpace(cfg.CustomCSS) != "" {
-		pathSet[customCSSOutputPath] = struct{}{}
-	}
-
-	paths := make([]string, 0, len(pathSet))
-	for relPath := range pathSet {
-		paths = append(paths, relPath)
-	}
-	sort.Strings(paths)
-	signatures := make(map[string]string, len(paths))
-	for _, relPath := range paths {
-		data, err := os.ReadFile(filepath.Join(outputRoot, filepath.FromSlash(relPath)))
-		if err != nil {
-			return nil, fmt.Errorf("read managed owner output %q: %w", relPath, err)
-		}
-		hash := sha256.Sum256(data)
-		signatures[relPath] = hex.EncodeToString(hash[:])
-	}
-	return signatures, nil
-}
-
 func buildEmbeddedTemplateSignature() (string, error) {
 	hasher := newCacheSignatureHasher("embedded-templates")
 	cacheHashWriteString(hasher, defaultTemplateSigKey)
@@ -253,7 +233,7 @@ func buildEmbeddedTemplateSignature() (string, error) {
 	return hex.EncodeToString(hasher.Sum(nil)), nil
 }
 
-func computeBuildABISignature() (string, error) {
+func computeBuildABISignature() (buildABIState, error) {
 	info, ok := debug.ReadBuildInfo()
 	if !ok {
 		info = nil
@@ -261,26 +241,37 @@ func computeBuildABISignature() (string, error) {
 	return buildABISignature(info), nil
 }
 
-func buildABISignature(info *debug.BuildInfo) string {
+func buildABISignature(info *debug.BuildInfo) buildABIState {
+	// The managed manifest is product output, so target and toolchain settings
+	// must not affect its bytes. Product version/revision provides the ABI identity.
 	hasher := newCacheSignatureHasher("build-abi")
 	cacheHashWriteString(hasher, buildCacheABIKey)
 	if info == nil {
-		return hex.EncodeToString(hasher.Sum(nil))
+		return buildABIState{signature: hex.EncodeToString(hasher.Sum(nil))}
 	}
 
 	cacheHashWriteString(hasher, info.Main.Path)
 	cacheHashWriteString(hasher, info.Main.Version)
 	cacheHashWriteString(hasher, info.Main.Sum)
 	revision := ""
+	modified := false
 	for _, setting := range info.Settings {
-		if setting.Key == "vcs.revision" {
-			revision = setting.Value
-			break
+		switch setting.Key {
+		case "vcs.revision":
+			revision = strings.TrimSpace(setting.Value)
+		case "vcs.modified":
+			modified = strings.EqualFold(strings.TrimSpace(setting.Value), "true")
 		}
 	}
 	cacheHashWriteString(hasher, "vcs.revision")
 	cacheHashWriteString(hasher, revision)
-	return hex.EncodeToString(hasher.Sum(nil))
+
+	moduleVersion := strings.TrimSpace(info.Main.Version)
+	hasModuleVersion := moduleVersion != "" && moduleVersion != "(devel)"
+	return buildABIState{
+		signature:     hex.EncodeToString(hasher.Sum(nil)),
+		cacheReusable: !modified && (revision != "" || hasModuleVersion),
+	}
 }
 
 func cachePageSiteConfig(cfg model.SiteConfig) model.SiteConfig {
@@ -855,17 +846,16 @@ func cacheSeverityOrder(severity diag.Severity) int {
 	}
 }
 
-func buildCacheManifest(buildABISignature string, notePageSignature string, templateSignature string, pageInputSignature string, defaultImagePath string, managedAssetSignatures map[string]string, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
+func buildCacheManifest(buildABISignature string, notePageSignature string, templateSignature string, pageInputSignature string, defaultImagePath string, noteStates map[string]*noteBuildState, pageSignatures map[string]string) *CacheManifest {
 	manifest := &CacheManifest{
-		Version:                cacheManifestVersion,
-		BuildABISignature:      strings.TrimSpace(buildABISignature),
-		NotePageSignature:      notePageSignature,
-		TemplateSignature:      templateSignature,
-		PageInputSignature:     pageInputSignature,
-		DefaultImagePath:       strings.TrimSpace(defaultImagePath),
-		ManagedAssetSignatures: cloneSignatureMap(managedAssetSignatures),
-		Pages:                  cloneSignatureMap(pageSignatures),
-		Notes:                  make(map[string]cacheManifestNote, len(noteStates)),
+		Version:            cacheManifestVersion,
+		BuildABISignature:  strings.TrimSpace(buildABISignature),
+		NotePageSignature:  notePageSignature,
+		TemplateSignature:  templateSignature,
+		PageInputSignature: pageInputSignature,
+		DefaultImagePath:   strings.TrimSpace(defaultImagePath),
+		Pages:              cloneSignatureMap(pageSignatures),
+		Notes:              make(map[string]cacheManifestNote, len(noteStates)),
 	}
 
 	for _, relPath := range sortedNoteBuildStatePaths(noteStates) {

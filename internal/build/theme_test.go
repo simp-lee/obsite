@@ -109,7 +109,7 @@ func TestBuildThemeLayerMutationsChangeOnlyOwnedOutput(t *testing.T) {
 				t.Fatalf("second buildWithOptions() error = %v", err)
 			}
 			changed := changedThemeTestOutputs(before, snapshotThemeTestOutput(t, outputPath))
-			if want := []string{cacheManifestRelPath, tt.outputPath}; !slices.Equal(changed, want) {
+			if want := []string{tt.outputPath}; !slices.Equal(changed, want) {
 				t.Fatalf("changed outputs = %#v, want %#v", changed, want)
 			}
 		})

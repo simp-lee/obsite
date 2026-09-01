@@ -35,6 +35,23 @@ var (
 	buildTestOutputHookScopes sync.Map
 )
 
+func TestMain(m *testing.M) {
+	readBuildABISignature = func() (buildABIState, error) {
+		return buildABIState{signature: "test-build-abi", cacheReusable: true}, nil
+	}
+	os.Exit(m.Run())
+}
+
+type failingBuildWriter struct {
+	calls int
+	err   error
+}
+
+func (writer *failingBuildWriter) Write([]byte) (int, error) {
+	writer.calls++
+	return 0, writer.err
+}
+
 func TestPreRenderRelatedRanking(t *testing.T) {
 	t.Parallel()
 
@@ -1193,6 +1210,48 @@ Nested note in a case-only conflicting folder.
 	}
 	if _, statErr := os.Stat(filepath.Join(outputPath, "alpha", "index.html")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("os.Stat(alpha/index.html) error = %v, want not-exist after rejected collision", statErr)
+	}
+}
+
+func TestBuildRejectsNonPortableGeneratedRoutes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		relPath string
+		content string
+	}{
+		{
+			name:    "frontmatter slug",
+			relPath: "notes/alpha.md",
+			content: "---\ntitle: Alpha\nslug: CON\n---\n# Alpha\n",
+		},
+		{
+			name:    "tag route",
+			relPath: "notes/alpha.md",
+			content: "---\ntitle: Alpha\ntags: [COM1]\n---\n# Alpha\n",
+		},
+		{
+			name:    "folder route",
+			relPath: "LPT2/alpha.md",
+			content: "---\ntitle: Alpha\n---\n# Alpha\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			outputPath := filepath.Join(t.TempDir(), "site")
+			writeBuildTestFile(t, vaultPath, tt.relPath, tt.content)
+
+			_, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+			if err == nil || !strings.Contains(err.Error(), "invalid output destination") {
+				t.Fatalf("buildWithOptions() error = %v, want non-portable output rejection", err)
+			}
+			if _, statErr := os.Stat(outputPath); !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("output path exists after route rejection: %v", statErr)
+			}
+		})
 	}
 }
 
@@ -3617,6 +3676,30 @@ func TestStagedOutputPublisherKeepsCommittedSiteWhenPartialBackupCleanupFails(t 
 	}
 }
 
+func TestBuildPreservesOldOutputWhenDiagnosticsCannotBeWritten(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nStable content.\n")
+	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotThemeTestOutput(t, outputPath)
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\n![Missing](../missing.png)\n")
+
+	writerErr := errors.New("diagnostics writer failed")
+	writer := &failingBuildWriter{err: writerErr}
+	_, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: writer})
+	if !errors.Is(err, writerErr) {
+		t.Fatalf("buildWithOptions() error = %v, want %v", err, writerErr)
+	}
+	if writer.calls == 0 {
+		t.Fatal("diagnostics writer was not called")
+	}
+	if after := snapshotThemeTestOutput(t, outputPath); !reflect.DeepEqual(after, before) {
+		t.Fatal("diagnostics failure changed the previously published site")
+	}
+}
+
 func TestBuildReportsPostCommitBackupCleanupAsWarning(t *testing.T) {
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
@@ -3635,16 +3718,17 @@ func TestBuildReportsPostCommitBackupCleanupAsWarning(t *testing.T) {
 		return os.RemoveAll(target)
 	}, nil)
 
-	var diagnostics bytes.Buffer
-	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: &diagnostics})
+	writerErr := errors.New("post-commit diagnostics writer failed")
+	writer := &failingBuildWriter{err: writerErr}
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: writer})
 	if err != nil {
-		t.Fatalf("buildWithOptions() error = %v, want committed publication success", err)
+		t.Fatalf("buildWithOptions() error = %v, want committed publication success despite %v", err, writerErr)
 	}
 	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Kind != diag.KindOutputCleanup || !strings.Contains(result.Diagnostics[0].Message, cleanupErr.Error()) {
 		t.Fatalf("result.Diagnostics = %#v, want one output cleanup warning", result.Diagnostics)
 	}
-	if !strings.Contains(diagnostics.String(), cleanupErr.Error()) {
-		t.Fatalf("diagnostics summary = %q, want cleanup warning", diagnostics.String())
+	if writer.calls == 0 {
+		t.Fatal("post-commit cleanup warning was not offered to the diagnostics writer")
 	}
 	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Contains(html, []byte("Version two.")) {
 		t.Fatalf("published alpha page does not contain committed content\n%s", html)
@@ -5009,8 +5093,8 @@ Body.
 `)
 
 	originalReadBuildABISignature := readBuildABISignature
-	readBuildABISignature = func() (string, error) {
-		return "abi-v1", nil
+	readBuildABISignature = func() (buildABIState, error) {
+		return buildABIState{signature: "abi-v1", cacheReusable: true}, nil
 	}
 	defer func() {
 		readBuildABISignature = originalReadBuildABISignature
@@ -5038,8 +5122,8 @@ Body.
 	}
 
 	getRenderedPaths := captureRenderedNotePagePaths(t)
-	readBuildABISignature = func() (string, error) {
-		return "abi-v2", nil
+	readBuildABISignature = func() (buildABIState, error) {
+		return buildABIState{signature: "abi-v2", cacheReusable: true}, nil
 	}
 
 	result, err = buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
@@ -5062,8 +5146,78 @@ Body.
 	}
 }
 
+func TestBuildDisablesCacheReuseWithoutStableProductProvenance(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/guide.md", "# Guide\n\nBody.\n")
+
+	originalReadBuildABISignature := readBuildABISignature
+	readBuildABISignature = func() (buildABIState, error) {
+		return buildABIState{signature: "unversioned-build"}, nil
+	}
+	defer func() {
+		readBuildABISignature = originalReadBuildABISignature
+	}()
+
+	for run := 1; run <= 2; run++ {
+		result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+		if err != nil {
+			t.Fatalf("build %d error = %v", run, err)
+		}
+		if result.NotePages != 1 {
+			t.Fatalf("build %d NotePages = %d, want full render", run, result.NotePages)
+		}
+		if len(result.Diagnostics) != 1 || result.Diagnostics[0].Kind != diag.KindStructuredData || !strings.Contains(result.Diagnostics[0].Message, "cache reuse is disabled") {
+			t.Fatalf("build %d diagnostics = %#v, want cache provenance warning", run, result.Diagnostics)
+		}
+		if _, statErr := os.Stat(filepath.Join(outputPath, filepath.FromSlash(cacheManifestRelPath))); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("build %d cache manifest error = %v, want not-exist", run, statErr)
+		}
+	}
+}
+
+func TestBuildTreatsPreviousManifestVersionAsCompleteMiss(t *testing.T) {
+	t.Parallel()
+
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/guide.md", "# Guide\n\nFresh content.\n")
+	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest := readBuildCacheManifest(t, outputPath)
+	manifest.Version = cacheManifestVersion - 1
+	entry := manifest.Notes["notes/guide.md"]
+	entry.HTMLContent = "<p>stale cached content</p>"
+	manifest.Notes["notes/guide.md"] = entry
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(outputPath, filepath.FromSlash(cacheManifestRelPath)), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.NotePages != 1 {
+		t.Fatalf("result.NotePages = %d, want full cache miss render", result.NotePages)
+	}
+	html := readBuildOutputFile(t, outputPath, "guide/index.html")
+	if !bytes.Contains(html, []byte("Fresh content.")) || bytes.Contains(html, []byte("stale cached content")) {
+		t.Fatalf("previous-version cache content was reused\n%s", html)
+	}
+	if got := readBuildCacheManifest(t, outputPath).Version; got != cacheManifestVersion {
+		t.Fatalf("manifest.Version = %d, want %d", got, cacheManifestVersion)
+	}
+}
+
 func TestBuildTreatsSameVersionPartialManifestAsCompleteMiss(t *testing.T) {
-	for _, missingField := range []string{"pageInputSignature", "managedAssetSignatures", "notePageSignature", "notes.guide.htmlContent"} {
+	for _, missingField := range []string{"pageInputSignature", "notePageSignature", "notes.guide.htmlContent"} {
 		t.Run(missingField, func(t *testing.T) {
 			vaultPath := t.TempDir()
 			outputPath := filepath.Join(t.TempDir(), "site")

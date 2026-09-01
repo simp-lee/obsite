@@ -104,6 +104,23 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 		expectRebuild(func() { writeNativeWatchFile(t, path, data) })
 	}
 
+	obsidianDir := filepath.Join(vault, ".obsidian")
+	expectRebuild(func() {
+		if err := os.RemoveAll(obsidianDir); err != nil {
+			t.Fatal(err)
+		}
+	})
+	incomingObsidianDir := filepath.Join(filepath.Dir(vault), filepath.Base(vault)+"-incoming-obsidian")
+	if err := os.MkdirAll(incomingObsidianDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeNativeWatchFile(t, filepath.Join(incomingObsidianDir, "app.json"), `{"attachmentFolderPath":"one-shot"}`)
+	expectRebuild(func() {
+		if err := os.Rename(incomingObsidianDir, obsidianDir); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	for filePath := range map[string]struct{}{
 		filepath.Join(output, "index.html"):                 {},
 		filepath.Join(vault, "node_modules", "ignored.md"):  {},
