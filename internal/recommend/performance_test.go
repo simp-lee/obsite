@@ -2,6 +2,7 @@ package recommend
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -275,12 +276,14 @@ func parseRelatedFixtureSpecification(value string) (string, int, error) {
 	return kind, count, nil
 }
 
-func readVmHWM() (int64, error) {
+func readVmHWM() (value int64, err error) {
 	file, err := os.Open("/proc/self/status")
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())

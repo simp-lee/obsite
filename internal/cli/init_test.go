@@ -31,7 +31,6 @@ func TestInitCommandDefaultsToCurrentVault(t *testing.T) {
 }
 
 func TestInitCommandWritesStrictBuildableConfig(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", vaultPath})
 	if err != nil {
@@ -65,7 +64,6 @@ func TestInitCommandWritesStrictBuildableConfig(t *testing.T) {
 }
 
 func TestInitCommandRejectsMissingVault(t *testing.T) {
-
 	vaultPath := filepath.Join(t.TempDir(), "missing")
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", vaultPath})
 	if err == nil || !strings.Contains(err.Error(), "no such file") {
@@ -77,7 +75,6 @@ func TestInitCommandRejectsMissingVault(t *testing.T) {
 }
 
 func TestInitCommandRejectsExistingConfigFile(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	if err := os.WriteFile(configPath, []byte("existing"), 0o644); err != nil {

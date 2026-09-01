@@ -10,7 +10,6 @@ import (
 )
 
 func TestExecuteShowsRootHelp(t *testing.T) {
-
 	stdout, stderr, err := executeForTest(t, testCommandDependencies(), nil)
 	if err != nil {
 		t.Fatalf("executeForTest() error = %v", err)
@@ -27,7 +26,6 @@ func TestExecuteShowsRootHelp(t *testing.T) {
 }
 
 func TestExecuteVersionFormsMatch(t *testing.T) {
-
 	var outputs []string
 	for _, args := range [][]string{{"version"}, {"--version"}} {
 		stdout, _, err := executeForTest(t, testCommandDependencies(), args)
@@ -46,7 +44,6 @@ func TestExecuteVersionFormsMatch(t *testing.T) {
 }
 
 func TestExecuteRejectsUnknownCommand(t *testing.T) {
-
 	stdout, stderr, err := executeForTest(t, testCommandDependencies(), []string{"foo"})
 	if err == nil {
 		t.Fatal("executeForTest() error = nil, want unknown command error")

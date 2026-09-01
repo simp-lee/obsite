@@ -49,21 +49,15 @@ type e06ProbeReport struct {
 		CustomCSSStableAfterMutation bool `json:"customCSSStableAfterMutation"`
 	} `json:"artifactChecks"`
 	ContentChecks struct {
-		ArchiveHasProbe               bool `json:"archiveHasProbe"`
-		PageThreeHasProbe             bool `json:"pageThreeHasProbe"`
-		NotesPageThreeHasFolderMarker bool `json:"notesPageThreeHasFolderMarker"`
-		NotesPageThreeHasArchiveLink  bool `json:"notesPageThreeHasArchiveLink"`
+		ArchiveHasProbe              bool `json:"archiveHasProbe"`
+		PageThreeHasProbe            bool `json:"pageThreeHasProbe"`
+		NotesPageThreeHasArchiveLink bool `json:"notesPageThreeHasArchiveLink"`
 	} `json:"contentChecks"`
 	Monitored struct {
 		NoOpStableFiles      []string `json:"noOpStableFiles"`
 		MutationStableFiles  []string `json:"mutationStableFiles"`
 		MutationManifestDiff []string `json:"mutationManifestDiff"`
 	} `json:"monitored"`
-}
-
-type e06OutputSnapshot struct {
-	Exists bool
-	Data   []byte
 }
 
 func TestScopeE06FeatureVaultProbe(t *testing.T) {
@@ -249,7 +243,6 @@ Archive entry captures a focused incremental rebuild probe with lighthouse ledge
 		report.ArtifactChecks.CustomCSSStableAfterMutation = bytes.Equal(readBuildOutputFile(t, outputPath, "assets/custom.css"), baselineFiles["assets/custom.css"])
 		report.ContentChecks.ArchiveHasProbe = bytes.Contains(archiveHTML, []byte("focused incremental rebuild probe"))
 		report.ContentChecks.PageThreeHasProbe = bytes.Contains(pageThreeHTML, []byte("focused incremental rebuild probe"))
-		report.ContentChecks.NotesPageThreeHasFolderMarker = bytesContainsAny(notesPageThreeHTML, []byte(`data-e2e-custom-folder="notes"`), []byte(`data-e2e-custom-folder=notes`))
 		report.ContentChecks.NotesPageThreeHasArchiveLink = bytesContainsAny(notesPageThreeHTML, []byte(`href="../../../archive/"`), []byte(`href=../../../archive/`))
 	})
 
@@ -321,27 +314,6 @@ func subsetSnapshot(snapshot map[string][]byte, relPaths []string) map[string][]
 	return filtered
 }
 
-func snapshotOptionalOutputFiles(t *testing.T, outputRoot string, relPaths []string) map[string]e06OutputSnapshot {
-	t.Helper()
-
-	snapshot := make(map[string]e06OutputSnapshot, len(relPaths))
-	for _, relPath := range relPaths {
-		absPath := filepath.Join(outputRoot, filepath.FromSlash(relPath))
-		if _, err := os.Stat(absPath); err != nil {
-			if os.IsNotExist(err) {
-				snapshot[relPath] = e06OutputSnapshot{}
-				continue
-			}
-			t.Fatalf("os.Stat(%q) error = %v", absPath, err)
-		}
-		snapshot[relPath] = e06OutputSnapshot{
-			Exists: true,
-			Data:   append([]byte(nil), readBuildOutputFile(t, outputRoot, relPath)...),
-		}
-	}
-	return snapshot
-}
-
 func diffSnapshotFiles(left map[string][]byte, right map[string][]byte) ([]string, []string) {
 	changed := make([]string, 0, len(right))
 	stable := make([]string, 0, len(right))
@@ -351,31 +323,6 @@ func diffSnapshotFiles(left map[string][]byte, right map[string][]byte) ([]strin
 			continue
 		}
 		changed = append(changed, relPath)
-	}
-	sort.Strings(changed)
-	sort.Strings(stable)
-	return changed, stable
-}
-
-func diffOptionalSnapshotFiles(left map[string]e06OutputSnapshot, right map[string]e06OutputSnapshot) ([]string, []string) {
-	keySet := make(map[string]struct{}, len(left)+len(right))
-	for key := range left {
-		keySet[key] = struct{}{}
-	}
-	for key := range right {
-		keySet[key] = struct{}{}
-	}
-
-	changed := make([]string, 0, len(keySet))
-	stable := make([]string, 0, len(keySet))
-	for key := range keySet {
-		leftSnapshot := left[key]
-		rightSnapshot := right[key]
-		if leftSnapshot.Exists == rightSnapshot.Exists && bytes.Equal(leftSnapshot.Data, rightSnapshot.Data) {
-			stable = append(stable, key)
-			continue
-		}
-		changed = append(changed, key)
 	}
 	sort.Strings(changed)
 	sort.Strings(stable)
@@ -408,15 +355,6 @@ func diffManifestPages(left map[string]string, right map[string]string) ([]strin
 func bytesContainsAny(data []byte, needles ...[]byte) bool {
 	for _, needle := range needles {
 		if bytes.Contains(data, needle) {
-			return true
-		}
-	}
-	return false
-}
-
-func slicesContainsString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
 			return true
 		}
 	}

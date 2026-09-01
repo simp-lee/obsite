@@ -2,6 +2,7 @@ package build
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -186,12 +187,14 @@ func writeRelatedBenchmarkVault(tb relatedBenchmarkTB, vaultPath string, fixture
 	}
 }
 
-func readBuildVmHWM() (int64, error) {
+func readBuildVmHWM() (value int64, err error) {
 	file, err := os.Open("/proc/self/status")
 	if err != nil {
 		return 0, err
 	}
-	defer file.Close()
+	defer func() {
+		err = errors.Join(err, file.Close())
+	}()
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())

@@ -38,7 +38,6 @@ func TestServeCommandDefaultsToCurrentVaultPublicOutput(t *testing.T) {
 }
 
 func TestServeCommandUsesServerDefaultPortWhenOmitted(t *testing.T) {
-
 	outputPath := filepath.Join(t.TempDir(), "site")
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
@@ -66,7 +65,6 @@ func TestServeCommandUsesServerDefaultPortWhenOmitted(t *testing.T) {
 }
 
 func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(t.TempDir(), "site")
@@ -146,7 +144,6 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 }
 
 func TestServeCommandPassesExplicitPortToPreviewServer(t *testing.T) {
-
 	outputPath := filepath.Join(t.TempDir(), "site")
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
@@ -180,7 +177,6 @@ func TestServeCommandPassesExplicitPortToPreviewServer(t *testing.T) {
 }
 
 func TestServeCommandPropagatesListenFailure(t *testing.T) {
-
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{listenErr: errors.New("bind failed")}
 	deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
@@ -200,7 +196,6 @@ func TestServeCommandPropagatesListenFailure(t *testing.T) {
 }
 
 func TestServeCommandDoesNotEnableLiveReloadWithoutWatch(t *testing.T) {
-
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
 	deps.newPreviewServer = func(outputPath string, port int) (previewServer, error) {
@@ -217,7 +212,6 @@ func TestServeCommandDoesNotEnableLiveReloadWithoutWatch(t *testing.T) {
 }
 
 func TestServeCommandRejectsRemovedFlags(t *testing.T) {
-
 	for _, flag := range []string{"--config=other.yaml", "--theme=feature"} {
 		_, _, err := executeForTest(t, testCommandDependencies(), []string{"serve", flag})
 		if err == nil || !strings.Contains(err.Error(), "unknown flag") {
@@ -267,7 +261,6 @@ func TestServeCommandWatchDefaultsToCurrentVaultAndPublicOutput(t *testing.T) {
 }
 
 func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	if err := os.WriteFile(configPath, []byte("title: ignored\nbaseURL: https://example.com\n"), 0o644); err != nil {
@@ -335,7 +328,6 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 }
 
 func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(t.TempDir(), "site")
@@ -414,7 +406,6 @@ func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 }
 
 func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "alpha.md")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -489,7 +480,6 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 }
 
 func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {
-
 	tests := []struct {
 		name          string
 		op            fsnotify.Op
@@ -594,7 +584,6 @@ func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {
 }
 
 func TestStartServeWatchLoopTreatsMissingPathChmodAsRemove(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "guide.md")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
@@ -646,7 +635,6 @@ func TestStartServeWatchLoopTreatsMissingPathChmodAsRemove(t *testing.T) {
 }
 
 func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "guide.md")
 	yamlPath := filepath.Join(vaultPath, "notes", "frontmatter.yaml")
@@ -705,7 +693,6 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 }
 
 func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFile(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	attachmentPath := filepath.Join(vaultPath, "files", "manual.pdf")
 	customCSSPath := filepath.Join(vaultPath, "custom.css")
@@ -818,7 +805,6 @@ func TestStartServeWatchLoopRebuildsForAttachmentsVaultCustomCSSAndExtraWatchFil
 }
 
 func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
@@ -905,7 +891,6 @@ func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuild(t *
 }
 
 func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFromOneShotDeepCreation(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
@@ -988,7 +973,6 @@ func TestStartServeWatchLoopRecoversExternalExtraWatchFileAfterFailedRebuildFrom
 }
 
 func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalInputs(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(vaultPath, "public")
 	if err := os.MkdirAll(outputPath, 0o755); err != nil {
@@ -1020,7 +1004,6 @@ func TestServeWatchDirsForInputsRejectFilesystemRootRecoveryForMissingExternalIn
 }
 
 func TestStartServeWatchLoopReportsWatcherCloseErrors(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	rootNotePath := filepath.Join(vaultPath, "root-note.md")
@@ -1235,14 +1218,6 @@ func (w *fakeFileWatcher) isWatchingPath(path string) bool {
 	}
 
 	return false
-}
-
-func (w *fakeFileWatcher) hasActiveWatch(path string) bool {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-
-	_, ok := w.active[filepath.Clean(path)]
-	return ok
 }
 
 type lockedBuffer struct {

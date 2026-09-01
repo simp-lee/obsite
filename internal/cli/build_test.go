@@ -37,7 +37,6 @@ func TestBuildCommandDefaultsToCurrentVaultAndPublicOutput(t *testing.T) {
 }
 
 func TestBuildCommandLoadsOnlyResolvedVaultAndCallsBuild(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 	writeCLIConfig(t, vaultPath)
@@ -98,7 +97,6 @@ func TestBuildCommandDefaultOutputUsesResolvedVault(t *testing.T) {
 }
 
 func TestBuildCommandRejectsRemovedConfigAndThemeFlags(t *testing.T) {
-
 	for _, tt := range []struct {
 		name string
 		args []string
@@ -120,7 +118,6 @@ func TestBuildCommandRejectsRemovedConfigAndThemeFlags(t *testing.T) {
 }
 
 func TestBuildCommandReturnsVaultPathErrorBeforeConfigRead(t *testing.T) {
-
 	vaultPath := filepath.Join(t.TempDir(), "not-a-directory")
 	if err := os.WriteFile(vaultPath, []byte("content"), 0o644); err != nil {
 		t.Fatal(err)
@@ -132,7 +129,6 @@ func TestBuildCommandReturnsVaultPathErrorBeforeConfigRead(t *testing.T) {
 }
 
 func TestBuildCommandPropagatesBuildFailureAndForce(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	writeCLIConfig(t, vaultPath)
 	deps := testCommandDependencies()
@@ -152,7 +148,6 @@ func TestBuildCommandPropagatesBuildFailureAndForce(t *testing.T) {
 }
 
 func TestBuildCommandRoutesRealBuildWarningsToInjectedStderr(t *testing.T) {
-
 	vaultPath := t.TempDir()
 	outputPath := filepath.Join(t.TempDir(), "site")
 	writeCLIConfig(t, vaultPath)

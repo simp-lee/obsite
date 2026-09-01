@@ -94,7 +94,7 @@ func newSegmenter(simplified string, traditional string, stopwords string) (*Seg
 		return nil, err
 	}
 	if dict.totalFrequency <= 0 {
-		return nil, errors.New("Chinese dictionary has no usable entries")
+		return nil, errors.New("chinese dictionary has no usable entries")
 	}
 
 	return &Segmenter{
@@ -111,7 +111,7 @@ func (d *dictionary) load(data string) error {
 			continue
 		}
 		if len(fields) < 2 {
-			return errors.New("Chinese dictionary entry is missing frequency")
+			return errors.New("chinese dictionary entry is missing frequency")
 		}
 
 		frequency, err := strconv.ParseFloat(fields[1], 64)
