@@ -1,0 +1,170 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: 1.26.2
+  NODE_VERSION: 24.14.1
+  GORELEASER_VERSION: v2.18.0
+
+jobs:
+  validate-tag:
+    name: Validate release tag
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require canonical semantic version tag
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [[ ! "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "release tag must match vX.Y.Z without leading zeros: $TAG" >&2
+            exit 1
+          fi
+
+  go:
+    name: Go, format, lint, and race
+    needs: validate-tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Install pinned Go verification tools
+        run: |
+          go install golang.org/x/tools/cmd/goimports@v0.44.0
+          go install mvdan.cc/gofumpt@v0.9.2
+          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.11.4
+      - name: Check workflow syntax
+        run: scripts/actionlint.sh .github/workflows/*.yml
+      - run: make fmt-check
+      - run: make lint
+      - run: go test ./...
+      - name: Race test
+        run: go test -race ./internal/cli ./internal/build ./internal/render ./internal/server ./internal/recommend/... ./internal/vault ./internal/link
+
+  browser:
+    name: Fixed Chromium offline E2E
+    needs: validate-tag
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - run: npm ci
+      - name: Install lockfile-pinned Chromium
+        run: npx --no-install playwright install --with-deps chromium
+      - run: npm run test:e2e
+
+  native-smoke:
+    name: Native release smoke (${{ matrix.name }})
+    needs: validate-tag
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux
+            runner: ubuntu-24.04
+          - name: macOS
+            runner: macos-15
+          - name: Windows
+            runner: windows-2025
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build native release binary
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: build --clean --single-target
+      - name: Smoke init, build, and serve
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          binary=$(find dist -type f -name obsite | head -n 1)
+          test -n "$binary"
+          scripts/smoke-release.sh "$binary"
+      - name: Smoke init, build, and serve
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $binary = (Get-ChildItem -Path dist -Recurse -Filter obsite.exe | Select-Object -First 1).FullName
+          if (-not $binary) { throw 'native release binary not found' }
+          ./scripts/smoke-release.ps1 -Binary $binary
+
+  release-artifacts:
+    name: Verify formal release artifacts
+    needs:
+      - go
+      - browser
+      - native-smoke
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+      - name: Build without publishing
+        uses: goreleaser/goreleaser-action@e435ccd777264be153ace6237001ef4d979d3a7a # v6.4.0
+        with:
+          distribution: goreleaser
+          version: ${{ env.GORELEASER_VERSION }}
+          args: release --clean --skip=publish
+      - name: Verify release artifacts
+        run: sh scripts/verify-release.sh dist
+      - name: Retain verified release files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-files
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: release-artifacts
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release files
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-files
+          path: dist
+      - name: Publish immutable verified files
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          token: ${{ secrets.GITHUB_TOKEN }}
