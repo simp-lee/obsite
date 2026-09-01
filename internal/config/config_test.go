@@ -157,6 +157,10 @@ func TestLoadForBuildValidatesRequiredAndBoundedValues(t *testing.T) {
 		{name: "timeline traversal", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: ../outside", want: "timeline.path"},
 		{name: "timeline query", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes?draft=1", want: "timeline.path"},
 		{name: "timeline fragment", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes#draft", want: "timeline.path"},
+		{name: "timeline URI scheme", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: archive:2026", want: "timeline.path"},
+		{name: "timeline non-portable character", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes/archive*", want: "timeline.path"},
+		{name: "timeline reserved component", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: CON", want: "timeline.path"},
+		{name: "timeline trailing dot", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes/archive.", want: "timeline.path"},
 	}
 
 	for _, tt := range tests {

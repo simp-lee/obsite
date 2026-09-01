@@ -8,10 +8,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/simp-lee/obsite/internal/render"
 	xhtml "golang.org/x/net/html"
 )
 
@@ -190,6 +192,38 @@ func TestBuildDefaultImageRespectsReservedAssetDestination(t *testing.T) {
 	}
 	if got := metaContent(t, readBuildOutputFile(t, outputPath, "alpha/index.html"), "property", "og:image"); !strings.HasSuffix(got, asset.DstPath) {
 		t.Fatalf("og:image = %q, want final reserved-collision path %q", got, asset.DstPath)
+	}
+}
+
+func TestBuildPreservesPublishedSiteWhenDefaultImageDisappearsDuringStaging(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	imagePath := filepath.Join(vaultPath, "images", "hero.png")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n")
+	writeBuildTestFile(t, vaultPath, "images/hero.png", "hero-image")
+	cfg := testBuildSiteConfig()
+	cfg.DefaultImg = "images/hero.png"
+
+	if _, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotThemeTestOutput(t, outputPath)
+
+	var removeErr error
+	_, err := buildWithOptions(cfg, vaultPath, outputPath, buildOptions{
+		force: true,
+		testNotePageHook: func(render.NotePageInput) {
+			removeErr = os.Remove(imagePath)
+		},
+	})
+	if removeErr != nil {
+		t.Fatalf("remove default image during staging: %v", removeErr)
+	}
+	if err == nil || !strings.Contains(err.Error(), "defaultImg") {
+		t.Fatalf("buildWithOptions() error = %v, want required defaultImg publication failure", err)
+	}
+	if after := snapshotThemeTestOutput(t, outputPath); !reflect.DeepEqual(after, before) {
+		t.Fatal("failed defaultImg rebuild changed the previously published site")
 	}
 }
 

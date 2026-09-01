@@ -4,9 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 
@@ -367,49 +367,48 @@ func assertCachedUnresolvedAssetDiagnosticContains(t *testing.T, entry cacheMani
 	}
 }
 
-func TestBuildABISourceSignatureIgnoresStylesheetAssetsAndTracksGoSources(t *testing.T) {
+func TestBuildABISignatureUsesTargetNeutralProductIdentity(t *testing.T) {
 	t.Parallel()
 
-	repoRoot := t.TempDir()
-	write := func(relPath string, contents string) {
-		t.Helper()
-
-		absPath := filepath.Join(repoRoot, filepath.FromSlash(relPath))
-		if err := os.MkdirAll(filepath.Dir(absPath), 0o755); err != nil {
-			t.Fatalf("os.MkdirAll(%q) error = %v", filepath.Dir(absPath), err)
-		}
-		if err := os.WriteFile(absPath, []byte(contents), 0o644); err != nil {
-			t.Fatalf("os.WriteFile(%q) error = %v", absPath, err)
-		}
+	baselineInfo := &debug.BuildInfo{
+		Main: debug.Module{Path: "github.com/simp-lee/obsite", Version: "v1.2.3", Sum: "h1:product"},
+		Settings: []debug.BuildSetting{
+			{Key: "GOOS", Value: "linux"},
+			{Key: "GOARCH", Value: "amd64"},
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+			{Key: "vcs.modified", Value: "false"},
+		},
 	}
-
-	write("go.mod", "module example.com/obsite\n\ngo 1.24.0\n")
-	write("internal/render/render.go", "package render\n\nconst buildABITest = 1\n")
-	write("internal/render/site/style.css", "body { color: black; }\n")
-
-	baseline, err := buildABISourceSignatureFromRoot(repoRoot)
-	if err != nil {
-		t.Fatalf("buildABISourceSignatureFromRoot() baseline error = %v", err)
-	}
+	baseline := buildABISignature(baselineInfo)
 	if baseline == "" {
-		t.Fatal("buildABISourceSignatureFromRoot() = empty baseline signature")
+		t.Fatal("buildABISignature() = empty")
 	}
 
-	write("internal/render/site/style.css", "body { color: white; }\n")
-	styleOnly, err := buildABISourceSignatureFromRoot(repoRoot)
-	if err != nil {
-		t.Fatalf("buildABISourceSignatureFromRoot() style-only error = %v", err)
+	targetVariant := &debug.BuildInfo{
+		GoVersion: "go1.27.0",
+		Main:      baselineInfo.Main,
+		Settings: []debug.BuildSetting{
+			{Key: "GOARCH", Value: "arm64"},
+			{Key: "GOOS", Value: "windows"},
+			{Key: "CGO_ENABLED", Value: "0"},
+			{Key: "vcs.modified", Value: "true"},
+			{Key: "vcs.revision", Value: "0123456789abcdef"},
+		},
 	}
-	if styleOnly != baseline {
-		t.Fatalf("buildABISourceSignatureFromRoot() style-only signature = %q, want %q", styleOnly, baseline)
+	if got := buildABISignature(targetVariant); got != baseline {
+		t.Fatalf("target-variant build ABI signature = %q, want target-neutral %q", got, baseline)
 	}
 
-	write("internal/render/render.go", "package render\n\nconst buildABITest = 2\n")
-	codeChanged, err := buildABISourceSignatureFromRoot(repoRoot)
-	if err != nil {
-		t.Fatalf("buildABISourceSignatureFromRoot() code-change error = %v", err)
+	versionVariant := *baselineInfo
+	versionVariant.Main.Version = "v1.2.4"
+	if got := buildABISignature(&versionVariant); got == baseline {
+		t.Fatal("build ABI signature did not change with product version")
 	}
-	if codeChanged == baseline {
-		t.Fatal("buildABISourceSignatureFromRoot() did not change after Go source changed")
+
+	revisionVariant := *baselineInfo
+	revisionVariant.Settings = append([]debug.BuildSetting(nil), baselineInfo.Settings...)
+	revisionVariant.Settings[2].Value = "fedcba9876543210"
+	if got := buildABISignature(&revisionVariant); got == baseline {
+		t.Fatal("build ABI signature did not change with product revision")
 	}
 }

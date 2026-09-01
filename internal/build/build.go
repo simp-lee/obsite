@@ -121,6 +121,7 @@ type stagedOutputPublisher struct {
 	committed            bool
 	publicationAttempted bool
 	publicationSource    os.FileInfo
+	cleanupErr           error
 }
 
 var (
@@ -360,20 +361,15 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 				err = errors.Join(err, finalizeErr)
 			}
 		}
+		if publisher.cleanupErr != nil {
+			diagnostics.Warningf(diag.KindOutputCleanup, diag.Location{}, "%v", publisher.cleanupErr)
+		}
 	}()
 
 	notePageSignature := buildNotePageConfigSignature(cfg)
-	disableCacheReuse := false
 	buildABISignature, err := readBuildABISignature()
 	if err != nil {
-		var abiSourceErr *buildABISourceSignatureUnavailableError
-		if !errors.As(err, &abiSourceErr) {
-			return result, fmt.Errorf("compute build ABI signature: %w", err)
-		}
-
-		disableCacheReuse = true
-		buildABISignature = abiSourceErr.fallbackSignature
-		warnBuildABISourceSignatureFailure(diagnostics, abiSourceErr)
+		return result, fmt.Errorf("compute build ABI signature: %w", err)
 	}
 	templateSignature, err := buildEmbeddedTemplateSignature()
 	if err != nil {
@@ -382,7 +378,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	pageInputSignature := buildPageInputSignature(cfg)
 
 	var previousManifest *CacheManifest
-	if !options.force && !disableCacheReuse {
+	if !options.force {
 		loadedManifest, loadErr := loadCacheManifest(previousOutputPath)
 		if loadErr == nil {
 			previousManifest = loadedManifest
@@ -390,7 +386,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 			warnCacheManifestLoadFailure(diagnostics, loadErr)
 		}
 	}
-	noteFullDirty := options.force || disableCacheReuse || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature
+	noteFullDirty := options.force || previousManifest == nil || previousManifest.BuildABISignature != buildABISignature
 	pageFullDirty := noteFullDirty || previousManifest.TemplateSignature != templateSignature || previousManifest.PageInputSignature != pageInputSignature
 
 	scanResult, err := vault.ScanWithOptions(normalizedVaultPath, vault.ScanOptions{OutputPath: normalizedOutputPath})
@@ -559,7 +555,7 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	siteLastModified := siteLastModified(allPublicNotes(idx))
 	mergedAssets := mergeBuildAssets(idx.Assets, noteStatesByPath)
 	writeStyleCSS := true
-	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, theme, writeStyleCSS, !disableCacheReuse); err != nil {
+	if err := validateOutputDestinations(cfg, idx, folderPages, mergedAssets, theme, writeStyleCSS, true); err != nil {
 		return result, fmt.Errorf("plan generated output: %w", err)
 	}
 	stagingOutputPath := publisher.OutputPath()
@@ -658,6 +654,9 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 	if err := internalasset.CopyAssetsWithReservedPaths(scanResult.VaultPath, stagingOutputPath, mergedAssets, diagnostics, reservedAssetOutputPaths); err != nil {
 		return result, fmt.Errorf("copy assets: %w", err)
 	}
+	if err := requirePublishedDefaultImage(stagingOutputPath, defaultImageSource, cfg.DefaultImg); err != nil {
+		return result, err
+	}
 
 	sitemapXML, err := seo.BuildSitemap(sitemapPages)
 	if err != nil {
@@ -681,15 +680,13 @@ func buildWithOptions(cfg model.SiteConfig, vaultPath string, outputPath string,
 		}
 	}
 
-	if !disableCacheReuse {
-		managedAssetSignatures, err := buildManagedAssetSignatures(stagingOutputPath, cfg, theme)
-		if err != nil {
-			return result, err
-		}
-		manifest := buildCacheManifest(buildABISignature, notePageSignature, templateSignature, pageInputSignature, cfg.DefaultImg, managedAssetSignatures, noteStatesByPath, pageSignatures)
-		if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
-			return result, err
-		}
+	managedAssetSignatures, err := buildManagedAssetSignatures(stagingOutputPath, cfg, theme)
+	if err != nil {
+		return result, err
+	}
+	manifest := buildCacheManifest(buildABISignature, notePageSignature, templateSignature, pageInputSignature, cfg.DefaultImg, managedAssetSignatures, noteStatesByPath, pageSignatures)
+	if err := writeCacheManifest(stagingOutputPath, manifest); err != nil {
+		return result, err
 	}
 
 	return result, nil
@@ -704,6 +701,19 @@ func normalizeBuildOptions(options buildOptions) buildOptions {
 		options.minifier = newSiteMinifier()
 	}
 	return options
+}
+
+func requirePublishedDefaultImage(outputRoot string, sourcePath string, destinationPath string) error {
+	if strings.TrimSpace(sourcePath) == "" {
+		return nil
+	}
+	if strings.TrimSpace(destinationPath) == "" {
+		return fmt.Errorf("publish defaultImg %q: output destination is empty", sourcePath)
+	}
+	if _, _, err := internalfsutil.InspectContainedRegularFile(outputRoot, filepath.FromSlash(destinationPath)); err != nil {
+		return fmt.Errorf("publish defaultImg %q as %q: %w", sourcePath, destinationPath, err)
+	}
+	return nil
 }
 
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
@@ -861,7 +871,8 @@ func (publisher *stagedOutputPublisher) publish() error {
 	publisher.committed = true
 	if publisher.backupPath != "" {
 		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
-			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
+			publisher.cleanupErr = fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
+			return nil
 		}
 		publisher.backupPath = ""
 	}
@@ -1064,10 +1075,12 @@ func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
 	}
 	state.empty = len(entries) == 0
 	for _, entry := range entries {
-		if entry.Name() == managedOutputMarkerFilename {
-			state.hasMarker = true
-			break
+		if entry.Name() != managedOutputMarkerFilename {
+			continue
 		}
+		_, markerData, _, markerErr := internalfsutil.ReadContainedRegularFile(outputPath, managedOutputMarkerFilename)
+		state.hasMarker = markerErr == nil && string(markerData) == managedOutputMarkerContents
+		break
 	}
 
 	return state, nil

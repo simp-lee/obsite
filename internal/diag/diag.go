@@ -23,6 +23,7 @@ const (
 	KindStructuredData    Kind = "structured_data"
 	KindUnsupportedSyntax Kind = "unsupported_syntax"
 	KindUnresolvedAsset   Kind = "unresolved_asset"
+	KindOutputCleanup     Kind = "output_cleanup"
 )
 
 // Location pinpoints the source of a diagnostic in a vault file.

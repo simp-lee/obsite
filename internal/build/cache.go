@@ -8,11 +8,9 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"io/fs"
 	"math"
 	"os"
 	"path/filepath"
-	"runtime"
 	"runtime/debug"
 	"sort"
 	"strconv"
@@ -32,9 +30,10 @@ import (
 const (
 	cacheManifestDir             = ".obsite-cache"
 	cacheManifestRelPath         = cacheManifestDir + "/manifest.json"
-	cacheManifestVersion         = 6
+	cacheManifestVersion         = 7
 	defaultTemplateSigKey        = "default"
-	cacheSignatureSaltKey        = "phase-21-step-50"
+	cacheSignatureSaltKey        = "obsite-cache-signature-v1"
+	buildCacheABIKey             = "obsite-build-cache-abi-v1"
 	derivedSignatureKeyBacklinks = "backlinks"
 	derivedSignatureKeyRelated   = "related"
 )
@@ -43,31 +42,7 @@ var listTemplateAssetsForSignature = internalrender.EmbeddedTemplateAssetNames
 
 var readDefaultTemplateAssetForSignature = internalrender.ReadEmbeddedTemplateAsset
 
-var readBuildABISourceSignature = buildABISourceSignature
-
 var readBuildABISignature = sync.OnceValues(computeBuildABISignature)
-
-type buildABISourceSignatureUnavailableError struct {
-	cause             error
-	fallbackSignature string
-}
-
-func (err *buildABISourceSignatureUnavailableError) Error() string {
-	if err == nil {
-		return ""
-	}
-	if err.cause == nil {
-		return "build ABI source signature unavailable"
-	}
-	return fmt.Sprintf("build ABI source signature unavailable: %v", err.cause)
-}
-
-func (err *buildABISourceSignatureUnavailableError) Unwrap() error {
-	if err == nil {
-		return nil
-	}
-	return err.cause
-}
 
 func templateAssetNamesForCacheSignature() []string {
 	names := listTemplateAssetsForSignature()
@@ -182,19 +157,6 @@ func warnCacheManifestLoadFailure(collector *diag.Collector, loadErr error) {
 	)
 }
 
-func warnBuildABISourceSignatureFailure(collector *diag.Collector, signatureErr error) {
-	if collector == nil || signatureErr == nil {
-		return
-	}
-
-	collector.Warningf(
-		diag.KindStructuredData,
-		diag.Location{Path: cacheManifestRelPath},
-		"build ABI source signature could not be collected (%v); disabling incremental cache reuse and forcing a full rebuild for this run",
-		signatureErr,
-	)
-}
-
 func writeCacheManifest(outputRoot string, manifest *CacheManifest) error {
 	if manifest == nil {
 		return nil
@@ -292,153 +254,33 @@ func buildEmbeddedTemplateSignature() (string, error) {
 }
 
 func computeBuildABISignature() (string, error) {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		info = nil
+	}
+	return buildABISignature(info), nil
+}
+
+func buildABISignature(info *debug.BuildInfo) string {
 	hasher := newCacheSignatureHasher("build-abi")
-	cacheHashWriteString(hasher, runtime.Version())
-
-	if info, ok := debug.ReadBuildInfo(); ok && info != nil {
-		cacheHashWriteString(hasher, info.String())
+	cacheHashWriteString(hasher, buildCacheABIKey)
+	if info == nil {
+		return hex.EncodeToString(hasher.Sum(nil))
 	}
 
-	sourceSignature, ok, err := readBuildABISourceSignature()
-	if err != nil {
-		fallbackSignature := hex.EncodeToString(hasher.Sum(nil))
-		return fallbackSignature, &buildABISourceSignatureUnavailableError{
-			cause:             err,
-			fallbackSignature: fallbackSignature,
+	cacheHashWriteString(hasher, info.Main.Path)
+	cacheHashWriteString(hasher, info.Main.Version)
+	cacheHashWriteString(hasher, info.Main.Sum)
+	revision := ""
+	for _, setting := range info.Settings {
+		if setting.Key == "vcs.revision" {
+			revision = setting.Value
+			break
 		}
 	}
-	if ok {
-		cacheHashWriteString(hasher, sourceSignature)
-	}
-
-	return hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func buildABISourceSignature() (string, bool, error) {
-	repoRoot, ok := buildABISourceRoot()
-	if !ok {
-		return "", false, nil
-	}
-
-	signature, err := buildABISourceSignatureFromRoot(repoRoot)
-	if err != nil {
-		return "", false, err
-	}
-	if strings.TrimSpace(signature) == "" {
-		return "", false, nil
-	}
-
-	return signature, true, nil
-}
-
-func buildABISourceRoot() (string, bool) {
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return "", false
-	}
-
-	candidates := []string{file}
-	if !filepath.IsAbs(file) {
-		if cwd, err := os.Getwd(); err == nil {
-			candidates = append(candidates, filepath.Join(cwd, file))
-		}
-	}
-
-	for _, candidate := range candidates {
-		repoRoot := filepath.Clean(filepath.Join(filepath.Dir(candidate), "..", ".."))
-		info, err := os.Stat(filepath.Join(repoRoot, "go.mod"))
-		if err == nil && !info.IsDir() {
-			return repoRoot, true
-		}
-	}
-
-	return "", false
-}
-
-func buildABISourceSignatureFromRoot(repoRoot string) (string, error) {
-	files, err := collectBuildABISourceFiles(repoRoot)
-	if err != nil {
-		return "", err
-	}
-	if len(files) == 0 {
-		return "", nil
-	}
-
-	hasher := newCacheSignatureHasher("build-abi-source")
-	for _, relPath := range files {
-		cacheHashWriteString(hasher, relPath)
-
-		data, err := os.ReadFile(filepath.Join(repoRoot, filepath.FromSlash(relPath)))
-		if err != nil {
-			return "", fmt.Errorf("read build ABI source %q: %w", relPath, err)
-		}
-		cacheHashWriteString(hasher, string(data))
-	}
-
-	return hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func collectBuildABISourceFiles(repoRoot string) ([]string, error) {
-	repoRoot = strings.TrimSpace(repoRoot)
-	if repoRoot == "" {
-		return nil, nil
-	}
-
-	files := make([]string, 0, 128)
-	for _, relDir := range []string{"cmd", "internal"} {
-		absDir := filepath.Join(repoRoot, relDir)
-		info, err := os.Stat(absDir)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("stat build ABI dir %q: %w", relDir, err)
-		}
-		if !info.IsDir() {
-			continue
-		}
-
-		if err := filepath.WalkDir(absDir, func(currentPath string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if entry.IsDir() {
-				return nil
-			}
-
-			name := entry.Name()
-			if filepath.Ext(name) != ".go" || strings.HasSuffix(name, "_test.go") {
-				return nil
-			}
-
-			relPath, err := filepath.Rel(repoRoot, currentPath)
-			if err != nil {
-				return err
-			}
-			files = append(files, filepath.ToSlash(relPath))
-			return nil
-		}); err != nil {
-			return nil, fmt.Errorf("walk build ABI dir %q: %w", relDir, err)
-		}
-	}
-
-	for _, relPath := range []string{"go.mod", "go.sum", "go.work"} {
-		info, err := os.Stat(filepath.Join(repoRoot, relPath))
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				continue
-			}
-			return nil, fmt.Errorf("stat build ABI file %q: %w", relPath, err)
-		}
-		if info.IsDir() {
-			continue
-		}
-
-		files = append(files, relPath)
-	}
-
-	sort.Strings(files)
-	return files, nil
+	cacheHashWriteString(hasher, "vcs.revision")
+	cacheHashWriteString(hasher, revision)
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func cachePageSiteConfig(cfg model.SiteConfig) model.SiteConfig {

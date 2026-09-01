@@ -351,7 +351,33 @@ func normalizeTimelinePath(raw string) (string, error) {
 	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
 		return "", fmt.Errorf("timeline.path must stay within the generated site")
 	}
+	if !isPortableSitePath(cleaned) {
+		return "", fmt.Errorf("timeline.path must use portable site path components")
+	}
 	return cleaned, nil
+}
+
+func isPortableSitePath(value string) bool {
+	for component := range strings.SplitSeq(value, "/") {
+		if component == "" || strings.ContainsAny(component, `<>:"|*`) || strings.TrimRight(component, " .") != component {
+			return false
+		}
+		for _, character := range component {
+			if character < 0x20 || character == 0x7f {
+				return false
+			}
+		}
+
+		base := component
+		if dot := strings.IndexByte(base, '.'); dot >= 0 {
+			base = base[:dot]
+		}
+		switch strings.ToUpper(base) {
+		case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+			return false
+		}
+	}
+	return true
 }
 
 func hasWindowsDrivePrefix(raw string) bool {

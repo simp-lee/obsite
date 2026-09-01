@@ -3596,8 +3596,11 @@ func TestStagedOutputPublisherKeepsCommittedSiteWhenPartialBackupCleanupFails(t 
 	)
 
 	err := publisher.Finalize(true)
-	if !errors.Is(err, cleanupErr) {
-		t.Fatalf("Finalize() error = %v, want %v", err, cleanupErr)
+	if err != nil {
+		t.Fatalf("Finalize() error = %v, want committed publication success", err)
+	}
+	if !errors.Is(publisher.cleanupErr, cleanupErr) {
+		t.Fatalf("publisher.cleanupErr = %v, want %v", publisher.cleanupErr, cleanupErr)
 	}
 	if renameCalls != 2 {
 		t.Fatalf("rename calls = %d, want committed old->backup and stage->output only", renameCalls)
@@ -3611,6 +3614,40 @@ func TestStagedOutputPublisherKeepsCommittedSiteWhenPartialBackupCleanupFails(t 
 	matches, globErr := filepath.Glob(filepath.Join(filepath.Dir(outputPath), managedOutputTempPattern(outputPath, "backup")))
 	if globErr != nil || len(matches) != 1 {
 		t.Fatalf("partial obsolete backup paths = %#v, %v; want one retained cleanup artifact", matches, globErr)
+	}
+}
+
+func TestBuildReportsPostCommitBackupCleanupAsWarning(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(t.TempDir(), "site")
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion one.\n")
+	if _, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard}); err != nil {
+		t.Fatal(err)
+	}
+	writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n\nVersion two.\n")
+
+	cleanupErr := errors.New("partial backup cleanup failed")
+	overrideStagedOutputFileOps(t, nil, func(target string) error {
+		if strings.Contains(filepath.Base(target), "-obsite-backup-") {
+			_ = os.Remove(filepath.Join(target, "index.html"))
+			return cleanupErr
+		}
+		return os.RemoveAll(target)
+	}, nil)
+
+	var diagnostics bytes.Buffer
+	result, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: &diagnostics})
+	if err != nil {
+		t.Fatalf("buildWithOptions() error = %v, want committed publication success", err)
+	}
+	if len(result.Diagnostics) != 1 || result.Diagnostics[0].Kind != diag.KindOutputCleanup || !strings.Contains(result.Diagnostics[0].Message, cleanupErr.Error()) {
+		t.Fatalf("result.Diagnostics = %#v, want one output cleanup warning", result.Diagnostics)
+	}
+	if !strings.Contains(diagnostics.String(), cleanupErr.Error()) {
+		t.Fatalf("diagnostics summary = %q, want cleanup warning", diagnostics.String())
+	}
+	if html := readBuildOutputFile(t, outputPath, "alpha/index.html"); !bytes.Contains(html, []byte("Version two.")) {
+		t.Fatalf("published alpha page does not contain committed content\n%s", html)
 	}
 }
 
@@ -4164,6 +4201,70 @@ Body.
 		t.Fatalf("os.ReadFile(notes/alpha.md) error = %v, want source note preserved", readErr)
 	} else if !bytes.Contains(got, []byte("title: Alpha")) {
 		t.Fatalf("notes/alpha.md = %q, want preserved source note content", got)
+	}
+}
+
+func TestBuildRejectsMalformedManagedOutputMarkers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		setup func(t *testing.T, outputPath string)
+	}{
+		{
+			name: "wrong contents",
+			setup: func(t *testing.T, outputPath string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(outputPath, managedOutputMarkerFilename), []byte("not managed by obsite\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "directory",
+			setup: func(t *testing.T, outputPath string) {
+				t.Helper()
+				if err := os.Mkdir(filepath.Join(outputPath, managedOutputMarkerFilename), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "symbolic link",
+			setup: func(t *testing.T, outputPath string) {
+				t.Helper()
+				targetPath := filepath.Join(t.TempDir(), "marker")
+				if err := os.WriteFile(targetPath, []byte(managedOutputMarkerContents), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(targetPath, filepath.Join(outputPath, managedOutputMarkerFilename)); err != nil {
+					t.Skipf("symlink creation is unavailable: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			outputPath := filepath.Join(t.TempDir(), "site")
+			writeBuildTestFile(t, vaultPath, "notes/alpha.md", "# Alpha\n")
+			if err := os.MkdirAll(outputPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(outputPath, "sentinel.txt"), []byte("preserve me"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			tt.setup(t, outputPath)
+
+			_, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: io.Discard})
+			if err == nil || !strings.Contains(err.Error(), "unmanaged content") {
+				t.Fatalf("buildWithOptions() error = %v, want unmanaged output rejection", err)
+			}
+			if got := string(readBuildOutputFile(t, outputPath, "sentinel.txt")); got != "preserve me" {
+				t.Fatalf("sentinel content = %q, want preserved unmanaged content", got)
+			}
+		})
 	}
 }
 
@@ -4958,78 +5059,6 @@ Body.
 	}
 	if manifest.BuildABISignature != "abi-v2" {
 		t.Fatalf("manifest.BuildABISignature = %q, want %q", manifest.BuildABISignature, "abi-v2")
-	}
-}
-
-func TestBuildDisablesCacheReuseWhenBuildABISourceSignatureFails(t *testing.T) {
-	vaultPath := t.TempDir()
-	outputPath := filepath.Join(t.TempDir(), "site")
-
-	writeBuildTestFile(t, vaultPath, "notes/guide.md", `---
-title: Guide
----
-# Guide
-
-Body.
-`)
-
-	originalReadBuildABISignature := readBuildABISignature
-	originalReadBuildABISourceSignature := readBuildABISourceSignature
-	readBuildABISourceSignature = func() (string, bool, error) {
-		return "", false, errors.New("walk build ABI dir \"internal\": permission denied")
-	}
-	readBuildABISignature = computeBuildABISignature
-	defer func() {
-		readBuildABISourceSignature = originalReadBuildABISourceSignature
-		readBuildABISignature = originalReadBuildABISignature
-	}()
-
-	var firstDiagnostics bytes.Buffer
-	firstResult, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: &firstDiagnostics})
-	if err != nil {
-		t.Fatalf("first buildWithOptions() error = %v", err)
-	}
-	if firstResult.NotePages != 1 {
-		t.Fatalf("firstResult.NotePages = %d, want %d when ABI source signature disables cache reuse", firstResult.NotePages, 1)
-	}
-	if len(firstResult.Diagnostics) != 1 {
-		t.Fatalf("len(firstResult.Diagnostics) = %d, want 1 ABI cache warning", len(firstResult.Diagnostics))
-	}
-	if firstResult.Diagnostics[0].Kind != diag.KindStructuredData {
-		t.Fatalf("firstResult.Diagnostics[0].Kind = %q, want %q", firstResult.Diagnostics[0].Kind, diag.KindStructuredData)
-	}
-	if !strings.Contains(firstResult.Diagnostics[0].Message, "build ABI source signature could not be collected") {
-		t.Fatalf("firstResult.Diagnostics[0].Message = %q, want ABI warning", firstResult.Diagnostics[0].Message)
-	}
-	if !strings.Contains(firstResult.Diagnostics[0].Message, "disabling incremental cache reuse") {
-		t.Fatalf("firstResult.Diagnostics[0].Message = %q, want cache disable guidance", firstResult.Diagnostics[0].Message)
-	}
-	if !strings.Contains(firstResult.Diagnostics[0].Message, "forcing a full rebuild") {
-		t.Fatalf("firstResult.Diagnostics[0].Message = %q, want full rebuild guidance", firstResult.Diagnostics[0].Message)
-	}
-	if _, err := os.Stat(filepath.Join(outputPath, cacheManifestRelPath)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cache manifest stat error = %v, want %v", err, os.ErrNotExist)
-	}
-	if summary := firstDiagnostics.String(); !strings.Contains(summary, "disabling incremental cache reuse") {
-		t.Fatalf("diagnostics summary = %q, want ABI cache warning", summary)
-	}
-
-	var secondDiagnostics bytes.Buffer
-	secondResult, err := buildWithOptions(testBuildSiteConfig(), vaultPath, outputPath, buildOptions{diagnosticsWriter: &secondDiagnostics})
-	if err != nil {
-		t.Fatalf("second buildWithOptions() error = %v", err)
-	}
-	if secondResult.NotePages != 1 {
-		t.Fatalf("secondResult.NotePages = %d, want %d when ABI source signature keeps cache disabled", secondResult.NotePages, 1)
-	}
-	if len(secondResult.Diagnostics) != 1 {
-		t.Fatalf("len(secondResult.Diagnostics) = %d, want 1 ABI cache warning on repeated build", len(secondResult.Diagnostics))
-	}
-	if _, err := os.Stat(filepath.Join(outputPath, cacheManifestRelPath)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("cache manifest stat error after repeated build = %v, want %v", err, os.ErrNotExist)
-	}
-	if summary := secondDiagnostics.String(); !strings.Contains(summary, "forcing a full rebuild") {
-		t.Fatalf("second diagnostics summary = %q, want full rebuild guidance", summary)
 	}
 }
 
