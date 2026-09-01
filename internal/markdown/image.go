@@ -11,6 +11,7 @@ import (
 	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/markdown/callout"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
@@ -287,17 +288,29 @@ func (r *mathTrackingHTMLRenderer) renderDisplayMath(w util.BufWriter, source []
 	if r.note != nil {
 		r.note.HasMath = true
 	}
+	inCallout := node.Parent() != nil && node.Parent().Kind() == callout.KindCallout
 	for i := 0; i < node.Lines().Len(); i++ {
 		segment := node.Lines().At(i)
 		line := string(segment.Value(source))
-		line = strings.TrimPrefix(line, "> ")
-		line = strings.TrimPrefix(line, ">")
-		line = strings.ReplaceAll(line, "\n> ", "\n")
-		line = strings.ReplaceAll(line, "\n>", "\n")
+		if inCallout {
+			line = stripCalloutQuoteMarkers(line)
+		}
 		_, _ = w.WriteString(html.EscapeString(line))
 	}
 	_, _ = w.WriteString("\n")
 	return gast.WalkSkipChildren, nil
+}
+
+func stripCalloutQuoteMarkers(source string) string {
+	lines := strings.SplitAfter(source, "\n")
+	for i := range lines {
+		if i == 0 {
+			continue
+		}
+		lines[i] = strings.TrimPrefix(lines[i], ">")
+		lines[i] = strings.TrimPrefix(lines[i], " ")
+	}
+	return strings.Join(lines, "")
 }
 
 func newCodeBlockExtender(note *model.Note, diagCollector *diag.Collector) goldmark.Extender {

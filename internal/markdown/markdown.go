@@ -215,8 +215,8 @@ func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmh
 		callout.New(),
 		internalhighlight.New(),
 		passthrough.New(passthrough.Config{
-			InlineDelimiters: []passthrough.Delimiters{{Open: "$", Close: "$"}, {Open: `\\(`, Close: `\\)`}},
-			BlockDelimiters:  []passthrough.Delimiters{{Open: "$$", Close: "$$"}, {Open: `\\[`, Close: `\\]`}},
+			InlineDelimiters: []passthrough.Delimiters{{Open: "$", Close: "$"}, {Open: `\(`, Close: `\)`}},
+			BlockDelimiters:  []passthrough.Delimiters{{Open: "$$", Close: "$$"}, {Open: `\[`, Close: `\]`}},
 		}),
 	}
 }

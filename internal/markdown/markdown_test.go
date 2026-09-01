@@ -3,6 +3,7 @@ package markdown
 import (
 	"bytes"
 	"fmt"
+	stdhtml "html"
 	"reflect"
 	"strings"
 	"testing"
@@ -383,7 +384,7 @@ func TestNewMarkdownRendersLeadingCalloutDisplayMathAndTracksHasMath(t *testing.
 	md, renderResult := NewMarkdown(nil, note, nil, diag.NewCollector())
 
 	var buf bytes.Buffer
-	source := []byte("> [!note] Math\n> $$\n> x^2\n> $$\n")
+	source := []byte("> [!note] Math\n> $$\n> x^2 & y\n> $$\n")
 	if err := md.Convert(source, &buf); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
@@ -392,14 +393,54 @@ func TestNewMarkdownRendersLeadingCalloutDisplayMathAndTracksHasMath(t *testing.
 	if !strings.Contains(html, `<div class="callout callout-note">`) {
 		t.Fatalf("HTML = %q, want callout container", html)
 	}
-	if !strings.Contains(html, "$$\nx^2\n$$") || strings.Contains(html, "\n> x^2") {
-		t.Fatalf("HTML = %q, want clean passthrough display math inside the callout", html)
+	if !strings.Contains(stdhtml.UnescapeString(html), "$$\nx^2 & y\n$$") {
+		t.Fatalf("HTML = %q, want callout quote markers removed without changing formula bytes", html)
 	}
 	if renderResult == nil || !renderResult.HasMath() {
 		t.Fatal("renderResult.HasMath() = false, want true for callout display math")
 	}
 	if note.HasMath {
 		t.Fatal("note.HasMath = true, want source note to remain unchanged")
+	}
+}
+
+func TestStripCalloutQuoteMarkersPreservesFormulaGreaterThan(t *testing.T) {
+	t.Parallel()
+
+	const source = "$$\n> >0\n> $$"
+	if got, want := stripCalloutQuoteMarkers(source), "$$\n>0\n$$"; got != want {
+		t.Fatalf("stripCalloutQuoteMarkers() = %q, want %q", got, want)
+	}
+}
+
+func TestNewMarkdownPreservesEveryConfiguredMathDelimiter(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		source string
+	}{
+		{name: "dollar inline", source: `$a_1 & <b> * c^2$`},
+		{name: "backslash inline", source: `\(\frac{a_1}{b^2} & <tag>\)`},
+		{name: "dollar display", source: "$$\n\\begin{matrix}a&b\\\\c&d\\end{matrix}\n$$"},
+		{name: "backslash display", source: "\\[\n\\sqrt{x_1} & y^2\n\\]"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			note := &model.Note{Slug: "guide", RelPath: "notes/guide.md"}
+			md, renderResult := NewMarkdown(nil, note, nil, diag.NewCollector())
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(tt.source), &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+			if decoded := stdhtml.UnescapeString(buf.String()); !strings.Contains(decoded, tt.source) {
+				t.Fatalf("decoded HTML = %q, want byte-exact math source %q", decoded, tt.source)
+			}
+			if renderResult == nil || !renderResult.HasMath() {
+				t.Fatal("renderResult.HasMath() = false, want true")
+			}
+		})
 	}
 }
 
