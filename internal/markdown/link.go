@@ -45,7 +45,7 @@ func (r *strictLinkRenderer) RegisterFuncs(register renderer.NodeRendererFuncReg
 func (r *strictLinkRenderer) renderLink(w util.BufWriter, source []byte, node gast.Node, entering bool) (gast.WalkStatus, error) {
 	link := node.(*gast.Link)
 	if entering {
-		destination := r.rewriteDestination(strings.TrimSpace(string(link.Destination)), lineForLink(link))
+		destination := r.rewriteDestination(strings.TrimSpace(string(link.Destination)), lineForLink(source, link))
 		_, _ = w.WriteString(`<a href="`)
 		escaped := util.URLEscape([]byte(destination), true)
 		if r.Unsafe || !gmhtml.IsDangerousURL(escaped) {
@@ -132,9 +132,13 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
 }
 
-func lineForLink(link *gast.Link) int {
-	if link == nil || link.Parent() == nil {
+func lineForLink(source []byte, link *gast.Link) int {
+	if link == nil {
 		return 0
 	}
-	return 0
+	position := link.Pos()
+	if position < 0 || position > len(source) {
+		return 0
+	}
+	return 1 + strings.Count(string(source[:position]), "\n")
 }

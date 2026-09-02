@@ -810,11 +810,11 @@ func buildVersionCorrespondence(versions []*model.Version) {
 			}
 			relSection := strings.TrimPrefix(section.RelPath, version.Source)
 			relSection = strings.TrimPrefix(relSection, "/")
-			sections[relSection] = section
+			sections[fold(relSection)] = section
 			for _, article := range section.Articles {
 				rel := strings.TrimPrefix(article.RelPath, version.Source)
 				rel = strings.TrimPrefix(rel, "/")
-				key := path.Join(path.Dir(rel), article.Slug)
+				key := fold(path.Join(path.Dir(rel), article.Slug))
 				items[key] = article
 			}
 		}

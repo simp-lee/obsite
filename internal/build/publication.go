@@ -268,14 +268,13 @@ func (publisher *stagedOutputPublisher) publish() error {
 	}
 	publisher.stagingPath = ""
 	publisher.createdParentDirs = nil
-	publisher.committed = true
 	if publisher.backupPath != "" {
 		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
-			publisher.cleanupErr = fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
-			return nil
+			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
 		}
 		publisher.backupPath = ""
 	}
+	publisher.committed = true
 	return nil
 }
 

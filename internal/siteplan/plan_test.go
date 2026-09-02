@@ -46,6 +46,7 @@ func TestBuildWithConfigRejectsMissingIndexAndHiddenOverride(t *testing.T) {
 	writePlanFile(t, vault, "private/_index.md", "---\ntitle: Private\npublish: false\n---\n")
 	writePlanFile(t, vault, "private/public/_index.md", "---\ntitle: Public\npublish: true\n---\n")
 	writePlanFile(t, vault, "private/public/visible.md", "---\ntitle: Visible\npublish: true\ntype: page\n---\n")
+	writePlanFile(t, vault, "private/direct.md", "---\ntitle: Direct\npublish: true\ntype: page\n---\n")
 	writePlanFile(t, vault, "missing/article.md", "---\ntitle: Article\npublish: true\ntype: doc\n---\n")
 
 	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
