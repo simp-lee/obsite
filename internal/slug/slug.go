@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -16,6 +17,10 @@ var (
 	ErrInvalidFrontmatterSlug = errors.New("frontmatter slug normalizes to empty")
 	// ErrInvalidFileSlug reports a file stem that normalizes to empty.
 	ErrInvalidFileSlug = errors.New("file stem normalizes to empty")
+	// ErrInvalidArticleSlug reports a slug that is not one permitted URL segment.
+	ErrInvalidArticleSlug = errors.New("article slug is not a valid URL path segment")
+	// ErrInvalidNumericPrefix reports an overflowing filename order prefix.
+	ErrInvalidNumericPrefix = errors.New("filename numeric prefix is out of range")
 )
 
 // Candidate identifies a source path and the slug assigned to it.
@@ -123,6 +128,61 @@ func DetectConflicts(candidates []Candidate) ([]Conflict, []InvalidSlug) {
 	}
 
 	return conflicts, invalid
+}
+
+// GenerateArticleSegment implements the section publisher's route rule. An
+// explicit slug is validated as-is after NFKC normalization; otherwise the
+// basename loses one leading numeric prefix only when it is followed by the
+// documented separator.
+func GenerateArticleSegment(explicit *string, relPath string) (string, error) {
+	if explicit != nil {
+		value := norm.NFKC.String(strings.TrimSpace(*explicit))
+		if value == "" || !validArticleSegment(value) {
+			return "", fmt.Errorf("%w: %q", ErrInvalidArticleSlug, *explicit)
+		}
+		return value, nil
+	}
+	base := path.Base(strings.ReplaceAll(relPath, "\\", "/"))
+	base = strings.TrimSuffix(base, path.Ext(base))
+	if base == "" {
+		return "", fmt.Errorf("%w: %q", ErrInvalidFileSlug, relPath)
+	}
+	if prefix, separator, err := NumericPrefix(base); err != nil {
+		return "", err
+	} else if separator {
+		base = base[len(prefix):]
+		base = strings.TrimLeft(base, "-_ .")
+	}
+	base = norm.NFKC.String(base)
+	if strings.TrimSpace(base) == "" {
+		return "", fmt.Errorf("%w: %q", ErrInvalidFileSlug, relPath)
+	}
+	return base, nil
+}
+
+// NumericPrefix reports the leading decimal prefix including its separator
+// and whether the separator was one of the allowed filename separators.
+func NumericPrefix(value string) (prefix string, separator bool, err error) {
+	index := 0
+	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
+		index++
+	}
+	if index == 0 || index == len(value) || !strings.ContainsRune("-_ .", rune(value[index])) {
+		return "", false, nil
+	}
+	if _, parseErr := strconv.ParseInt(value[:index], 10, 32); parseErr != nil {
+		return "", false, fmt.Errorf("%w: %q", ErrInvalidNumericPrefix, value[:index])
+	}
+	return value[:index+1], true, nil
+}
+
+func validArticleSegment(value string) bool {
+	for _, r := range value {
+		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '~') {
+			return false
+		}
+	}
+	return value != ""
 }
 
 func fileStem(relPath string) string {

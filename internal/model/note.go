@@ -8,6 +8,12 @@ type Note struct {
 	Frontmatter  Frontmatter
 	LastModified time.Time
 
+	// The planning fields are assigned once by the strict site planner and are
+	// intentionally kept on the canonical note handed to later render phases.
+	Route           string
+	SectionPath     string
+	VersionID       string
+	VersionRoutes   map[string]string
 	Slug            string
 	Aliases         []string
 	Tags            []string
@@ -92,17 +98,50 @@ type SectionRange struct {
 	EndOffset   int
 }
 
-// Frontmatter holds the supported YAML frontmatter fields plus unknown extras.
+// Frontmatter holds article metadata. Extra remains populated by the legacy
+// parser only; strict planning rejects unknown fields before constructing this
+// model.
 type Frontmatter struct {
+	Title          string
+	Description    string
+	Date           time.Time
+	Updated        time.Time
+	Tags           []string
+	Aliases        []string
+	Publish        *bool
+	Slug           string
+	Type           string
+	Order          *int
+	Author         string
+	Reviewed       time.Time
+	Status         string
+	Audience       string
+	ProductVersion string
+	Series         string
+	Cover          string
+	Banner         string
+	BannerAlt      string
+	Extra          map[string]any
+}
+
+// SectionFrontmatter is the deliberately smaller schema used by _index.md.
+type SectionFrontmatter struct {
 	Title       string
 	Description string
-	Date        time.Time
-	Updated     time.Time
-	Tags        []string
-	Aliases     []string
 	Publish     *bool
-	Slug        string
-	Extra       map[string]any
+	Order       *int
+	Banner      string
+	BannerAlt   string
+}
+
+// SectionSource is a parsed _index.md source, kept separate from articles.
+type SectionSource struct {
+	RelPath       string
+	SectionPath   string
+	Frontmatter   SectionFrontmatter
+	RawContent    []byte
+	BodyStartLine int
+	LastModified  time.Time
 }
 
 // Heading captures a heading extracted from Markdown.

@@ -15,6 +15,9 @@ type SiteConfig struct {
 	ThemeCSS           string
 	ThemeSlots         string
 	CustomCSS          string
+	Navigation         []NavigationItem
+	Source             SourceConfig
+	Versions           *VersionsConfig
 	Pagination         PaginationConfig
 	Sidebar            SidebarConfig
 	Popover            PopoverConfig
@@ -23,6 +26,34 @@ type SiteConfig struct {
 	Timeline           TimelineConfig
 
 	RuntimeJSURL string
+}
+
+// NavigationItem is one server-rendered global navigation entry. Exactly one
+// of URL and Section is populated after configuration normalization.
+type NavigationItem struct {
+	Name    string
+	URL     string
+	Section string
+}
+
+// SourceConfig contains optional absolute source-link templates.
+type SourceConfig struct {
+	EditURL string
+	ViewURL string
+}
+
+// VersionsConfig describes an explicitly configured set of document versions.
+type VersionsConfig struct {
+	Root    string
+	Default string
+	Entries []VersionEntry
+}
+
+// VersionEntry identifies one version source directory.
+type VersionEntry struct {
+	ID     string
+	Label  string
+	Source string
 }
 
 // PaginationConfig controls list-page pagination behavior.

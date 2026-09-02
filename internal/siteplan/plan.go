@@ -1,0 +1,777 @@
+// Package siteplan builds the canonical, section-aware vault model consumed by
+// validation and rendering. It contains no writer and never mutates the vault.
+package siteplan
+
+import (
+	"fmt"
+	"net/url"
+	"path"
+	"sort"
+	"strconv"
+	"strings"
+
+	internalconfig "github.com/simp-lee/obsite/internal/config"
+	"github.com/simp-lee/obsite/internal/diag"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
+	"github.com/simp-lee/obsite/internal/vault"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+)
+
+// Result contains the normalized plan and diagnostics produced before any
+// output is considered. Diagnostics are sorted and safe to pass to a later
+// shared analyzer.
+type Result struct {
+	Plan        *model.SitePlan
+	Sources     vault.StrictFrontmatterResult
+	Diagnostics []diag.Diagnostic
+}
+
+// Build loads the vault-local configuration and creates a strict site plan.
+func Build(vaultPath string) (*Result, error) {
+	resolved, err := internalfsutil.ResolveVaultPath(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := internalconfig.LoadStrictForBuild(resolved)
+	if err != nil {
+		return nil, err
+	}
+	return BuildWithConfig(resolved, cfg)
+}
+
+// BuildWithConfig creates a strict plan from an already loaded configuration.
+// The configuration is normalized again so callers cannot bypass its contract.
+func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
+	collector := diag.NewCollector()
+	cfg, err := internalconfig.NormalizeSiteConfig(cfg)
+	if err != nil {
+		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: internalconfig.Filename}, diag.KindSchema, err)}, err
+	}
+	resolvedVault, err := internalfsutil.ResolveVaultPath(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	scan, err := vault.ScanWithOptions(resolvedVault, vault.ScanOptions{})
+	if err != nil {
+		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: resolvedVault}, diag.KindSchema, err)}, err
+	}
+	sources, err := vault.ParseStrictFrontmatter(scan)
+	if err != nil {
+		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: resolvedVault}, diag.KindSchema, err)}, err
+	}
+
+	plan := &model.SitePlan{
+		VaultPath: resolvedVault, Config: cfg,
+		Routes:         make(map[string]string),
+		ReservedRoutes: reservedRoutes(),
+	}
+	sections := make(map[string]*model.Section, len(sources.Sections))
+	for _, source := range sources.Sections {
+		if source == nil {
+			continue
+		}
+		if _, _, prefixErr := slug.NumericPrefix(path.Base(source.SectionPath)); prefixErr != nil {
+			record(collector, diag.KindOrder, source.RelPath, "%v", prefixErr)
+		}
+		if _, exists := sections[source.SectionPath]; exists {
+			record(collector, diag.KindSection, source.RelPath, "duplicate section source")
+			continue
+		}
+		sections[source.SectionPath] = &model.Section{
+			RelPath: source.SectionPath, SourcePath: source.RelPath,
+			Title: source.Frontmatter.Title, Description: source.Frontmatter.Description,
+			Publish: source.Frontmatter.Publish != nil && *source.Frontmatter.Publish,
+			Order:   source.Frontmatter.Order, Banner: source.Frontmatter.Banner, BannerAlt: source.Frontmatter.BannerAlt,
+			RawContent: append([]byte(nil), source.RawContent...), BodyStartLine: source.BodyStartLine, LastModified: source.LastModified,
+		}
+	}
+
+	required := requiredSectionPaths(sources)
+	for sectionPath := range required {
+		if _, ok := sections[sectionPath]; !ok {
+			record(collector, diag.KindSection, sectionSourcePath(sectionPath), "missing required _index.md for section %q", sectionPath)
+		}
+	}
+	if _, ok := sections["."]; !ok {
+		record(collector, diag.KindSection, "_index.md", "vault root must contain _index.md")
+	}
+
+	versions, versionByPath := planVersions(cfg.Versions, resolvedVault, sections, sources, collector)
+	for _, section := range sections {
+		if versionID := versionByPath[section.RelPath]; versionID != "" {
+			section.VersionID = versionID
+		}
+	}
+
+	attachSections(plan, sections, versions, collector)
+	for _, section := range sections {
+		if section.VersionID == "" && section.RelPath != "." && !hasSectionParent(sections, section.RelPath) {
+			record(collector, diag.KindSection, section.SourcePath, "section %q has no indexed parent section", section.RelPath)
+		}
+	}
+	computeEffectivePublish(sections, versions, collector)
+	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
+	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
+	validateNavigation(sections, cfg.Navigation, collector)
+	buildVersionCorrespondence(versions)
+	finalizeCollections(plan, sections, versions)
+
+	result := &Result{Plan: plan, Sources: sources, Diagnostics: collector.Diagnostics()}
+	if collector.HasErrors() {
+		return result, fmt.Errorf("site plan has %d error(s)", collector.ErrorCount())
+	}
+	return result, nil
+}
+
+func diagnosticsWithError(collector *diag.Collector, location diag.Location, kind diag.Kind, err error) []diag.Diagnostic {
+	if err != nil {
+		collector.Errorf(kind, location, "%v", err)
+	}
+	return collector.Diagnostics()
+}
+
+func record(collector *diag.Collector, kind diag.Kind, source string, format string, args ...any) {
+	collector.Errorf(kind, diag.Location{Path: source}, format, args...)
+}
+
+func requiredSectionPaths(sources vault.StrictFrontmatterResult) map[string]struct{} {
+	paths := map[string]struct{}{".": {}}
+	for _, source := range sources.Sources {
+		if source.Section != nil {
+			paths[source.Section.SectionPath] = struct{}{}
+			addParentPaths(paths, source.Section.SectionPath)
+			continue
+		}
+		if source.Article == nil {
+			continue
+		}
+		sectionPath := path.Dir(source.RelPath)
+		paths[sectionPath] = struct{}{}
+		addParentPaths(paths, sectionPath)
+	}
+	return paths
+}
+
+func addParentPaths(paths map[string]struct{}, value string) {
+	for current := value; current != "." && current != ""; current = path.Dir(current) {
+		paths[current] = struct{}{}
+	}
+	paths["."] = struct{}{}
+}
+
+func sectionSourcePath(sectionPath string) string {
+	if sectionPath == "." {
+		return "_index.md"
+	}
+	return path.Join(sectionPath, "_index.md")
+}
+
+func hasSectionParent(sections map[string]*model.Section, sectionPath string) bool {
+	parent := path.Dir(sectionPath)
+	for {
+		if _, ok := sections[parent]; ok {
+			return true
+		}
+		if parent == "." {
+			return false
+		}
+		parent = path.Dir(parent)
+	}
+}
+
+func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, collector *diag.Collector) ([]*model.Version, map[string]string) {
+	if config == nil {
+		return nil, map[string]string{}
+	}
+	root, err := normalizeVersionDirectory(config.Root)
+	if err != nil {
+		record(collector, diag.KindVersion, "obsite.yaml", "versions.root: %v", err)
+	}
+	if root != "" {
+		if _, _, statErr := internalfsutil.InspectContainedDirectory(vaultRoot, root); statErr != nil {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions.root %q: %v", root, statErr)
+		}
+		if _, ok := sections[root]; !ok {
+			record(collector, diag.KindVersion, sectionSourcePath(root), "versions.root %q must contain _index.md", root)
+		}
+	}
+	if strings.TrimSpace(config.Default) == "" {
+		record(collector, diag.KindVersion, "obsite.yaml", "versions.default is required")
+	}
+	if len(config.Entries) == 0 {
+		record(collector, diag.KindVersion, "obsite.yaml", "versions.entries must not be empty")
+	}
+
+	versions := make([]*model.Version, 0, len(config.Entries))
+	byID := make(map[string]struct{}, len(config.Entries))
+	bySource := make([]string, 0, len(config.Entries))
+	for index, entry := range config.Entries {
+		if entry.ID == "" || !validVersionID(entry.ID) {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions.entries[%d].id is not a valid ASCII path segment", index)
+		}
+		if entry.Label == "" {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions.entries[%d].label is required", index)
+		}
+		if _, exists := byID[entry.ID]; exists {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions entry id %q is duplicated", entry.ID)
+		}
+		byID[entry.ID] = struct{}{}
+		source, sourceErr := normalizeVersionDirectory(entry.Source)
+		if sourceErr != nil {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions entry %q source: %v", entry.ID, sourceErr)
+			continue
+		}
+		for _, other := range bySource {
+			if source == other || isDescendant(source, other) || isDescendant(other, source) {
+				record(collector, diag.KindVersion, "obsite.yaml", "version source %q overlaps %q", source, other)
+			}
+		}
+		bySource = append(bySource, source)
+		fullSource := path.Join(root, source)
+		if _, _, statErr := internalfsutil.InspectContainedDirectory(vaultRoot, fullSource); statErr != nil {
+			record(collector, diag.KindVersion, "obsite.yaml", "version %q source %q: %v", entry.ID, fullSource, statErr)
+		}
+		if _, ok := sections[fullSource]; !ok {
+			record(collector, diag.KindVersion, sectionSourcePath(fullSource), "version source %q must contain _index.md", fullSource)
+		}
+		versions = append(versions, &model.Version{ID: entry.ID, Label: entry.Label, Source: fullSource})
+	}
+	if config.Default != "" {
+		if _, ok := byID[config.Default]; !ok {
+			record(collector, diag.KindVersion, "obsite.yaml", "versions.default %q does not identify an entry", config.Default)
+		}
+	}
+
+	versionByPath := make(map[string]string)
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		for sectionPath := range sections {
+			if sectionPath == version.Source || isDescendant(sectionPath, version.Source) {
+				if old := versionByPath[sectionPath]; old != "" && old != version.ID {
+					record(collector, diag.KindVersion, sectionSourcePath(sectionPath), "section belongs to overlapping versions %q and %q", old, version.ID)
+				}
+				versionByPath[sectionPath] = version.ID
+			}
+		}
+	}
+	// A configured version root may not contain unclaimed content: this avoids
+	// silently publishing files outside an explicitly selected version source.
+	for _, source := range sources.Sources {
+		physical := path.Dir(source.RelPath)
+		if physical == "." {
+			continue
+		}
+		if isDescendant(physical, root) || physical == root {
+			// The root container's own _index.md is required metadata, not
+			// content competing with a version entry.
+			if physical == root && source.RelPath == sectionSourcePath(root) {
+				continue
+			}
+			claimed := false
+			for _, version := range versions {
+				if physical == version.Source || isDescendant(physical, version.Source) {
+					claimed = true
+					break
+				}
+			}
+			if !claimed {
+				record(collector, diag.KindVersion, source.RelPath, "content under version root %q is not covered by a version source", root)
+			}
+		}
+	}
+	return versions, versionByPath
+}
+
+func normalizeVersionDirectory(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "." || strings.Contains(raw, `\`) || strings.Contains(raw, "//") || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "../") || strings.Contains(raw, "/../") || strings.Contains(raw, "/./") {
+		return "", fmt.Errorf("must be a normalized vault-relative directory path")
+	}
+	cleaned := path.Clean(raw)
+	if cleaned != raw || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") || !internalfsutil.IsPortableSitePath(cleaned) {
+		return "", fmt.Errorf("must be a normalized vault-relative directory path")
+	}
+	return cleaned, nil
+}
+
+func validVersionID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '~') {
+			return false
+		}
+	}
+	return true
+}
+
+func isDescendant(value, parent string) bool {
+	return value != parent && strings.HasPrefix(value, parent+"/")
+}
+
+func attachSections(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version, collector *diag.Collector) {
+	for _, section := range sections {
+		section.Children = nil
+		section.Parent = nil
+	}
+	for _, section := range sections {
+		if section == nil || section.RelPath == "." {
+			continue
+		}
+		parentPath := path.Dir(section.RelPath)
+		parent := sections[parentPath]
+		for parent == nil && parentPath != "." {
+			parentPath = path.Dir(parentPath)
+			parent = sections[parentPath]
+		}
+		if parent == nil {
+			continue
+		}
+		if section.VersionID != "" && parent.VersionID != section.VersionID {
+			continue
+		}
+		if section.VersionID == "" && parent.VersionID != "" {
+			continue
+		}
+		section.Parent = parent
+		parent.Children = append(parent.Children, section)
+	}
+	for _, section := range sections {
+		sortSections(section.Children)
+	}
+	root := sections["."]
+	plan.Root = root
+	if root != nil && root.VersionID != "" {
+		record(collector, diag.KindVersion, root.SourcePath, "vault root cannot be a version section")
+	}
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		version.Root = sections[version.Source]
+		if version.Root == nil {
+			continue
+		}
+		version.Root.Parent = nil
+		version.Sections = collectSubsections(version.Root)
+	}
+}
+
+func computeEffectivePublish(sections map[string]*model.Section, versions []*model.Version, collector *diag.Collector) {
+	var visit func(*model.Section, bool, string)
+	visit = func(section *model.Section, inherited bool, hiddenBy string) {
+		if section == nil {
+			return
+		}
+		if !inherited && section.Publish && hiddenBy != "" {
+			record(collector, diag.KindSection, section.SourcePath, "published section %q is hidden by ancestor %q", section.RelPath, hiddenBy)
+		}
+		section.EffectivePublish = inherited && section.Publish
+		nextHiddenBy := hiddenBy
+		if inherited && !section.Publish {
+			nextHiddenBy = section.SourcePath
+		}
+		for _, child := range section.Children {
+			visit(child, section.EffectivePublish, nextHiddenBy)
+		}
+	}
+	roots := make([]*model.Section, 0, len(sections))
+	for _, section := range sections {
+		if section != nil && section.Parent == nil && section.VersionID == "" {
+			roots = append(roots, section)
+		}
+	}
+	sortSections(roots)
+	for _, root := range roots {
+		visit(root, true, "")
+	}
+	for _, version := range versions {
+		if version != nil && version.Root != nil {
+			visit(version.Root, true, "")
+		}
+	}
+}
+
+func assignSectionRoutes(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version, versionConfig *model.VersionsConfig, collector *diag.Collector) {
+	for _, section := range sections {
+		if section == nil || !section.EffectivePublish {
+			continue
+		}
+		var route string
+		if section.VersionID == "" {
+			route = sectionRoute(section.RelPath)
+		} else {
+			version := findVersion(versions, section.VersionID)
+			if version == nil {
+				continue
+			}
+			relative := strings.TrimPrefix(section.RelPath, version.Source)
+			relative = strings.TrimPrefix(relative, "/")
+			route = versionRoute(versionConfig.Root, version.ID, relative)
+		}
+		section.Route = route
+		claimRoute(plan, route, section.SourcePath, collector)
+		plan.Sections = append(plan.Sections, section)
+	}
+	// Keep the canonical section order independent of map traversal.
+	sort.Slice(plan.Sections, func(i, j int) bool { return sectionPathKey(plan.Sections[i]) < sectionPathKey(plan.Sections[j]) })
+	for _, section := range plan.Sections {
+		section.Breadcrumbs = breadcrumbs(section)
+	}
+}
+
+func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version, versionConfig *model.VersionsConfig, articles []*model.Note, collector *diag.Collector) {
+	for _, article := range articles {
+		if article == nil {
+			continue
+		}
+		if _, _, prefixErr := slug.NumericPrefix(path.Base(article.RelPath)); prefixErr != nil {
+			record(collector, diag.KindOrder, article.RelPath, "%v", prefixErr)
+			continue
+		}
+		sectionPath := path.Dir(article.RelPath)
+		section := sections[sectionPath]
+		if section == nil {
+			record(collector, diag.KindSection, article.RelPath, "article directory %q has no _index.md", sectionPath)
+			continue
+		}
+		if !section.EffectivePublish || article.Frontmatter.Publish == nil || !*article.Frontmatter.Publish {
+			continue
+		}
+		explicit := (*string)(nil)
+		if article.Frontmatter.Slug != "" {
+			explicit = &article.Frontmatter.Slug
+		}
+		segment, err := slug.GenerateArticleSegment(explicit, article.RelPath)
+		if err != nil {
+			record(collector, diag.KindRoute, article.RelPath, "%v", err)
+			continue
+		}
+		article.SectionPath = section.RelPath
+		article.VersionID = section.VersionID
+		article.Slug = segment
+		if section.VersionID == "" {
+			article.Route = joinRoute(section.Route, segment)
+		} else {
+			version := findVersion(versions, section.VersionID)
+			if version == nil {
+				continue
+			}
+			relativeSection := strings.TrimPrefix(section.RelPath, version.Source)
+			relativeSection = strings.TrimPrefix(relativeSection, "/")
+			prefix := relativeSection
+			if prefix != "" {
+				prefix += "/"
+			}
+			article.Route = versionRoute(versionConfig.Root, version.ID, prefix+segment)
+		}
+		claimRoute(plan, article.Route, article.RelPath, collector)
+		section.Articles = append(section.Articles, article)
+		plan.Articles = append(plan.Articles, article)
+		switch article.Frontmatter.Type {
+		case "doc":
+			section.Documents = append(section.Documents, article)
+			plan.Documents = append(plan.Documents, article)
+		case "post":
+			section.Posts = append(section.Posts, article)
+			plan.Posts = append(plan.Posts, article)
+		case "page":
+			section.Pages = append(section.Pages, article)
+			plan.Pages = append(plan.Pages, article)
+		}
+	}
+}
+
+func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, collector *diag.Collector) {
+	for index, item := range navigation {
+		if item.Section == "" {
+			continue
+		}
+		section := sections[item.Section]
+		if section == nil {
+			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] targets missing section %q", index, item.Section)
+			continue
+		}
+		if !section.EffectivePublish {
+			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] targets unpublished section %q", index, item.Section)
+		}
+		if section.VersionID != "" {
+			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] cannot target version entry section %q", index, item.Section)
+		}
+	}
+}
+
+func buildVersionCorrespondence(versions []*model.Version) {
+	byVersionPath := make(map[string]map[string]*model.Note)
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		items := make(map[string]*model.Note)
+		for _, section := range version.Sections {
+			for _, article := range section.Articles {
+				rel := strings.TrimPrefix(article.RelPath, version.Source)
+				rel = strings.TrimPrefix(rel, "/")
+				key := path.Join(path.Dir(rel), article.Slug)
+				items[key] = article
+			}
+		}
+		byVersionPath[version.ID] = items
+	}
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		for rel, article := range byVersionPath[version.ID] {
+			if article.VersionRoutes == nil {
+				article.VersionRoutes = make(map[string]string, len(versions))
+			}
+			for _, otherVersion := range versions {
+				if otherVersion == nil {
+					continue
+				}
+				if otherArticle := byVersionPath[otherVersion.ID][rel]; otherArticle != nil {
+					article.VersionRoutes[otherVersion.ID] = otherArticle.Route
+				} else if otherVersion.Root != nil && otherVersion.Root.Route != "" {
+					article.VersionRoutes[otherVersion.ID] = otherVersion.Root.Route
+				}
+			}
+		}
+	}
+}
+
+func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version) {
+	for _, section := range sections {
+		if section == nil {
+			continue
+		}
+		sortArticles(section.Articles)
+		sortArticles(section.Documents)
+		sortArticles(section.Posts)
+		sortArticles(section.Pages)
+	}
+	sortArticles(plan.Articles)
+	sortArticles(plan.Documents)
+	sortArticles(plan.Posts)
+	sortArticles(plan.Pages)
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		sort.Slice(version.Sections, func(i, j int) bool { return sectionPathKey(version.Sections[i]) < sectionPathKey(version.Sections[j]) })
+	}
+	plan.Versions = versions
+	for _, section := range plan.Sections {
+		if section == nil {
+			continue
+		}
+		section.Breadcrumbs = breadcrumbs(section)
+	}
+}
+
+func sortArticles(items []*model.Note) {
+	sort.SliceStable(items, func(i, j int) bool { return articleLess(items[i], items[j]) })
+}
+func articleLess(left, right *model.Note) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	if left.Frontmatter.Type == "doc" && right.Frontmatter.Type == "doc" {
+		lo, ro := left.Frontmatter.Order, right.Frontmatter.Order
+		if (lo != nil) != (ro != nil) {
+			return lo != nil
+		}
+		if lo != nil && *lo != *ro {
+			return *lo < *ro
+		}
+		lp, lhas, _ := slug.NumericPrefix(path.Base(left.RelPath))
+		rp, rhas, _ := slug.NumericPrefix(path.Base(right.RelPath))
+		if lhas != rhas {
+			return lhas
+		}
+		if lhas && numericPrefixValue(lp) != numericPrefixValue(rp) {
+			return numericPrefixValue(lp) < numericPrefixValue(rp)
+		}
+	} else if left.Frontmatter.Type == "post" && right.Frontmatter.Type == "post" && !left.Frontmatter.Date.Equal(right.Frontmatter.Date) {
+		return left.Frontmatter.Date.After(right.Frontmatter.Date)
+	}
+	lt, rt := fold(left.Frontmatter.Title), fold(right.Frontmatter.Title)
+	if lt != rt {
+		return lt < rt
+	}
+	return fold(left.RelPath) < fold(right.RelPath)
+}
+
+func numericPrefixValue(prefix string) int64 {
+	prefix = strings.TrimRight(prefix, "-_ .")
+	value, _ := strconv.ParseInt(prefix, 10, 32)
+	return value
+}
+func sortSections(items []*model.Section) {
+	sort.SliceStable(items, func(i, j int) bool { return sectionLess(items[i], items[j]) })
+}
+func sectionLess(left, right *model.Section) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	if (left.Order != nil) != (right.Order != nil) {
+		return left.Order != nil
+	}
+	if left.Order != nil && *left.Order != *right.Order {
+		return *left.Order < *right.Order
+	}
+	lp, lh, _ := slug.NumericPrefix(path.Base(left.RelPath))
+	rp, rh, _ := slug.NumericPrefix(path.Base(right.RelPath))
+	if lh != rh {
+		return lh
+	}
+	if lh && numericPrefixValue(lp) != numericPrefixValue(rp) {
+		return numericPrefixValue(lp) < numericPrefixValue(rp)
+	}
+	if fold(left.Title) != fold(right.Title) {
+		return fold(left.Title) < fold(right.Title)
+	}
+	return fold(left.RelPath) < fold(right.RelPath)
+}
+func sectionPathKey(section *model.Section) string {
+	if section == nil {
+		return ""
+	}
+	return fold(section.RelPath)
+}
+func fold(value string) string { return cases.Fold().String(norm.NFKC.String(value)) }
+
+func collectSubsections(root *model.Section) []*model.Section {
+	if root == nil {
+		return nil
+	}
+	result := []*model.Section{root}
+	for _, child := range root.Children {
+		result = append(result, collectSubsections(child)...)
+	}
+	return result
+}
+func findVersion(versions []*model.Version, id string) *model.Version {
+	for _, v := range versions {
+		if v != nil && v.ID == id {
+			return v
+		}
+	}
+	return nil
+}
+func breadcrumbs(section *model.Section) []model.Breadcrumb {
+	var reversed []model.Breadcrumb
+	for current := section; current != nil; current = current.Parent {
+		if current.Route != "" {
+			reversed = append(reversed, model.Breadcrumb{Name: current.Title, URL: current.Route})
+		}
+	}
+	for i, j := 0, len(reversed)-1; i < j; i, j = i+1, j-1 {
+		reversed[i], reversed[j] = reversed[j], reversed[i]
+	}
+	return reversed
+}
+
+func reservedRoutes() map[string]struct{} {
+	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output"}
+	result := make(map[string]struct{}, len(values))
+	for _, v := range values {
+		result[v] = struct{}{}
+	}
+	return result
+}
+func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {
+	key := routeKey(route)
+	destination := routeDestination(key)
+	for reserved := range plan.ReservedRoutes {
+		if outputPathsConflict(destination, reservedDestination(reserved)) {
+			record(collector, diag.KindRoute, owner, "route %q conflicts with reserved output", route)
+			return
+		}
+	}
+	for existing, existingOwner := range plan.Routes {
+		if outputPathsConflict(destination, routeDestination(existing)) {
+			record(collector, diag.KindRoute, owner, "route %q conflicts with %q", route, existingOwner)
+			return
+		}
+	}
+	plan.Routes[key] = owner
+}
+
+// routeKey normalizes source Unicode before percent encoding, so composed and
+// decomposed names claim the same URL. It also canonicalizes percent escapes.
+func routeKey(route string) string {
+	parts := strings.Split(strings.TrimPrefix(route, "/"), "/")
+	for index, part := range parts {
+		decoded, err := url.PathUnescape(part)
+		if err == nil {
+			part = decoded
+		}
+		parts[index] = encodeSegment(norm.NFKC.String(part))
+	}
+	key := "/" + strings.Join(parts, "/")
+	if route == "/" {
+		return "/"
+	}
+	return key
+}
+
+func routeDestination(route string) string {
+	trimmed := strings.Trim(route, "/")
+	if trimmed == "" {
+		return "index.html"
+	}
+	return trimmed + "/index.html"
+}
+func reservedDestination(route string) string { return strings.Trim(route, "/") }
+func outputPathsConflict(left, right string) bool {
+	left, right = strings.Trim(left, "/"), strings.Trim(right, "/")
+	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+}
+func sectionRoute(rel string) string {
+	if rel == "." {
+		return "/"
+	}
+	return "/" + encodePath(rel) + "/"
+}
+func versionRoute(root, id, relative string) string {
+	base := "/" + encodePath(root) + "/" + encodePath(id) + "/"
+	if relative == "" {
+		return base
+	}
+	return base + encodePath(relative) + "/"
+}
+func joinRoute(section, segment string) string {
+	if section == "/" {
+		return "/" + encodePath(segment) + "/"
+	}
+	return strings.TrimSuffix(section, "/") + "/" + encodePath(segment) + "/"
+}
+func encodePath(value string) string {
+	parts := strings.Split(value, "/")
+	for i, part := range parts {
+		parts[i] = encodeSegment(norm.NFKC.String(part))
+	}
+	return strings.Join(parts, "/")
+}
+
+func encodeSegment(value string) string {
+	const hex = "0123456789ABCDEF"
+	var builder strings.Builder
+	for _, b := range []byte(value) {
+		if b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~' {
+			builder.WriteByte(b)
+			continue
+		}
+		builder.WriteByte('%')
+		builder.WriteByte(hex[b>>4])
+		builder.WriteByte(hex[b&0x0f])
+	}
+	return builder.String()
+}

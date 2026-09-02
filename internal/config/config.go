@@ -37,12 +37,38 @@ type fileConfig struct {
 	Language       string               `yaml:"language"`
 	DefaultImg     string               `yaml:"defaultImg"`
 	DefaultPublish *bool                `yaml:"defaultPublish"`
+	Navigation     []navigationFileItem `yaml:"navigation"`
+	Source         sourceFileConfig     `yaml:"source"`
+	Versions       *versionsFileConfig  `yaml:"versions"`
 	Pagination     paginationFileConfig `yaml:"pagination"`
 	Sidebar        enabledFileConfig    `yaml:"sidebar"`
 	Popover        enabledFileConfig    `yaml:"popover"`
 	Related        relatedFileConfig    `yaml:"related"`
 	RSS            enabledFileConfig    `yaml:"rss"`
 	Timeline       timelineFileConfig   `yaml:"timeline"`
+}
+
+type navigationFileItem struct {
+	Name    string `yaml:"name"`
+	URL     string `yaml:"url"`
+	Section string `yaml:"section"`
+}
+
+type sourceFileConfig struct {
+	EditURL string `yaml:"editURL"`
+	ViewURL string `yaml:"viewURL"`
+}
+
+type versionsFileConfig struct {
+	Root    string             `yaml:"root"`
+	Default string             `yaml:"default"`
+	Entries []versionFileEntry `yaml:"entries"`
+}
+
+type versionFileEntry struct {
+	ID     string `yaml:"id"`
+	Label  string `yaml:"label"`
+	Source string `yaml:"source"`
 }
 
 type enabledFileConfig struct {
@@ -97,6 +123,8 @@ description: ""
 language: %s
 defaultPublish: %t
 defaultImg: ""
+navigation: []
+source: {}
 pagination:
   pageSize: %d
 sidebar:
@@ -166,6 +194,52 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 	return cfg, nil
 }
 
+// LoadStrictForBuild loads the revised section-based configuration contract.
+// It intentionally rejects the superseded defaultPublish setting and requires
+// an explicit navigation sequence (including an explicit empty sequence).
+func LoadStrictForBuild(resolvedVault string) (model.SiteConfig, error) {
+	vaultRoot := filepath.Clean(strings.TrimSpace(resolvedVault))
+	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
+		return model.SiteConfig{}, fmt.Errorf("resolved vault path is required")
+	}
+	configPath := filepath.Join(vaultRoot, Filename)
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, configPath)
+	if err != nil {
+		return model.SiteConfig{}, fmt.Errorf("read config %q: %w", configPath, err)
+	}
+	if err := validateStrictConfigDocument(data); err != nil {
+		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
+	}
+	parsed, err := parseFileConfig(data)
+	if err != nil {
+		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
+	}
+	if err := validateParsedFileConfig(parsed); err != nil {
+		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
+	}
+	cfg := applyFileConfig(Defaults(), parsed)
+	cfg, err = normalizeAndValidate(cfg)
+	if err != nil {
+		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
+	}
+	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, ThemeDirRelPath, "theme directory")
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	return cfg, nil
+}
+
+// InitialStrictYAML is the minimal revised-schema configuration used by the
+// section-based initializer. The legacy initializer remains available while
+// the CLI publication pipeline is migrated to the strict analyzer.
+func InitialStrictYAML() string {
+	return "baseURL: https://example.com/\ntitle: My Obsite Site\nnavigation: []\nsource: {}\n"
+}
+
 // NormalizeSiteConfig normalizes an already-constructed internal config. The
 // vault YAML loader, not this function, owns user-visible boolean defaults.
 func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
@@ -186,6 +260,10 @@ func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 }
 
 func parseFileConfig(data []byte) (fileConfig, error) {
+	if err := validateYAMLStructure(data); err != nil {
+		return fileConfig{}, err
+	}
+
 	var cfg fileConfig
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	decoder.KnownFields(true)
@@ -203,6 +281,16 @@ func parseFileConfig(data []byte) (fileConfig, error) {
 }
 
 func validateParsedFileConfig(parsed fileConfig) error {
+	if len(parsed.Navigation) > 0 {
+		for index, item := range parsed.Navigation {
+			if strings.TrimSpace(item.Name) == "" {
+				return fmt.Errorf("navigation[%d].name is required", index)
+			}
+			if (strings.TrimSpace(item.URL) == "") == (strings.TrimSpace(item.Section) == "") {
+				return fmt.Errorf("navigation[%d] must contain exactly one of url or section", index)
+			}
+		}
+	}
 	if parsed.Pagination.PageSize != nil && *parsed.Pagination.PageSize <= 0 {
 		return fmt.Errorf("pagination.pageSize must be greater than 0")
 	}
@@ -223,6 +311,22 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	cfg.DefaultImg = strings.TrimSpace(parsed.DefaultImg)
 	if parsed.DefaultPublish != nil {
 		cfg.DefaultPublish = *parsed.DefaultPublish
+	}
+	cfg.Navigation = make([]model.NavigationItem, 0, len(parsed.Navigation))
+	for _, item := range parsed.Navigation {
+		cfg.Navigation = append(cfg.Navigation, model.NavigationItem{
+			Name: strings.TrimSpace(item.Name), URL: strings.TrimSpace(item.URL), Section: strings.TrimSpace(item.Section),
+		})
+	}
+	cfg.Source = model.SourceConfig{EditURL: strings.TrimSpace(parsed.Source.EditURL), ViewURL: strings.TrimSpace(parsed.Source.ViewURL)}
+	if parsed.Versions != nil {
+		versions := &model.VersionsConfig{Root: strings.TrimSpace(parsed.Versions.Root), Default: strings.TrimSpace(parsed.Versions.Default), Entries: make([]model.VersionEntry, 0, len(parsed.Versions.Entries))}
+		for _, entry := range parsed.Versions.Entries {
+			versions.Entries = append(versions.Entries, model.VersionEntry{ID: strings.TrimSpace(entry.ID), Label: strings.TrimSpace(entry.Label), Source: strings.TrimSpace(entry.Source)})
+		}
+		cfg.Versions = versions
+	} else {
+		cfg.Versions = nil
 	}
 	if parsed.Pagination.PageSize != nil {
 		cfg.Pagination.PageSize = *parsed.Pagination.PageSize
@@ -254,6 +358,92 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	return cfg
 }
 
+func validateYAMLStructure(data []byte) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return err
+	}
+	var trailing yaml.Node
+	if err := decoder.Decode(&trailing); err != io.EOF && err != nil {
+		return err
+	}
+	if len(document.Content) == 0 {
+		return nil
+	}
+	return validateYAMLNode(document.Content[0])
+}
+
+func validateStrictConfigDocument(data []byte) error {
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return err
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("configuration must be a YAML mapping")
+	}
+	allowed := map[string]struct{}{"title": {}, "baseURL": {}, "author": {}, "description": {}, "language": {}, "defaultImg": {}, "navigation": {}, "source": {}, "versions": {}, "pagination": {}, "sidebar": {}, "popover": {}, "related": {}, "rss": {}, "timeline": {}}
+	seen := make(map[string]struct{}, len(document.Content[0].Content)/2)
+	root := document.Content[0]
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		key, value := root.Content[index], root.Content[index+1]
+		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+			return fmt.Errorf("configuration key at line %d must be a string", key.Line)
+		}
+		if _, exists := seen[key.Value]; exists {
+			return fmt.Errorf("duplicate key %q at line %d", key.Value, key.Line)
+		}
+		seen[key.Value] = struct{}{}
+		if value.Tag == "!!null" {
+			return fmt.Errorf("field %q at line %d must not be null", key.Value, value.Line)
+		}
+		if key.Value == "defaultPublish" {
+			return fmt.Errorf("field %q is not supported by the revised configuration", key.Value)
+		}
+		if _, ok := allowed[key.Value]; !ok {
+			return fmt.Errorf("unknown config field %q at line %d", key.Value, key.Line)
+		}
+	}
+	if _, ok := seen["navigation"]; !ok {
+		return fmt.Errorf("navigation must be explicitly provided")
+	}
+	return nil
+}
+
+func validateYAMLNode(node *yaml.Node) error {
+	if node == nil {
+		return nil
+	}
+	switch node.Kind {
+	case yaml.MappingNode:
+		seen := make(map[string]int, len(node.Content)/2)
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			keyNode, valueNode := node.Content[index], node.Content[index+1]
+			if keyNode.Kind != yaml.ScalarNode || keyNode.Tag != "!!str" {
+				return fmt.Errorf("mapping key at line %d must be a string", keyNode.Line)
+			}
+			if firstLine, ok := seen[keyNode.Value]; ok {
+				return fmt.Errorf("duplicate key %q at line %d (first declared at line %d)", keyNode.Value, keyNode.Line, firstLine)
+			}
+			seen[keyNode.Value] = keyNode.Line
+			if valueNode.Tag == "!!null" {
+				return fmt.Errorf("field %q at line %d must not be null", keyNode.Value, valueNode.Line)
+			}
+			if err := validateYAMLNode(valueNode); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode:
+		for _, child := range node.Content {
+			if err := validateYAMLNode(child); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 	cfg.Title = strings.TrimSpace(cfg.Title)
 	if cfg.Title == "" {
@@ -273,6 +463,14 @@ func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 	}
 	cfg.DefaultImg = defaultImg
 	cfg.DefaultImgExternal = externalDefaultImg
+	cfg.Navigation, err = normalizeNavigation(cfg.Navigation)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	cfg.Source, err = normalizeSourceConfig(cfg.Source)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
 	cfg.ThemeDir = strings.TrimSpace(cfg.ThemeDir)
 	cfg.ThemeCSS = strings.TrimSpace(cfg.ThemeCSS)
 	cfg.CustomCSS = strings.TrimSpace(cfg.CustomCSS)
@@ -287,7 +485,214 @@ func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 		return model.SiteConfig{}, err
 	}
 	cfg.Timeline.Path = timelinePath
+	cfg.Versions, err = NormalizeVersionsConfig(cfg.Versions)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
 	return cfg, nil
+}
+
+// NormalizeVersionsConfig validates the syntax and identity rules that do not
+// require touching the vault filesystem.
+func NormalizeVersionsConfig(input *model.VersionsConfig) (*model.VersionsConfig, error) {
+	if input == nil {
+		return nil, nil
+	}
+	result := &model.VersionsConfig{Root: strings.TrimSpace(input.Root), Default: strings.TrimSpace(input.Default), Entries: make([]model.VersionEntry, 0, len(input.Entries))}
+	if result.Root == "" || !validConfigRelativeDir(result.Root) {
+		return nil, fmt.Errorf("versions.root must be a normalized vault-relative directory path")
+	}
+	if result.Default == "" {
+		return nil, fmt.Errorf("versions.default is required")
+	}
+	seenIDs := make(map[string]struct{}, len(input.Entries))
+	seenSources := make([]string, 0, len(input.Entries))
+	for index, entry := range input.Entries {
+		entry.ID, entry.Label, entry.Source = strings.TrimSpace(entry.ID), strings.TrimSpace(entry.Label), strings.TrimSpace(entry.Source)
+		if !validVersionID(entry.ID) {
+			return nil, fmt.Errorf("versions.entries[%d].id must be a non-empty ASCII path segment", index)
+		}
+		if entry.Label == "" {
+			return nil, fmt.Errorf("versions.entries[%d].label is required", index)
+		}
+		if _, exists := seenIDs[entry.ID]; exists {
+			return nil, fmt.Errorf("versions entry id %q is duplicated", entry.ID)
+		}
+		seenIDs[entry.ID] = struct{}{}
+		if !validConfigRelativeDir(entry.Source) {
+			return nil, fmt.Errorf("versions.entries[%d].source must be a normalized vault-relative directory path", index)
+		}
+		for _, other := range seenSources {
+			if entry.Source == other || strings.HasPrefix(entry.Source, other+"/") || strings.HasPrefix(other, entry.Source+"/") {
+				return nil, fmt.Errorf("version source %q overlaps %q", entry.Source, other)
+			}
+		}
+		seenSources = append(seenSources, entry.Source)
+		result.Entries = append(result.Entries, entry)
+	}
+	foundDefault := false
+	for _, entry := range result.Entries {
+		if entry.ID == result.Default {
+			foundDefault = true
+			break
+		}
+	}
+	if !foundDefault {
+		return nil, fmt.Errorf("versions.default %q does not identify an entry", result.Default)
+	}
+	if len(result.Entries) == 0 {
+		return nil, fmt.Errorf("versions.entries must not be empty")
+	}
+	return result, nil
+}
+
+func validConfigRelativeDir(value string) bool {
+	if value == "" || value == "." || strings.Contains(value, `\`) || strings.Contains(value, "//") || strings.HasPrefix(value, "/") {
+		return false
+	}
+	cleaned := path.Clean(value)
+	return cleaned == value && cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../") && internalfsutil.IsPortableSitePath(cleaned)
+}
+func validVersionID(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '~') {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeNavigation(items []model.NavigationItem) ([]model.NavigationItem, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	result := make([]model.NavigationItem, 0, len(items))
+	seen := make(map[string]struct{}, len(items))
+	for index, item := range items {
+		item.Name = strings.TrimSpace(item.Name)
+		item.URL = strings.TrimSpace(item.URL)
+		item.Section = strings.TrimSpace(item.Section)
+		if item.Name == "" {
+			return nil, fmt.Errorf("navigation[%d].name is required", index)
+		}
+		if (item.URL == "") == (item.Section == "") {
+			return nil, fmt.Errorf("navigation[%d] must contain exactly one of url or section", index)
+		}
+		key := "section:" + item.Section
+		if item.URL != "" {
+			if err := validateNavigationURL(item.URL); err != nil {
+				return nil, fmt.Errorf("navigation[%d].url: %w", index, err)
+			}
+			key = "url:" + item.URL
+		} else {
+			section, err := normalizeSectionReference(item.Section)
+			if err != nil {
+				return nil, fmt.Errorf("navigation[%d].section: %w", index, err)
+			}
+			item.Section = section
+			key = "section:" + section
+		}
+		if _, exists := seen[key]; exists {
+			return nil, fmt.Errorf("navigation[%d] duplicates target %q", index, key)
+		}
+		seen[key] = struct{}{}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func validateNavigationURL(raw string) error {
+	if strings.HasPrefix(raw, "/") && !strings.HasPrefix(raw, "//") {
+		if strings.ContainsAny(raw, "\\\x00\r\n") {
+			return fmt.Errorf("site-relative URL contains an invalid character")
+		}
+		return nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") {
+		return fmt.Errorf("URL must be site-relative or an absolute HTTP(S) URL")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("URL must not include user info")
+	}
+	return nil
+}
+
+func normalizeSectionReference(raw string) (string, error) {
+	if raw == "." {
+		return raw, nil
+	}
+	if raw == "" || strings.ContainsAny(raw, `\\?#`) || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.Contains(raw, "//") {
+		return "", fmt.Errorf("must be a vault-relative section path; root is '.'")
+	}
+	cleaned := path.Clean(raw)
+	if cleaned != raw || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("must be a normalized vault-relative section path")
+	}
+	for part := range strings.SplitSeq(cleaned, "/") {
+		if part == "" || part == "." || part == ".." {
+			return "", fmt.Errorf("must not contain empty or dot path segments")
+		}
+	}
+	return cleaned, nil
+}
+
+func normalizeSourceConfig(source model.SourceConfig) (model.SourceConfig, error) {
+	var err error
+	source.EditURL, err = normalizeSourceTemplate(source.EditURL)
+	if err != nil {
+		return model.SourceConfig{}, fmt.Errorf("source.editURL: %w", err)
+	}
+	source.ViewURL, err = normalizeSourceTemplate(source.ViewURL)
+	if err != nil {
+		return model.SourceConfig{}, fmt.Errorf("source.viewURL: %w", err)
+	}
+	return source, nil
+}
+
+func normalizeSourceTemplate(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.Count(raw, ":path") != 1 {
+		return "", fmt.Errorf("template must contain exactly one :path placeholder")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" || (strings.ToLower(parsed.Scheme) != "http" && strings.ToLower(parsed.Scheme) != "https") {
+		return "", fmt.Errorf("template must be an absolute HTTP(S) URL")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("template must not include user info")
+	}
+	if strings.Contains(parsed.RawQuery, ":path") || strings.Contains(parsed.Fragment, ":path") || strings.Contains(parsed.Host, ":path") {
+		return "", fmt.Errorf(":path must be in the URL path component")
+	}
+	pathText := parsed.Path
+	if !strings.Contains(pathText, ":path") {
+		return "", fmt.Errorf(":path must be in the URL path component")
+	}
+	for index := 0; index < len(raw); index++ {
+		if raw[index] != ':' || index+1 >= len(raw) || !isASCIIPlaceholderLetter(raw[index+1]) {
+			continue
+		}
+		end := index + 2
+		for end < len(raw) && (isASCIIPlaceholderLetter(raw[end]) || raw[end] >= '0' && raw[end] <= '9' || raw[end] == '_' || raw[end] == '-') {
+			end++
+		}
+		if raw[index:end] != ":path" {
+			return "", fmt.Errorf("unknown template placeholder %q", raw[index:end])
+		}
+		index = end - 1
+	}
+	return raw, nil
+}
+
+func isASCIIPlaceholderLetter(value byte) bool {
+	return value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
 }
 
 func discoverOptionalRegularFile(vaultRoot string, relPath string, label string) (string, error) {
@@ -405,7 +810,7 @@ func normalizeBaseURL(raw string) (string, error) {
 	if rawPath := rawBaseURLPath(raw); strings.Contains(rawPath, "%") {
 		escapedPath = rawPath
 	}
-	for _, component := range strings.Split(escapedPath, "/") {
+	for component := range strings.SplitSeq(escapedPath, "/") {
 		if !strings.Contains(component, "%") {
 			continue
 		}

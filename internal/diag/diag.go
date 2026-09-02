@@ -24,6 +24,13 @@ const (
 	KindUnsupportedSyntax Kind = "unsupported_syntax"
 	KindUnresolvedAsset   Kind = "unresolved_asset"
 	KindOutputCleanup     Kind = "output_cleanup"
+	KindSchema            Kind = "schema"
+	KindSection           Kind = "section"
+	KindNavigation        Kind = "navigation"
+	KindRoute             Kind = "route"
+	KindVersion           Kind = "version"
+	KindMetadata          Kind = "metadata"
+	KindOrder             Kind = "order"
 )
 
 // Location pinpoints the source of a diagnostic in a vault file.
