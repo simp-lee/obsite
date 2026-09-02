@@ -19,12 +19,13 @@ type strictLinkExtender struct {
 	index       *model.VaultIndex
 	sourceNote  *model.Note
 	outputNote  *model.Note
+	assetSink   AssetSink
 	diagnostics *diag.Collector
 }
 
 func (e strictLinkExtender) Extend(markdown goldmark.Markdown) {
 	markdown.Renderer().AddOptions(renderer.WithNodeRenderers(util.Prioritized(&strictLinkRenderer{
-		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, diagnostics: e.diagnostics,
+		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, assetSink: e.assetSink, diagnostics: e.diagnostics,
 	}, 499)))
 }
 
@@ -33,6 +34,7 @@ type strictLinkRenderer struct {
 	index       *model.VaultIndex
 	sourceNote  *model.Note
 	outputNote  *model.Note
+	assetSink   AssetSink
 	diagnostics *diag.Collector
 }
 
@@ -90,10 +92,28 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	}
 	lookup := internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
 	if lookup.Note == nil {
+		if resource := r.index.LookupResourcePath(vaultPath).Path; resource != "" {
+			destination := resource
+			if r.assetSink != nil {
+				if planned := r.assetSink.Register(resource); planned != "" {
+					destination = planned
+				}
+			}
+			suffix := ""
+			if parsed.RawQuery != "" {
+				suffix += "?" + parsed.RawQuery
+			}
+			if fragment != "" {
+				suffix += "#" + fragment
+			}
+			return relativeToNoteOutput(r.outputNote, destination) + suffix
+		}
 		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
 			if r.diagnostics != nil {
 				r.diagnostics.Warningf(diag.KindDeadLink, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown link %q could not be resolved", raw)
 			}
+		} else if targetPath != "" && r.diagnostics != nil {
+			r.diagnostics.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown attachment %q could not be resolved", raw)
 		}
 		return raw
 	}

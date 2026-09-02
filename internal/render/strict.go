@@ -51,6 +51,15 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		}
 		body.WriteString(`</ul>`)
 	}
+	if versions := strictChildVersions(plan, section); len(versions) > 0 {
+		body.WriteString(`<h2>Versions</h2><ul class="section-versions">`)
+		for _, version := range versions {
+			if version != nil && version.Root != nil {
+				_, _ = fmt.Fprintf(&body, `<li><a href="%s">%s</a></li>`, esc(strictSitePath(plan, version.Root.Route)), esc(version.Label))
+			}
+		}
+		body.WriteString(`</ul>`)
+	}
 	if len(section.Articles) > 0 {
 		body.WriteString(`<h2>Articles</h2><ul class="section-articles">`)
 		for _, article := range section.Articles {
@@ -596,6 +605,19 @@ func strictMarkdown(index *model.VaultIndex, note *model.Note, assets markdown.A
 		return "", err
 	}
 	return output.String(), nil
+}
+
+func strictChildVersions(plan *model.SitePlan, section *model.Section) []*model.Version {
+	if plan == nil || section == nil {
+		return nil
+	}
+	result := make([]*model.Version, 0)
+	for _, version := range plan.Versions {
+		if version != nil && version.Root != nil && path.Dir(version.Root.RelPath) == section.RelPath {
+			result = append(result, version)
+		}
+	}
+	return result
 }
 
 func findStrictSection(plan *model.SitePlan, relPath, versionID string) *model.Section {

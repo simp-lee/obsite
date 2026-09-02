@@ -234,7 +234,7 @@ func minimumUniqueHashPrefix(hashes map[string]string) int {
 }
 
 func plainAssetPath(srcPath string) string {
-	return path.Join(outputDirPrefix, path.Base(srcPath))
+	return path.Join(outputDirPrefix, encodeAssetSegment(path.Base(srcPath)))
 }
 
 func hashedAssetPath(srcPath string, suffix string) string {
@@ -252,7 +252,22 @@ func hashedAssetPathForBase(baseName string, suffix string) string {
 		stem = baseName
 	}
 
-	return path.Join(outputDirPrefix, stem+"."+suffix+ext)
+	return path.Join(outputDirPrefix, encodeAssetSegment(stem)+"."+suffix+ext)
+}
+
+func encodeAssetSegment(value string) string {
+	const hex = "0123456789ABCDEF"
+	var result strings.Builder
+	for _, b := range []byte(value) {
+		if b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~' {
+			result.WriteByte(b)
+		} else {
+			result.WriteByte('%')
+			result.WriteByte(hex[b>>4])
+			result.WriteByte(hex[b&0x0f])
+		}
+	}
+	return result.String()
 }
 
 func normalizeAssetSource(key string, asset *model.Asset) string {

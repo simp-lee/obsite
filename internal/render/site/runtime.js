@@ -235,7 +235,7 @@
       link.href = buildNodeHref(node.url);
       link.textContent = node.name;
       if (popoverEnabled && !isDirectory) {
-        link.setAttribute("data-popover-path", key);
+        link.setAttribute("data-popover-path", node.source || key);
       }
       if (isCurrent) {
         link.classList.add("is-current");

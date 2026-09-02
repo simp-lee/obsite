@@ -40,6 +40,10 @@ versions:
 	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
 		t.Fatal(err)
 	}
+	docs := readBuildOutputFile(t, output, "docs/index.html")
+	if !bytes.Contains(docs, []byte("Version 1")) || !bytes.Contains(docs, []byte("Version 2")) {
+		t.Fatalf("version entry points missing from docs landing:\n%s", docs)
+	}
 	v1 := readBuildOutputFile(t, output, "docs/v1/Start%20Here/index.html")
 	v2 := readBuildOutputFile(t, output, "docs/v2/Start%20Here/index.html")
 	for _, page := range [][]byte{v1, v2} {

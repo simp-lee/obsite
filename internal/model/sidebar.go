@@ -5,6 +5,7 @@ package model
 type SidebarNode struct {
 	Name     string        `json:"name"`
 	URL      string        `json:"url"`
+	Source   string        `json:"source,omitempty"`
 	IsDir    bool          `json:"isDir,omitempty"`
 	Children []SidebarNode `json:"children,omitempty"`
 }

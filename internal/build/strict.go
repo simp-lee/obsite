@@ -617,7 +617,7 @@ func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	}
 	for _, article := range section.Articles {
 		if article != nil {
-			result = append(result, model.SidebarNode{Name: article.Frontmatter.Title, URL: article.Route})
+			result = append(result, model.SidebarNode{Name: article.Frontmatter.Title, URL: article.Route, Source: article.RelPath})
 		}
 	}
 	return result
