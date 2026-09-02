@@ -83,10 +83,7 @@ func executeForTest(t *testing.T, deps commandDependencies, args []string) (stdo
 
 func testCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadSiteInput: func(resolvedVault string) (internalbuild.SiteInput, error) {
-			return internalbuild.SiteInput{}, fmt.Errorf("unexpected loadSiteInput call")
-		},
-		buildSiteWithOptions: func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+		buildSiteWithOptions: func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 			return nil, fmt.Errorf("unexpected buildSiteWithOptions call")
 		},
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {

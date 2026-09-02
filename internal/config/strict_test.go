@@ -7,21 +7,20 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestLoadStrictForBuildRequiresRevisedNavigationAndRejectsLegacyPublishDefault(t *testing.T) {
+func TestStrictConfigRejectsLegacyAndRequiresNavigation(t *testing.T) {
 	for name, content := range map[string]string{
 		"missing navigation": "title: Site\nbaseURL: https://example.test/\n",
 		"legacy default":     "title: Site\nbaseURL: https://example.test/\nnavigation: []\ndefaultPublish: true\n",
 	} {
 		t.Run(name, func(t *testing.T) {
-			vault := writeConfigVault(t, content)
-			if _, err := LoadStrictForBuild(vault); err == nil {
-				t.Fatal("LoadStrictForBuild() error = nil, want schema error")
+			if _, err := LoadForBuild(writeConfigVault(t, content)); err == nil {
+				t.Fatal("LoadForBuild() error = nil")
 			}
 		})
 	}
 }
 
-func TestLoadStrictForBuildNormalizesNavigationSourceAndVersions(t *testing.T) {
+func TestStrictConfigNormalizesNavigationSourceAndVersions(t *testing.T) {
 	vault := writeConfigVault(t, `title: Site
 baseURL: https://example.test/base
 navigation:
@@ -39,35 +38,25 @@ versions:
       label: Version 1
       source: v1
 `)
-	cfg, err := LoadStrictForBuild(vault)
+	cfg, err := LoadForBuild(vault)
 	if err != nil {
-		t.Fatalf("LoadStrictForBuild() error = %v", err)
+		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	if len(cfg.Navigation) != 2 || cfg.Navigation[0].Section != "." || cfg.Navigation[1].URL == "" {
-		t.Fatalf("navigation = %#v", cfg.Navigation)
-	}
-	if cfg.Source.EditURL != "https://git.example.test/edit/:path" || cfg.Versions == nil || cfg.Versions.Entries[0].ID != "v1" {
+	if len(cfg.Navigation) != 2 || cfg.Navigation[0].Section != "." || cfg.Source.EditURL == "" || cfg.Versions == nil {
 		t.Fatalf("normalized config = %#v", cfg)
 	}
 }
 
-func TestNormalizeSiteConfigRejectsSourceTemplatePlaceholdersAndVersionOverlap(t *testing.T) {
-	_, err := NormalizeSiteConfig(structuredConfig(model.SourceConfig{ViewURL: "https://example.test:8443/view/:path/:branch"}, nil))
+func TestStrictConfigRejectsUnknownSourcePlaceholderAndOverlappingVersions(t *testing.T) {
+	_, err := NormalizeSiteConfig(structuredConfig(model.SourceConfig{ViewURL: "https://example.test/view/:path/:branch"}, nil))
 	if err == nil || !strings.Contains(err.Error(), "unknown template placeholder") {
-		t.Fatalf("source error = %v, want unknown placeholder", err)
+		t.Fatalf("source error = %v", err)
 	}
 	versions := &model.VersionsConfig{Root: "docs", Default: "v1", Entries: []model.VersionEntry{
 		{ID: "v1", Label: "one", Source: "v1"}, {ID: "v2", Label: "two", Source: "v1/chapter"},
 	}}
 	_, err = NormalizeSiteConfig(structuredConfig(model.SourceConfig{}, versions))
 	if err == nil || !strings.Contains(err.Error(), "overlaps") {
-		t.Fatalf("version error = %v, want overlap rejection", err)
+		t.Fatalf("version error = %v", err)
 	}
-}
-
-func structuredConfig(source model.SourceConfig, versions *model.VersionsConfig) model.SiteConfig {
-	cfg := Defaults()
-	cfg.Title, cfg.BaseURL = "Site", "https://example.test/"
-	cfg.Source, cfg.Versions = source, versions
-	return cfg
 }

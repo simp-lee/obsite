@@ -1,0 +1,19 @@
+baseURL: https://example.com/blog/
+title: Site Garden
+author: Site Author
+description: A strict section-based fixture.
+navigation:
+  - name: Home
+    section: .
+  - name: Guide
+    section: guide
+source:
+  editURL: https://git.example.test/edit/:path
+  viewURL: https://git.example.test/view/:path
+sidebar:
+  enabled: true
+related:
+  enabled: true
+  count: 2
+rss:
+  enabled: true

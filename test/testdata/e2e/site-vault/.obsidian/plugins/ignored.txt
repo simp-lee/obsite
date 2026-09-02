@@ -1,1 +1,0 @@
-this plugin file should be ignored by scan and never copied

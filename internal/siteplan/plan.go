@@ -8,16 +8,22 @@ import (
 	"image"
 	_ "image/jpeg"
 	_ "image/png"
+	"io/fs"
 	"net/url"
 	"path"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/render"
+	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/simp-lee/obsite/internal/vault"
 	_ "golang.org/x/image/webp"
@@ -29,9 +35,12 @@ import (
 // output is considered. Diagnostics are sorted and safe to pass to a later
 // shared analyzer.
 type Result struct {
-	Plan        *model.SitePlan
-	Sources     vault.StrictFrontmatterResult
-	Diagnostics []diag.Diagnostic
+	Plan            *model.SitePlan
+	Scan            vault.ScanResult
+	Sources         vault.StrictFrontmatterResult
+	Index           *model.VaultIndex
+	RelatedSemantic []model.RelatedSemanticDocument
+	Diagnostics     []diag.Diagnostic
 }
 
 // Build loads the vault-local configuration and creates a strict site plan.
@@ -40,16 +49,34 @@ func Build(vaultPath string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := internalconfig.LoadStrictForBuild(resolved)
+	cfg, err := internalconfig.LoadForBuild(resolved)
 	if err != nil {
 		return nil, err
 	}
 	return BuildWithConfig(resolved, cfg)
 }
 
+// BuildForOutput creates the same strict plan while excluding the resolved
+// publication destination from vault discovery.
+func BuildForOutput(vaultPath, outputPath string) (*Result, error) {
+	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := internalconfig.LoadForBuild(boundary.VaultPath)
+	if err != nil {
+		return nil, err
+	}
+	return buildWithConfigAndOutput(boundary.VaultPath, cfg, boundary.OutputPath)
+}
+
 // BuildWithConfig creates a strict plan from an already loaded configuration.
 // The configuration is normalized again so callers cannot bypass its contract.
 func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
+	return buildWithConfigAndOutput(vaultPath, cfg, "")
+}
+
+func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath string) (*Result, error) {
 	collector := diag.NewCollector()
 	cfg, err := internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
@@ -59,7 +86,7 @@ func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	scan, err := vault.ScanWithOptions(resolvedVault, vault.ScanOptions{})
+	scan, err := vault.ScanWithOptions(resolvedVault, vault.ScanOptions{OutputPath: outputPath})
 	if err != nil {
 		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: resolvedVault}, diag.KindSchema, err)}, err
 	}
@@ -121,11 +148,27 @@ func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
 	validateNavigation(sections, cfg.Navigation, collector)
-	validatePlannedAssets(resolvedVault, plan, collector)
+	validatePlannedAssets(resolvedVault, plan, sources, collector)
+	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
+	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{CollectRelatedSemantic: cfg.Related.Enabled})
+	if indexErr != nil {
+		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
+	}
+	if indexResult.Index != nil {
+		validateStrictMarkdown(plan, indexResult.Index, collector)
+		for _, tag := range sortedStrictTags(indexResult.Index.Tags) {
+			if tag != nil {
+				claimRoute(plan, "/"+tag.Slug+"/", "tag:"+tag.Name, collector)
+			}
+		}
+		if cfg.Timeline.Enabled {
+			claimRoute(plan, "/"+strings.Trim(cfg.Timeline.Path, "/")+"/", "timeline", collector)
+		}
+	}
 
-	result := &Result{Plan: plan, Sources: sources, Diagnostics: collector.Diagnostics()}
+	result := &Result{Plan: plan, Scan: scan, Sources: sources, Index: indexResult.Index, RelatedSemantic: indexResult.RelatedSemantic, Diagnostics: collector.Diagnostics()}
 	if collector.HasErrors() {
 		return result, fmt.Errorf("site plan has %d error(s)", collector.ErrorCount())
 	}
@@ -531,7 +574,71 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 	}
 }
 
-func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {
+func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {
+	if plan == nil || collector == nil {
+		return
+	}
+	if plan.Config.CustomCSS != "" {
+		if _, _, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, plan.Config.CustomCSS); err != nil {
+			record(collector, diag.KindMetadata, plan.Config.CustomCSS, "custom CSS: %v", err)
+		}
+	}
+	if plan.Config.ThemeDir == "" {
+		return
+	}
+	relTheme, err := filepath.Rel(vaultRoot, plan.Config.ThemeDir)
+	if err != nil || relTheme == ".." || strings.HasPrefix(relTheme, ".."+string(filepath.Separator)) || filepath.IsAbs(relTheme) {
+		record(collector, diag.KindMetadata, plan.Config.ThemeDir, "theme directory must be inside the vault")
+		return
+	}
+	_ = filepath.WalkDir(plan.Config.ThemeDir, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			record(collector, diag.KindMetadata, current, "theme entry: %v", walkErr)
+			return nil
+		}
+		rel, err := filepath.Rel(plan.Config.ThemeDir, current)
+		if err != nil {
+			record(collector, diag.KindMetadata, current, "theme entry path: %v", err)
+			return nil
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if entry.Type()&fs.ModeSymlink != 0 {
+			record(collector, diag.KindMetadata, current, "theme entry %q must not be a symbolic link", rel)
+			return nil
+		}
+		if entry.IsDir() {
+			if rel != "assets" && !strings.HasPrefix(rel, "assets/") {
+				record(collector, diag.KindMetadata, current, "unsupported theme directory %q", rel)
+			}
+			return nil
+		}
+		if rel == "theme.css" {
+			return nil
+		}
+		_, data, _, readErr := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
+		if readErr != nil {
+			record(collector, diag.KindMetadata, current, "theme entry %q: %v", rel, readErr)
+			return nil
+		}
+		if rel == "slots.html" {
+			if slotErr := render.ValidateThemeSlots(string(data)); slotErr != nil {
+				record(collector, diag.KindMetadata, current, "theme slots: %v", slotErr)
+			} else {
+				plan.Config.ThemeSlots = string(data)
+			}
+			return nil
+		}
+		if !strings.HasPrefix(rel, "assets/") {
+			record(collector, diag.KindMetadata, current, "unsupported theme entry %q", rel)
+		}
+		return nil
+	})
+}
+
+func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault.StrictFrontmatterResult, collector *diag.Collector) {
 	seen := make(map[string]struct{})
 	check := func(source, kind string) {
 		if source == "" {
@@ -548,7 +655,7 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, collector *di
 		}
 		lower := strings.ToLower(source)
 		supported := strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp")
-		if kind == "banner" {
+		if kind == "banner" || kind == "defaultImg" {
 			supported = supported || strings.HasSuffix(lower, ".svg")
 		}
 		if !supported {
@@ -561,9 +668,8 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, collector *di
 			return
 		}
 		if strings.HasSuffix(lower, ".svg") {
-			text := strings.ToLower(string(data))
-			if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "//") || strings.Contains(text, "@import") {
-				record(collector, diag.KindMetadata, source, "banner contains an external SVG reference")
+			if err := internalasset.ValidateLocalSVG(data); err != nil {
+				record(collector, diag.KindMetadata, source, "banner SVG: %v", err)
 			}
 			return
 		}
@@ -571,17 +677,88 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, collector *di
 			record(collector, diag.KindMetadata, source, "%s cannot be decoded: %v", kind, err)
 		}
 	}
-	for _, section := range plan.Sections {
-		if section != nil {
-			check(section.Banner, "banner")
+	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
+		check(plan.Config.DefaultImg, "defaultImg")
+	}
+	for _, source := range sources.Sources {
+		if source.Section != nil {
+			check(source.Section.Frontmatter.Banner, "banner")
 		}
+		if source.Article != nil {
+			check(source.Article.Frontmatter.Banner, "banner")
+			check(source.Article.Frontmatter.Cover, "cover")
+		}
+	}
+}
+
+type validationAssetSink struct{}
+
+func (validationAssetSink) Register(value string) string {
+	return "assets/" + strings.TrimPrefix(value, "/")
+}
+
+func validateStrictMarkdown(plan *model.SitePlan, index *model.VaultIndex, collector *diag.Collector) {
+	if plan == nil || index == nil || collector == nil {
+		return
 	}
 	for _, article := range plan.Articles {
-		if article != nil {
-			check(article.Frontmatter.Banner, "banner")
-			check(article.Frontmatter.Cover, "cover")
+		if article == nil {
+			continue
+		}
+		indexed := index.Notes[article.RelPath]
+		if indexed == nil {
+			continue
+		}
+		validateStrictMarkdownNote(index, indexed, collector)
+	}
+	for _, section := range plan.Sections {
+		if section == nil {
+			continue
+		}
+		note := &model.Note{RelPath: section.SourcePath, BodyStartLine: section.BodyStartLine, RawContent: section.RawContent, Route: section.Route, Slug: strings.Trim(section.Route, "/")}
+		validateStrictMarkdownNote(index, note, collector)
+	}
+}
+
+func validateStrictMarkdownNote(index *model.VaultIndex, note *model.Note, collector *diag.Collector) {
+	md, _ := markdown.NewMarkdown(index, note, validationAssetSink{}, collector)
+	var rendered bytes.Buffer
+	if err := md.Convert(note.RawContent, &rendered); err != nil {
+		collector.Errorf(diag.KindSchema, diag.Location{Path: note.RelPath}, "render Markdown: %v", err)
+		return
+	}
+	for _, ref := range note.ImageRefs {
+		if isExternalStrictAsset(ref.RawTarget) || resourcepath.ResolveIndexedAssetPath(note, index, ref.RawTarget) != "" {
+			continue
+		}
+		collector.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: note.RelPath, Line: ref.Line}, "image %q could not be resolved to a vault asset", ref.RawTarget)
+	}
+	for _, ref := range note.Embeds {
+		if !ref.IsImage || isExternalStrictAsset(ref.Target) || resourcepath.ResolveIndexedAssetPath(note, index, ref.Target) != "" {
+			continue
+		}
+		collector.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: note.RelPath, Line: ref.Line}, "image embed %q could not be resolved to a vault asset", ref.Target)
+	}
+}
+
+func isExternalStrictAsset(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
+		return true
+	}
+	parsed, err := url.Parse(raw)
+	return err == nil && parsed.IsAbs()
+}
+
+func sortedStrictTags(tags map[string]*model.Tag) []*model.Tag {
+	values := make([]*model.Tag, 0, len(tags))
+	for _, tag := range tags {
+		if tag != nil {
+			values = append(values, tag)
 		}
 	}
+	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
+	return values
 }
 
 func buildVersionCorrespondence(versions []*model.Version) {
@@ -711,7 +888,11 @@ func articleLess(left, right *model.Note) bool {
 	if lt != rt {
 		return lt < rt
 	}
-	return fold(left.RelPath) < fold(right.RelPath)
+	leftPath, rightPath := norm.NFKC.String(left.RelPath), norm.NFKC.String(right.RelPath)
+	if leftPath != rightPath {
+		return leftPath < rightPath
+	}
+	return left.RelPath < right.RelPath
 }
 
 func numericPrefixValue(prefix string) int64 {
@@ -743,13 +924,17 @@ func sectionLess(left, right *model.Section) bool {
 	if fold(left.Title) != fold(right.Title) {
 		return fold(left.Title) < fold(right.Title)
 	}
-	return fold(left.RelPath) < fold(right.RelPath)
+	leftPath, rightPath := norm.NFKC.String(left.RelPath), norm.NFKC.String(right.RelPath)
+	if leftPath != rightPath {
+		return leftPath < rightPath
+	}
+	return left.RelPath < right.RelPath
 }
 func sectionPathKey(section *model.Section) string {
 	if section == nil {
 		return ""
 	}
-	return fold(section.RelPath)
+	return fold(section.RelPath) + "\x00" + norm.NFKC.String(section.RelPath) + "\x00" + section.RelPath
 }
 func fold(value string) string { return cases.Fold().String(norm.NFKC.String(value)) }
 

@@ -2,7 +2,6 @@ package vault
 
 import (
 	"fmt"
-	"path"
 	"runtime"
 	"sort"
 	"strconv"
@@ -15,7 +14,6 @@ import (
 	"github.com/simp-lee/obsite/internal/markdown/comment"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
-	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/text"
@@ -48,34 +46,54 @@ type indexedNoteResult struct {
 	relatedSemantic *model.RelatedSemanticDocument
 }
 
-// BuildIndex applies the requested pass-1 options and returns build-owned outputs.
-func BuildIndex(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options BuildIndexOptions) (IndexResult, error) {
-	return buildIndexResultWithOptions(scanResult, frontmatterResult, diagCollector, indexBuildOptions{
-		concurrency:            options.Concurrency,
-		collectRelatedSemantic: options.CollectRelatedSemantic,
-	})
-}
-
-func buildIndexResultWithOptions(scanResult ScanResult, frontmatterResult FrontmatterResult, diagCollector *diag.Collector, options indexBuildOptions) (IndexResult, error) {
+// BuildStrictIndex indexes only the articles selected by the canonical site
+// plan. It deliberately does not assign fallback slugs or read a second
+// frontmatter/configuration contract.
+func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, public []*model.Note, publicSections []*model.Section, diagCollector *diag.Collector, options BuildIndexOptions) (IndexResult, error) {
+	unpublished := model.UnpublishedLookup{
+		Notes:       make(map[string]*model.Note),
+		NoteByName:  make(map[string][]*model.Note),
+		AliasByName: make(map[string][]*model.Note),
+	}
+	publicPaths := make(map[string]struct{}, len(public))
+	for _, note := range public {
+		if note != nil {
+			publicPaths[note.RelPath] = struct{}{}
+		}
+	}
+	for _, note := range sources.AllArticles {
+		if note == nil {
+			continue
+		}
+		if _, ok := publicPaths[note.RelPath]; ok {
+			continue
+		}
+		unpublished.Notes[note.RelPath] = note
+		key := noteLookupName(note.RelPath)
+		unpublished.NoteByName[key] = append(unpublished.NoteByName[key], note)
+		for _, alias := range note.Aliases {
+			if key := aliasLookupName(alias); key != "" {
+				unpublished.AliasByName[key] = append(unpublished.AliasByName[key], note)
+			}
+		}
+	}
 	idx := &model.VaultIndex{
 		AttachmentFolderPath: scanResult.AttachmentFolderPath,
-		Notes:                make(map[string]*model.Note, len(frontmatterResult.PublicNotes)),
-		NoteBySlug:           make(map[string]*model.Note, len(frontmatterResult.PublicNotes)),
+		Notes:                make(map[string]*model.Note, len(public)),
+		NoteBySlug:           make(map[string]*model.Note, len(public)),
 		NoteByName:           make(map[string][]*model.Note),
 		AliasByName:          make(map[string][]*model.Note),
 		Tags:                 make(map[string]*model.Tag),
 		Assets:               make(map[string]*model.Asset),
-		Unpublished:          cloneUnpublishedLookup(frontmatterResult.Unpublished),
+		Unpublished:          unpublished,
 	}
-
-	if err := assignSlugs(frontmatterResult.PublicNotes, diagCollector); err != nil {
-		return IndexResult{}, err
-	}
-
 	parser := markdown.NewParser(diagCollector)
-	indexedNotes := indexPublicNotes(frontmatterResult.PublicNotes, scanResult, parser, diagCollector, options)
+	indexedNotes := indexPublicNotes(public, scanResult, parser, diagCollector, indexBuildOptions{
+		concurrency:            options.Concurrency,
+		collectRelatedSemantic: options.CollectRelatedSemantic,
+	})
 	var relatedSemantic []model.RelatedSemanticDocument
-	if options.collectRelatedSemantic && len(indexedNotes) > 0 {
+	if options.CollectRelatedSemantic && len(indexedNotes) > 0 {
 		relatedSemantic = newRelatedSemanticOwner(len(indexedNotes))
 	}
 	for _, indexed := range indexedNotes {
@@ -83,27 +101,37 @@ func buildIndexResultWithOptions(scanResult ScanResult, frontmatterResult Frontm
 		if note == nil {
 			continue
 		}
-
 		idx.Notes[note.RelPath] = note
-		idx.NoteBySlug[note.Slug] = note
-		idx.NoteByName[noteLookupName(note.RelPath)] = append(idx.NoteByName[noteLookupName(note.RelPath)], note)
+		if note.Slug != "" {
+			idx.NoteBySlug[note.Slug] = note
+		}
+		key := noteLookupName(note.RelPath)
+		idx.NoteByName[key] = append(idx.NoteByName[key], note)
 		for _, alias := range note.Aliases {
-			lookup := aliasLookupName(alias)
-			if lookup == "" {
-				continue
+			if key := aliasLookupName(alias); key != "" {
+				idx.AliasByName[key] = append(idx.AliasByName[key], note)
 			}
-			appendUnpublishedLookup(idx.AliasByName, lookup, note)
 		}
 		mergeIndexedAssets(idx.Assets, indexed.assets)
 		if indexed.relatedSemantic != nil {
 			relatedSemantic = append(relatedSemantic, *indexed.relatedSemantic)
 		}
 	}
-
 	idx.SetAssets(idx.Assets)
 	idx.SetResources(scanResult.ResourceFiles)
-	idx.Tags = buildTagIndex(frontmatterResult.PublicNotes)
-
+	sectionNotes := make([]*model.Note, 0, len(publicSections))
+	for _, section := range publicSections {
+		if section != nil {
+			sectionNotes = append(sectionNotes, &model.Note{RelPath: section.SourcePath, RawContent: cloneBytes(section.RawContent), BodyStartLine: section.BodyStartLine, Route: section.Route, Slug: strings.Trim(section.Route, "/"), Frontmatter: model.Frontmatter{Title: section.Title}})
+		}
+	}
+	for _, indexed := range indexPublicNotes(sectionNotes, scanResult, parser, diagCollector, indexBuildOptions{concurrency: options.Concurrency}) {
+		if indexed.note != nil {
+			mergeIndexedAssets(idx.Assets, indexed.assets)
+		}
+	}
+	idx.SetAssets(idx.Assets)
+	idx.Tags = buildTagIndex(public)
 	return IndexResult{Index: idx, RelatedSemantic: relatedSemantic}, nil
 }
 
@@ -188,7 +216,7 @@ func buildIndexedNoteResult(
 		headings, body := markdown.RelatedSemanticText(root, note.RawContent)
 		relatedSemantic = &model.RelatedSemanticDocument{
 			RelPath:  note.RelPath,
-			Title:    relatedSemanticTitle(note),
+			Title:    note.Frontmatter.Title,
 			Aliases:  append([]string(nil), note.Aliases...),
 			Headings: headings,
 			Body:     body,
@@ -201,21 +229,6 @@ func buildIndexedNoteResult(
 //go:noinline
 func newRelatedSemanticOwner(capacity int) []model.RelatedSemanticDocument {
 	return make([]model.RelatedSemanticDocument, 0, capacity)
-}
-
-func relatedSemanticTitle(note *model.Note) string {
-	if note == nil {
-		return ""
-	}
-	if title := strings.TrimSpace(note.Frontmatter.Title); title != "" {
-		return title
-	}
-
-	base := path.Base(strings.ReplaceAll(note.RelPath, `\\`, "/"))
-	if base == "." || base == "" || base == "/" {
-		return ""
-	}
-	return strings.TrimSuffix(base, path.Ext(base))
 }
 
 func normalizeIndexConcurrency(concurrency int, total int) int {
@@ -259,47 +272,6 @@ func mergeIndexedAssets(dst map[string]*model.Asset, src map[string]*model.Asset
 			existing.DstPath = asset.DstPath
 		}
 	}
-}
-
-func assignSlugs(notes []*model.Note, diagCollector *diag.Collector) error {
-	candidates := make([]slug.Candidate, 0, len(notes))
-	for _, note := range notes {
-		if note == nil {
-			continue
-		}
-
-		var frontmatterSlug *string
-		if note.Frontmatter.Slug != "" {
-			frontmatterSlug = &note.Frontmatter.Slug
-		}
-
-		generated, err := slug.Generate(frontmatterSlug, note.RelPath)
-		if err != nil {
-			return fmt.Errorf("generate slug for %q: %w", note.RelPath, err)
-		}
-
-		note.Slug = generated
-		candidates = append(candidates, slug.Candidate{Source: note.RelPath, Slug: generated})
-	}
-
-	conflicts, invalid := slug.DetectConflicts(candidates)
-	if len(invalid) > 0 {
-		return fmt.Errorf("invalid slug for %q", invalid[0].Source)
-	}
-	if len(conflicts) == 0 {
-		return nil
-	}
-
-	for _, conflict := range conflicts {
-		for _, source := range conflict.Sources {
-			if diagCollector != nil {
-				diagCollector.Errorf(diag.KindSlugConflict, diag.Location{Path: source}, "slug %q conflicts with %s", conflict.Slug, strings.Join(conflict.Sources, ", "))
-			}
-		}
-	}
-
-	first := conflicts[0]
-	return fmt.Errorf("slug conflict for %q across %s", first.Slug, strings.Join(first.Sources, ", "))
 }
 
 func extractNoteMetadata(
@@ -696,26 +668,6 @@ func nodeStartOffset(node gast.Node) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func cloneUnpublishedLookup(lookup model.UnpublishedLookup) model.UnpublishedLookup {
-	cloned := model.UnpublishedLookup{
-		Notes:       make(map[string]*model.Note, len(lookup.Notes)),
-		NoteByName:  make(map[string][]*model.Note, len(lookup.NoteByName)),
-		AliasByName: make(map[string][]*model.Note, len(lookup.AliasByName)),
-	}
-
-	for key, note := range lookup.Notes {
-		cloned.Notes[key] = note
-	}
-	for key, notes := range lookup.NoteByName {
-		cloned.NoteByName[key] = append([]*model.Note(nil), notes...)
-	}
-	for key, notes := range lookup.AliasByName {
-		cloned.AliasByName[key] = append([]*model.Note(nil), notes...)
-	}
-
-	return cloned
 }
 
 func cloneBytes(src []byte) []byte {

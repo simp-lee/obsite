@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -14,7 +13,6 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
-	"github.com/simp-lee/obsite/internal/model"
 )
 
 func TestServeCommandDefaultsToCurrentVaultPublicOutput(t *testing.T) {
@@ -76,16 +74,9 @@ func TestServeCommandWatchRoutesBuildDiagnosticsAndWatchErrorsToInjectedStderr(t
 	listenStarted := make(chan struct{}, 1)
 	listenBlock := make(chan struct{})
 	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
-	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
-	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
-		return expectedInput, nil
-	}
-	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		if options.DiagnosticsWriter == nil {
 			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
-		}
-		if !reflect.DeepEqual(input, expectedInput) {
-			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		if _, err := options.DiagnosticsWriter.Write([]byte("Warnings (1):\n- build [structured_data] synthetic build warning\n")); err != nil {
 			t.Fatalf("DiagnosticsWriter.Write() error = %v", err)
@@ -233,11 +224,8 @@ func TestServeCommandWatchDefaultsToCurrentVaultAndPublicOutput(t *testing.T) {
 	t.Chdir(vaultPath)
 	writeCLIConfig(t, vaultPath)
 	deps := testCommandDependencies()
-	deps.loadSiteInput = func(vault string) (internalbuild.SiteInput, error) {
-		return internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}, nil
-	}
 	var builtVault, builtOutput, servedOutput string
-	deps.buildSiteWithOptions = func(_ internalbuild.SiteInput, vault string, output string, _ internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(vault string, output string, _ internalbuild.Options) (*internalbuild.BuildResult, error) {
 		builtVault, builtOutput = vault, output
 		if err := os.MkdirAll(output, 0o755); err != nil {
 			return nil, err
@@ -270,22 +258,13 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	deps := testCommandDependencies()
 	server := &fakePreviewServer{}
 	watcher := newFakeFileWatcher()
-	var gotLoadedVault string
 	var gotVaultPath string
 	var gotOutputPath string
-	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
-	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
-		gotLoadedVault = resolvedVault
-		return expectedInput, nil
-	}
-	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
+	deps.buildSiteWithOptions = func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		gotVaultPath = vaultPath
 		gotOutputPath = outputPath
 		if options.DiagnosticsWriter == nil {
 			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
-		}
-		if !reflect.DeepEqual(input, expectedInput) {
-			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
 		}
 		if err := os.MkdirAll(outputPath, 0o755); err != nil {
 			return nil, err
@@ -308,9 +287,6 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 	}
 	if stderr != "" {
 		t.Fatalf("stderr = %q, want empty stderr", stderr)
-	}
-	if gotLoadedVault != vaultPath {
-		t.Fatalf("loaded vault = %q, want %q", gotLoadedVault, vaultPath)
 	}
 	if gotVaultPath != vaultPath {
 		t.Fatalf("build vaultPath = %q, want %q", gotVaultPath, vaultPath)
@@ -340,20 +316,7 @@ func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 	listenBlock := make(chan struct{})
 	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock}
 	buildSignal := make(chan struct{}, 4)
-	var loadedVaultsMu sync.Mutex
-	loadedVaults := make([]string, 0, 2)
-	expectedInput := internalbuild.SiteInput{Config: model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/"}}
-
-	deps.loadSiteInput = func(resolvedVault string) (internalbuild.SiteInput, error) {
-		loadedVaultsMu.Lock()
-		loadedVaults = append(loadedVaults, resolvedVault)
-		loadedVaultsMu.Unlock()
-		return expectedInput, nil
-	}
-	deps.buildSiteWithOptions = func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
-		if !reflect.DeepEqual(input, expectedInput) {
-			t.Fatalf("build input = %#v, want %#v", input, expectedInput)
-		}
+	deps.buildSiteWithOptions = func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error) {
 		if err := os.MkdirAll(outputPath, 0o755); err != nil {
 			return nil, err
 		}
@@ -384,13 +347,6 @@ func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignalWithin(t, buildSignal, "config rebuild", 900*time.Millisecond)
-
-	loadedVaultsMu.Lock()
-	gotVaults := append([]string(nil), loadedVaults...)
-	loadedVaultsMu.Unlock()
-	if len(gotVaults) < 2 || gotVaults[0] != vaultPath || gotVaults[1] != vaultPath {
-		t.Fatalf("loadSiteInput vault calls = %#v, want %q twice", gotVaults, vaultPath)
-	}
 
 	close(listenBlock)
 	if err := <-errCh; err != nil {

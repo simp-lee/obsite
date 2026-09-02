@@ -101,9 +101,7 @@ type SectionRange struct {
 	EndOffset   int
 }
 
-// Frontmatter holds article metadata. Extra remains populated by the legacy
-// parser only; strict planning rejects unknown fields before constructing this
-// model.
+// Frontmatter holds the normalized strict article metadata.
 type Frontmatter struct {
 	Title          string
 	Description    string
@@ -124,7 +122,6 @@ type Frontmatter struct {
 	Cover          string
 	Banner         string
 	BannerAlt      string
-	Extra          map[string]any
 }
 
 // SectionFrontmatter is the deliberately smaller schema used by _index.md.

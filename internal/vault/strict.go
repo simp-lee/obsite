@@ -2,6 +2,7 @@ package vault
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"path"
@@ -13,18 +14,22 @@ import (
 
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
 	"gopkg.in/yaml.v3"
 )
 
 const maxInt32 = int64(1<<31 - 1)
+
+var utf8BOM = []byte{0xef, 0xbb, 0xbf}
+var errMissingClosingFrontmatterDelimiter = errors.New("missing closing frontmatter delimiter")
 
 var strictDatePattern = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
 var strictSlugPattern = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
 var strictOrderPattern = regexp.MustCompile(`^[0-9]+$`)
 
 // StrictFrontmatterResult is the schema-safe source handoff used by the
-// section planner. Unlike ParseFrontmatter, it never applies defaultPublish,
-// keeps _index.md out of the article list, and rejects unknown fields.
+// section planner. It keeps _index.md out of the article list and rejects
+// unknown fields.
 type StrictFrontmatterResult struct {
 	Sources     []model.PlannedSource
 	Sections    []*model.SectionSource
@@ -34,8 +39,7 @@ type StrictFrontmatterResult struct {
 }
 
 // ParseStrictFrontmatter parses the complete vault source set according to the
-// new section/article contract. It is deliberately separate from the old
-// indexer handoff until the renderer is switched to the normalized plan.
+// revised section/article contract.
 func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, error) {
 	result := StrictFrontmatterResult{
 		Sources:     make([]model.PlannedSource, 0, len(scanResult.MarkdownFiles)),
@@ -86,6 +90,115 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 	}
 	return result, nil
 }
+
+func splitFrontmatter(content []byte) ([]byte, []byte, int, bool, error) {
+	start := 0
+	if bytes.HasPrefix(content, utf8BOM) {
+		start = len(utf8BOM)
+	}
+	firstLine, next, ok := readLine(content, start)
+	if !ok || !isFrontmatterDelimiter(firstLine) {
+		return nil, content[start:], 1, false, nil
+	}
+	frontmatterStart, lineStart, lineNumber := next, next, 2
+	for {
+		line, nextLine, lineOK := readLine(content, lineStart)
+		if !lineOK {
+			if isLikelyFrontmatterBlock(content[frontmatterStart:], false) {
+				return nil, nil, 0, false, errMissingClosingFrontmatterDelimiter
+			}
+			return nil, content[start:], 1, false, nil
+		}
+		if isFrontmatterClosingDelimiter(line) {
+			block := content[frontmatterStart:lineStart]
+			if isLikelyFrontmatterBlock(block, true) {
+				return block, content[nextLine:], lineNumber + 1, true, nil
+			}
+			return nil, content[start:], 1, false, nil
+		}
+		if nextLine >= len(content) {
+			if isLikelyFrontmatterBlock(content[frontmatterStart:], false) {
+				return nil, nil, 0, false, errMissingClosingFrontmatterDelimiter
+			}
+			return nil, content[start:], 1, false, nil
+		}
+		lineStart, lineNumber = nextLine, lineNumber+1
+	}
+}
+
+func readLine(content []byte, start int) ([]byte, int, bool) {
+	if start >= len(content) {
+		return nil, start, false
+	}
+	lineEnd := start
+	for lineEnd < len(content) && content[lineEnd] != '\n' {
+		lineEnd++
+	}
+	next := lineEnd
+	if next < len(content) {
+		next++
+	}
+	return bytes.TrimSuffix(content[start:lineEnd], []byte{'\r'}), next, true
+}
+
+func isFrontmatterDelimiter(line []byte) bool { return bytes.Equal(line, []byte("---")) }
+func isFrontmatterClosingDelimiter(line []byte) bool {
+	return isFrontmatterDelimiter(line) || bytes.Equal(line, []byte("..."))
+}
+
+func isLikelyFrontmatterBlock(block []byte, closed bool) bool {
+	if len(bytes.TrimSpace(block)) == 0 {
+		return closed
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(block, &document); err == nil {
+		return len(document.Content) > 0 && document.Content[0].Kind == yaml.MappingNode
+	}
+	line, ok := firstNonBlankLine(block)
+	return ok && isLikelyYAMLMappingLine(bytes.TrimSpace(line))
+}
+
+func firstNonBlankLine(content []byte) ([]byte, bool) {
+	lineStart := 0
+	for {
+		line, next, ok := readLine(content, lineStart)
+		if !ok {
+			return nil, false
+		}
+		if len(bytes.TrimSpace(line)) != 0 {
+			return line, true
+		}
+		if next >= len(content) {
+			return nil, false
+		}
+		lineStart = next
+	}
+}
+
+func isLikelyYAMLMappingLine(line []byte) bool {
+	colon := bytes.IndexByte(line, ':')
+	if colon <= 0 {
+		return false
+	}
+	if colon == len(line)-1 {
+		return true
+	}
+	switch line[colon+1] {
+	case ' ', '\t', '[', '{', '|', '>', '&', '*', '!', '\'', '"':
+		return true
+	}
+	return false
+}
+
+func noteLookupName(relPath string) string {
+	base := path.Base(strings.ReplaceAll(relPath, `\\`, "/"))
+	if ext := path.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	return slug.Canonicalize(strings.TrimSpace(base))
+}
+
+func aliasLookupName(alias string) string { return slug.Canonicalize(strings.TrimSpace(alias)) }
 
 func strictMapping(data []byte, present bool) (map[string]*yaml.Node, error) {
 	if !present {
@@ -163,8 +276,8 @@ func decodeSectionSource(relPath string, body []byte, bodyStartLine int, info in
 	}
 	section := &model.SectionSource{
 		RelPath: relPath, SectionPath: path.Dir(relPath), RawContent: append([]byte(nil), body...),
-		BodyStartLine: bodyStartLine, LastModified: normalizeFilesystemTime(info.ModTime()),
-		Frontmatter: model.SectionFrontmatter{Title: title, Publish: publish},
+		BodyStartLine: bodyStartLine,
+		Frontmatter:   model.SectionFrontmatter{Title: title, Publish: publish},
 	}
 	if section.SectionPath == "." {
 		section.SectionPath = "."
@@ -218,7 +331,7 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 	if typeName != "doc" && typeName != "post" && typeName != "page" {
 		return nil, fmt.Errorf("type must be one of doc, post, or page")
 	}
-	note := &model.Note{RelPath: relPath, RawContent: append([]byte(nil), body...), BodyStartLine: bodyStartLine, LastModified: normalizeFilesystemTime(info.ModTime())}
+	note := &model.Note{RelPath: relPath, RawContent: append([]byte(nil), body...), BodyStartLine: bodyStartLine}
 	note.Frontmatter.Title, note.Frontmatter.Publish, note.Frontmatter.Type = title, publish, typeName
 	if value, ok := fields["description"]; ok {
 		note.Frontmatter.Description, err = strictString(value, "description", false)
@@ -288,7 +401,7 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 			case "status":
 				note.Frontmatter.Status = text
 				if text != "stable" && text != "experimental" && text != "deprecated" {
-					return nil, fmt.Errorf("status must be stable, experimental, or deprecated")
+					return nil, fmt.Errorf("status at line %d must be stable, experimental, or deprecated", value.Line)
 				}
 			case "audience":
 				note.Frontmatter.Audience = text
@@ -310,6 +423,8 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 	}
 	if !note.Frontmatter.Updated.IsZero() {
 		note.LastModified = note.Frontmatter.Updated
+	} else if !note.Frontmatter.Date.IsZero() {
+		note.LastModified = note.Frontmatter.Date
 	}
 	return note, nil
 }
@@ -328,29 +443,32 @@ func requiredStrictBool(fields map[string]*yaml.Node, name string) (*bool, error
 		return nil, fmt.Errorf("%s is required", name)
 	}
 	if value.Kind != yaml.ScalarNode || value.Tag != "!!bool" {
-		return nil, fmt.Errorf("%s must be a boolean", name)
+		return nil, fmt.Errorf("%s at line %d must be a boolean", name, value.Line)
 	}
 	parsed, err := strconv.ParseBool(strings.ToLower(value.Value))
 	if err != nil {
-		return nil, fmt.Errorf("%s must be a boolean", name)
+		return nil, fmt.Errorf("%s at line %d must be a boolean", name, value.Line)
 	}
 	return &parsed, nil
 }
 
 func strictString(node *yaml.Node, name string, nonEmpty bool) (string, error) {
-	if node == nil || node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+	if node == nil {
 		return "", fmt.Errorf("%s must be a string", name)
+	}
+	if node.Kind != yaml.ScalarNode || node.Tag != "!!str" {
+		return "", fmt.Errorf("%s at line %d must be a string", name, node.Line)
 	}
 	value := strings.TrimSpace(node.Value)
 	if nonEmpty && value == "" {
-		return "", fmt.Errorf("%s must be non-empty", name)
+		return "", fmt.Errorf("%s at line %d must be non-empty", name, node.Line)
 	}
 	return value, nil
 }
 
 func strictStringList(node *yaml.Node, name string) ([]string, error) {
 	if node.Kind != yaml.SequenceNode {
-		return nil, fmt.Errorf("%s must be a sequence of strings", name)
+		return nil, fmt.Errorf("%s at line %d must be a sequence of strings", name, node.Line)
 	}
 	values := make([]string, 0, len(node.Content))
 	seen := make(map[string]struct{}, len(node.Content))
@@ -360,7 +478,7 @@ func strictStringList(node *yaml.Node, name string) ([]string, error) {
 			return nil, err
 		}
 		if _, exists := seen[value]; exists {
-			continue
+			return nil, fmt.Errorf("%s contains duplicate value %q", name, value)
 		}
 		seen[value] = struct{}{}
 		values = append(values, value)
@@ -370,29 +488,29 @@ func strictStringList(node *yaml.Node, name string) ([]string, error) {
 
 func strictTime(node *yaml.Node, name string) (time.Time, error) {
 	if node.Kind != yaml.ScalarNode || (node.Tag != "!!str" && node.Tag != "!!timestamp") || !strictDatePattern.MatchString(node.Value) {
-		return time.Time{}, fmt.Errorf("%s must be RFC 3339 or YYYY-MM-DD", name)
+		return time.Time{}, fmt.Errorf("%s at line %d must be RFC 3339 or YYYY-MM-DD", name, node.Line)
 	}
 	if len(node.Value) == len("2006-01-02") {
 		value, err := time.Parse("2006-01-02", node.Value)
 		if err != nil {
-			return time.Time{}, fmt.Errorf("%s must be RFC 3339 or YYYY-MM-DD", name)
+			return time.Time{}, fmt.Errorf("%s at line %d must be RFC 3339 or YYYY-MM-DD", name, node.Line)
 		}
 		return value.UTC(), nil
 	}
 	value, err := time.Parse(time.RFC3339Nano, node.Value)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("%s must be RFC 3339 or YYYY-MM-DD", name)
+		return time.Time{}, fmt.Errorf("%s at line %d must be RFC 3339 or YYYY-MM-DD", name, node.Line)
 	}
 	return value.UTC(), nil
 }
 
 func strictOrder(node *yaml.Node, name string) (*int, error) {
 	if node.Kind != yaml.ScalarNode || node.Tag != "!!int" || !strictOrderPattern.MatchString(node.Value) {
-		return nil, fmt.Errorf("%s must be a decimal integer from 0 to 2147483647", name)
+		return nil, fmt.Errorf("%s at line %d must be a decimal integer from 0 to 2147483647", name, node.Line)
 	}
 	value, err := strconv.ParseInt(node.Value, 10, 32)
 	if err != nil || value < 0 || value > maxInt32 {
-		return nil, fmt.Errorf("%s must be a decimal integer from 0 to 2147483647", name)
+		return nil, fmt.Errorf("%s at line %d must be a decimal integer from 0 to 2147483647", name, node.Line)
 	}
 	converted := int(value)
 	return &converted, nil
@@ -404,7 +522,7 @@ func strictArticleSlug(node *yaml.Node) (string, error) {
 		return "", err
 	}
 	if !strictSlugPattern.MatchString(value) {
-		return "", fmt.Errorf("slug must be one non-empty Unicode path segment containing only letters, numbers, '-', '_' or '~'")
+		return "", fmt.Errorf("slug at line %d must be one non-empty Unicode path segment containing only letters, numbers, '-', '_' or '~'", node.Line)
 	}
 	return value, nil
 }

@@ -3,353 +3,150 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestDefaultsAreCanonical(t *testing.T) {
-	t.Parallel()
-
-	cfg := Defaults()
-	if cfg.Language != "en" || !cfg.DefaultPublish || cfg.DefaultImg != "" {
-		t.Fatalf("core defaults = %#v", cfg)
-	}
-	if cfg.Pagination.PageSize != 20 || cfg.Sidebar.Enabled || cfg.Popover.Enabled {
-		t.Fatalf("navigation defaults = %#v", cfg)
-	}
-	if cfg.Related.Enabled || cfg.Related.Count != 5 || !cfg.RSS.Enabled {
-		t.Fatalf("feature defaults = %#v", cfg)
-	}
-	if cfg.Timeline.Enabled || cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
-		t.Fatalf("timeline defaults = %#v", cfg.Timeline)
+func TestLoadForBuildRequiresStrictNavigationAndRejectsLegacyFields(t *testing.T) {
+	for name, content := range map[string]string{
+		"missing navigation": "title: Site\nbaseURL: https://example.test/\n",
+		"legacy default":     "title: Site\nbaseURL: https://example.test/\nnavigation: []\ndefaultPublish: true\n",
+		"unknown field":      "title: Site\nbaseURL: https://example.test/\nnavigation: []\nsearch: {}\n",
+		"null navigation":    "title: Site\nbaseURL: https://example.test/\nnavigation: null\n",
+		"duplicate key":      "title: Site\nbaseURL: https://example.test/\nnavigation: []\ntitle: Other\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			vault := writeConfigVault(t, content)
+			if _, err := LoadForBuild(vault); err == nil {
+				t.Fatal("LoadForBuild() error = nil, want strict schema error")
+			}
+		})
 	}
 }
 
-func TestLoadForBuildReadsOnlyVaultConfigAndAppliesValues(t *testing.T) {
-	t.Parallel()
-
-	vault := writeConfigVault(t, `
-title: Garden Notes
-baseURL: https://example.com/blog
-author: Alice
-description: Public notes
+func TestLoadForBuildNormalizesRevisedConfig(t *testing.T) {
+	vault := writeConfigVault(t, `title: Site
+baseURL: https://example.test/base
 language: fr
-defaultImg: images/og.png
-defaultPublish: false
-pagination:
-  pageSize: 30
+description: Public site
+defaultImg: https://images.example.test/card.png
+navigation:
+  - name: Home
+    section: .
+  - name: Repository
+    url: https://git.example.test:8443/source/:path?ref=main
+source:
+  editURL: https://git.example.test/edit/:path
+  viewURL: https://git.example.test/view/:path
+versions:
+  root: docs
+  default: v1
+  entries:
+    - id: v1
+      label: Version 1
+      source: v1
 sidebar:
-  enabled: true
-popover:
   enabled: true
 related:
   enabled: true
   count: 7
-rss:
-  enabled: false
-timeline:
-  enabled: true
-  asHomepage: true
-  path: timeline
 `)
-
 	cfg, err := LoadForBuild(vault)
 	if err != nil {
 		t.Fatalf("LoadForBuild() error = %v", err)
 	}
-	if cfg.Title != "Garden Notes" || cfg.BaseURL != "https://example.com/blog/" || cfg.Author != "Alice" || cfg.Description != "Public notes" || cfg.Language != "fr" {
-		t.Fatalf("metadata = %#v", cfg)
+	if cfg.Title != "Site" || cfg.BaseURL != "https://example.test/base/" || cfg.Language != "fr" || !cfg.DefaultImgExternal {
+		t.Fatalf("normalized metadata = %#v", cfg)
 	}
-	if cfg.DefaultImg != "images/og.png" || cfg.DefaultPublish {
-		t.Fatalf("publish defaults = %#v", cfg)
+	if len(cfg.Navigation) != 2 || cfg.Navigation[0].Section != "." || cfg.Source.ViewURL == "" {
+		t.Fatalf("normalized navigation/source = %#v / %#v", cfg.Navigation, cfg.Source)
 	}
-	if cfg.Pagination.PageSize != 30 || !cfg.Sidebar.Enabled || !cfg.Popover.Enabled {
-		t.Fatalf("navigation config = %#v", cfg)
-	}
-	if !cfg.Related.Enabled || cfg.Related.Count != 7 || cfg.RSS.Enabled {
-		t.Fatalf("feature config = %#v", cfg)
-	}
-	if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage || cfg.Timeline.Path != "timeline" {
-		t.Fatalf("timeline = %#v", cfg.Timeline)
+	if cfg.Versions == nil || cfg.Versions.Entries[0].ID != "v1" || !cfg.Sidebar.Enabled || cfg.Related.Count != 7 {
+		t.Fatalf("normalized features = %#v", cfg)
 	}
 }
 
-func TestLoadForBuildUsesDefaultsForOmittedOptionalFields(t *testing.T) {
-	t.Parallel()
-
-	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
-	cfg, err := LoadForBuild(vault)
-	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
-	}
-	defaults := Defaults()
-	if cfg.Language != defaults.Language || cfg.DefaultPublish != defaults.DefaultPublish || cfg.Pagination != defaults.Pagination || cfg.Sidebar != defaults.Sidebar || cfg.Popover != defaults.Popover || cfg.Related != defaults.Related || cfg.RSS != defaults.RSS || cfg.Timeline != defaults.Timeline {
-		t.Fatalf("loaded defaults = %#v, want %#v", cfg, defaults)
-	}
-}
-
-func TestLoadForBuildRejectsRemovedAndUnknownFieldsWithLocation(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		field string
-		yaml  string
-	}{
-		{name: "search", field: "search", yaml: "search:\n  enabled: true"},
-		{name: "pagefind path", field: "pagefindPath", yaml: "pagefindPath: pagefind"},
-		{name: "pagefind version", field: "pagefindVersion", yaml: "pagefindVersion: 1.5.2"},
-		{name: "themes", field: "themes", yaml: "themes: {}"},
-		{name: "default theme", field: "defaultTheme", yaml: "defaultTheme: feature"},
-		{name: "template dir", field: "templateDir", yaml: "templateDir: templates"},
-		{name: "theme root", field: "themeRoot", yaml: "themeRoot: theme"},
-		{name: "custom css", field: "customCSS", yaml: "customCSS: other.css"},
-		{name: "katex css", field: "kaTeXCSSURL", yaml: "kaTeXCSSURL: https://cdn.example/katex.css"},
-		{name: "katex js", field: "kaTeXJSURL", yaml: "kaTeXJSURL: https://cdn.example/katex.js"},
-		{name: "katex auto render", field: "kaTeXAutoRenderURL", yaml: "kaTeXAutoRenderURL: https://cdn.example/auto.js"},
-		{name: "mermaid", field: "mermaidJSURL", yaml: "mermaidJSURL: https://cdn.example/mermaid.js"},
-		{name: "unknown nested", field: "extra", yaml: "sidebar:\n  extra: true"},
-		{name: "removed field in second document", field: "search", yaml: "---\nsearch:\n  enabled: true"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n"+tt.yaml+"\n")
-			_, err := LoadForBuild(vault)
-			if err == nil {
-				t.Fatal("LoadForBuild() error = nil")
-			}
-			if !strings.Contains(err.Error(), tt.field) || !strings.Contains(err.Error(), "line ") {
-				t.Fatalf("LoadForBuild() error = %q, want field %q and line", err, tt.field)
-			}
-		})
-	}
-}
-
-func TestLoadForBuildRejectsArbitraryConfigPath(t *testing.T) {
-	t.Parallel()
-
-	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
-	configPath := filepath.Join(vault, Filename)
-	_, err := LoadForBuild(configPath)
-	if err == nil {
-		t.Fatal("LoadForBuild(config path) error = nil")
-	}
-}
-
-func TestNormalizeBaseURLPreservesSafeEscapesAndRejectsAmbiguousEscapes(t *testing.T) {
-	t.Parallel()
-
-	preserved, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/a%20b"})
-	if err != nil {
-		t.Fatalf("NormalizeSiteConfig() error = %v", err)
-	}
-	if preserved.BaseURL != "https://example.com/a%20b/" {
-		t.Fatalf("BaseURL = %q, want escaped space preserved", preserved.BaseURL)
-	}
-
+func TestNormalizeSiteConfigValidatesStrictURLAndVersionRules(t *testing.T) {
 	for _, value := range []string{
-		"https://example.com/a%2Fb",
-		"https://example.com/a/%2e%2e/b",
-		"https://example.com/a%5Cb",
+		"https://example.test/a%2Fb",
+		"https://example.test/a/%2e%2e/b",
+		"https://example.test/a%5Cb",
 	} {
-		if _, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: value}); err == nil || !strings.Contains(err.Error(), "encoded separators or dot segments") {
-			t.Errorf("NormalizeSiteConfig(BaseURL=%q) error = %v, want encoded path rejection", value, err)
-		}
-	}
-}
-
-func TestLoadForBuildValidatesRequiredAndBoundedValues(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		yaml string
-		want string
-	}{
-		{name: "title", yaml: "baseURL: https://example.com/", want: "title is required"},
-		{name: "base URL", yaml: "title: Garden", want: "baseURL is required"},
-		{name: "relative base URL", yaml: "title: Garden\nbaseURL: /blog", want: "absolute http or https"},
-		{name: "pagination", yaml: "title: Garden\nbaseURL: https://example.com/\npagination:\n  pageSize: 0", want: "pagination.pageSize"},
-		{name: "related low", yaml: "title: Garden\nbaseURL: https://example.com/\nrelated:\n  count: 0", want: "related.count"},
-		{name: "related high", yaml: "title: Garden\nbaseURL: https://example.com/\nrelated:\n  count: 21", want: "related.count"},
-		{name: "timeline traversal", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: ../outside", want: "timeline.path"},
-		{name: "timeline query", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes?draft=1", want: "timeline.path"},
-		{name: "timeline fragment", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes#draft", want: "timeline.path"},
-		{name: "timeline URI scheme", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: archive:2026", want: "timeline.path"},
-		{name: "timeline non-portable character", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes/archive*", want: "timeline.path"},
-		{name: "timeline reserved component", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: CON", want: "timeline.path"},
-		{name: "timeline superscript device", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: COM¹", want: "timeline.path"},
-		{name: "timeline superscript device extension", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: LPT².txt", want: "timeline.path"},
-		{name: "timeline console device", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: CONOUT$", want: "timeline.path"},
-		{name: "timeline encoded separator", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes%2Farchive", want: "timeline.path"},
-		{name: "timeline trailing dot", yaml: "title: Garden\nbaseURL: https://example.com/\ntimeline:\n  path: notes/archive.", want: "timeline.path"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			vault := writeConfigVault(t, tt.yaml+"\n")
-			_, err := LoadForBuild(vault)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("LoadForBuild() error = %v, want %q", err, tt.want)
+		t.Run(value, func(t *testing.T) {
+			_, err := NormalizeSiteConfig(model.SiteConfig{Title: "Site", BaseURL: value})
+			if err == nil || !strings.Contains(err.Error(), "encoded separators or dot segments") {
+				t.Fatalf("NormalizeSiteConfig(%q) error = %v", value, err)
 			}
 		})
 	}
+
+	_, err := NormalizeSiteConfig(structuredConfig(model.SourceConfig{ViewURL: "https://example.test/view/:path/:branch"}, nil))
+	if err == nil || !strings.Contains(err.Error(), "unknown template placeholder") {
+		t.Fatalf("source error = %v", err)
+	}
+	versions := &model.VersionsConfig{Root: "docs", Default: "v1", Entries: []model.VersionEntry{
+		{ID: "v1", Label: "one", Source: "v1"}, {ID: "v2", Label: "two", Source: "v1/chapter"},
+	}}
+	_, err = NormalizeSiteConfig(structuredConfig(model.SourceConfig{}, versions))
+	if err == nil || !strings.Contains(err.Error(), "overlaps") {
+		t.Fatalf("version error = %v", err)
+	}
 }
 
-func TestLoadForBuildDiscoversOnlyFixedVaultInputs(t *testing.T) {
-	t.Parallel()
-
-	vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
-	writeConfigTestFile(t, vault, "custom.css", "body{}")
-	writeConfigTestFile(t, vault, ".obsite/theme/theme.css", ":root{}")
-	writeConfigTestFile(t, vault, "elsewhere/custom.css", "ignored")
-
-	cfg, err := LoadForBuild(vault)
+func TestInitialStrictYAMLIsStrictAndBuildConfigurable(t *testing.T) {
+	content := InitialStrictYAML()
+	if !strings.Contains(content, "navigation: []") || !strings.Contains(content, "source: {}") {
+		t.Fatalf("InitialStrictYAML() = %q", content)
+	}
+	if strings.Contains(content, "defaultPublish") || strings.Contains(content, "timeline:") {
+		t.Fatalf("InitialStrictYAML() contains superseded fields: %q", content)
+	}
+	cfg, err := LoadForBuild(writeConfigVault(t, content))
 	if err != nil {
-		t.Fatalf("LoadForBuild() error = %v", err)
+		t.Fatalf("LoadForBuild(InitialStrictYAML()) error = %v", err)
 	}
-	if cfg.CustomCSS != filepath.Join(vault, "custom.css") {
-		t.Fatalf("CustomCSS = %q", cfg.CustomCSS)
-	}
-	if cfg.ThemeDir != filepath.Join(vault, ".obsite", "theme") {
-		t.Fatalf("ThemeDir = %q", cfg.ThemeDir)
+	if cfg.Title != "My Obsite Site" || cfg.BaseURL != "https://example.com/" {
+		t.Fatalf("initial config = %#v", cfg)
 	}
 }
 
-func TestLoadForBuildRejectsInvalidFixedVaultInputs(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlink creation may require elevated privileges")
-	}
-
-	tests := []struct {
-		name  string
-		setup func(t *testing.T, vault string, external string)
-		want  string
-	}{
-		{
-			name: "custom CSS directory",
-			setup: func(t *testing.T, vault string, _ string) {
-				if err := os.Mkdir(filepath.Join(vault, "custom.css"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "regular non-symlink file",
-		},
-		{
-			name: "custom CSS symlink",
-			setup: func(t *testing.T, vault string, external string) {
-				writeConfigTestFile(t, external, "secret.css", "secret")
-				if err := os.Symlink(filepath.Join(external, "secret.css"), filepath.Join(vault, "custom.css")); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "regular non-symlink file",
-		},
-		{
-			name: "theme file",
-			setup: func(t *testing.T, vault string, _ string) {
-				writeConfigTestFile(t, vault, ".obsite/theme", "not a directory")
-			},
-			want: "non-symlink directory",
-		},
-		{
-			name: "theme symlink",
-			setup: func(t *testing.T, vault string, external string) {
-				if err := os.MkdirAll(filepath.Join(external, "theme"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.MkdirAll(filepath.Join(vault, ".obsite"), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink(filepath.Join(external, "theme"), filepath.Join(vault, ".obsite", "theme")); err != nil {
-					t.Fatal(err)
-				}
-			},
-			want: "non-symlink directory",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			vault := writeConfigVault(t, "title: Garden\nbaseURL: https://example.com/\n")
-			external := t.TempDir()
-			tt.setup(t, vault, external)
-			_, err := LoadForBuild(vault)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("LoadForBuild() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
-
-func TestInitialYAMLUsesDefaultsAndStrictFields(t *testing.T) {
-	t.Parallel()
-
-	yaml := InitialYAML()
-	for _, want := range []string{"baseURL: https://example.com/", "title: My Obsite Site", "language: en", "defaultPublish: true", "defaultImg: \"\"", "pageSize: 20", "count: 5", "path: notes"} {
-		if !strings.Contains(yaml, want) {
-			t.Fatalf("InitialYAML() missing %q\n%s", want, yaml)
-		}
-	}
-	for _, forbidden := range []string{"search:", "pagefind", "themes:", "defaultTheme", "templateDir", "themeRoot", "customCSS", "kaTeX", "mermaid"} {
-		if strings.Contains(yaml, forbidden) {
-			t.Fatalf("InitialYAML() contains removed field %q\n%s", forbidden, yaml)
-		}
-	}
-}
-
-func TestNormalizeSiteConfigValidatesDefaultImageSemantics(t *testing.T) {
-	t.Parallel()
-
+func TestNormalizeSiteConfigSupportsOnlyExplicitDefaultImageModes(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		value    string
-		want     string
 		external bool
 	}{
-		{name: "empty", value: "", want: ""},
-		{name: "local", value: "images/../media/Hero.png", want: "media/Hero.png"},
-		{name: "external HTTP", value: "http://images.example.test/hero.png?size=2#card", want: "http://images.example.test/hero.png?size=2#card", external: true},
-		{name: "external HTTPS", value: "https://images.example.test/hero.png", want: "https://images.example.test/hero.png", external: true},
+		{name: "empty", value: ""},
+		{name: "external", value: "https://images.example.test/hero.png?size=2#card", external: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultImg: tt.value})
+			cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", DefaultImg: tt.value})
 			if err != nil {
-				t.Fatalf("NormalizeSiteConfig() error = %v", err)
+				t.Fatal(err)
 			}
-			if cfg.DefaultImg != tt.want || cfg.DefaultImgExternal != tt.external {
-				t.Fatalf("default image = (%q,%t), want (%q,%t)", cfg.DefaultImg, cfg.DefaultImgExternal, tt.want, tt.external)
+			if cfg.DefaultImgExternal != tt.external {
+				t.Fatalf("DefaultImgExternal = %t, want %t", cfg.DefaultImgExternal, tt.external)
 			}
 		})
 	}
-
-	for _, value := range []string{"images/hero.png?v=1", "images/hero.png#card", `images\\hero.png`, "/images/hero.png", "../hero.png", "C:/hero.png", "//server/share/hero.png", "data:image/png;base64,AA"} {
+	for _, value := range []string{"images/hero.png?v=1", "images/hero.png#card", `images\\hero.png`, "/images/hero.png", "../hero.png", "data:image/png;base64,AA"} {
 		t.Run(value, func(t *testing.T) {
-			_, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultImg: value})
+			_, err := NormalizeSiteConfig(model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", DefaultImg: value})
 			if err == nil || !strings.Contains(err.Error(), "defaultImg") {
-				t.Fatalf("NormalizeSiteConfig(%q) error = %v, want defaultImg rejection", value, err)
+				t.Fatalf("NormalizeSiteConfig(%q) error = %v", value, err)
 			}
 		})
 	}
 }
 
-func TestNormalizeSiteConfigPreservesInternalBooleanPolicy(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Garden", BaseURL: "https://example.com/", DefaultPublish: false, RSS: model.RSSConfig{Enabled: false}})
-	if err != nil {
-		t.Fatalf("NormalizeSiteConfig() error = %v", err)
-	}
-	if cfg.DefaultPublish || cfg.RSS.Enabled {
-		t.Fatalf("NormalizeSiteConfig() changed explicit false policy: %#v", cfg)
-	}
-	if cfg.Language != "en" || cfg.Pagination.PageSize != 20 || cfg.Related.Count != 5 || cfg.Timeline.Path != "notes" {
-		t.Fatalf("NormalizeSiteConfig() defaults = %#v", cfg)
-	}
+func structuredConfig(source model.SourceConfig, versions *model.VersionsConfig) model.SiteConfig {
+	cfg := Defaults()
+	cfg.Title, cfg.BaseURL = "Site", "https://example.test/"
+	cfg.Navigation = []model.NavigationItem{{Name: "Home", Section: "."}}
+	cfg.Source, cfg.Versions = source, versions
+	return cfg
 }
 
 func writeConfigVault(t *testing.T, content string) string {

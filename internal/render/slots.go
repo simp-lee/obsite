@@ -1,12 +1,12 @@
 package render
 
 import (
+	"bytes"
 	"fmt"
 	"html/template"
 	"net/url"
 	"path"
 	"strings"
-	"sync"
 	textparse "text/template/parse"
 
 	"github.com/simp-lee/obsite/internal/model"
@@ -43,40 +43,36 @@ type SlotData struct {
 	Site        SlotSiteData
 }
 
-var themeSlotTemplateCache struct {
-	sync.Mutex
-	initialized bool
-	source      string
-	template    *template.Template
-	err         error
-}
-
-// ValidateThemeSlots parses and validates one slots.html snapshot.
+// ValidateThemeSlots parses and validates one append-only slots.html snapshot.
 func ValidateThemeSlots(source string) error {
-	_, err := templateSetWithThemeSlots(source)
+	_, err := parseThemeSlots(source)
 	return err
 }
 
-func templateSetWithThemeSlots(source string) (*template.Template, error) {
-	if source == "" {
-		return parseDefaultTemplates()
+// RenderThemeSlots executes each supported append-only slot once.
+func RenderThemeSlots(source string, data SlotData) (map[string]string, error) {
+	result := make(map[string]string, len(themeSlotNames))
+	if strings.TrimSpace(source) == "" {
+		return result, nil
 	}
-
-	themeSlotTemplateCache.Lock()
-	defer themeSlotTemplateCache.Unlock()
-	if themeSlotTemplateCache.initialized && themeSlotTemplateCache.source == source {
-		return themeSlotTemplateCache.template, themeSlotTemplateCache.err
+	slots, err := parseThemeSlots(source)
+	if err != nil {
+		return nil, err
 	}
-
-	tmpl, err := parseTemplateSetWithThemeSlots(source)
-	themeSlotTemplateCache.initialized = true
-	themeSlotTemplateCache.source = source
-	themeSlotTemplateCache.template = tmpl
-	themeSlotTemplateCache.err = err
-	return tmpl, err
+	for _, name := range themeSlotNames {
+		if slots.Lookup(name) == nil {
+			continue
+		}
+		var output bytes.Buffer
+		if err := slots.ExecuteTemplate(&output, name, data); err != nil {
+			return nil, fmt.Errorf("render theme slot %q: %w", name, err)
+		}
+		result[name] = output.String()
+	}
+	return result, nil
 }
 
-func parseTemplateSetWithThemeSlots(source string) (*template.Template, error) {
+func parseThemeSlots(source string) (*template.Template, error) {
 	funcs := template.FuncMap{"themeAssetURL": themeAssetURL}
 	slots, err := template.New(themeSlotsRootName).Funcs(funcs).Parse(source)
 	if err != nil {
@@ -85,28 +81,7 @@ func parseTemplateSetWithThemeSlots(source string) (*template.Template, error) {
 	if err := validateThemeSlotDefinitions(slots, themeSlotsRootName); err != nil {
 		return nil, err
 	}
-	validationCopy, err := template.New(themeSlotsValidationRootName).Funcs(funcs).Parse(source)
-	if err != nil {
-		return nil, fmt.Errorf("parse theme slots: %w", err)
-	}
-	if err := validateThemeSlotDefinitions(validationCopy, themeSlotsValidationRootName); err != nil {
-		return nil, err
-	}
-
-	combined, err := parseEmbeddedTemplates()
-	if err != nil {
-		return nil, fmt.Errorf("parse default templates: %w", err)
-	}
-	for _, name := range themeSlotNames {
-		definition := slots.Lookup(name)
-		if definition == nil || definition.Tree == nil {
-			continue
-		}
-		if _, err := combined.AddParseTree(name, definition.Tree.Copy()); err != nil {
-			return nil, fmt.Errorf("install theme slot %q: %w", name, err)
-		}
-	}
-	return combined, nil
+	return slots, nil
 }
 
 func validateThemeSlotDefinitions(slots *template.Template, rootName string) error {

@@ -115,10 +115,16 @@ func Generate(input Input) (Result, error) {
 	if cover != nil {
 		maxWidth = 624
 	}
-	drawText(canvas, 72, 80, input.SiteTitle, 28, maxWidth)
-	drawText(canvas, 72, 160, input.Title, 64, maxWidth)
+	if err := drawText(canvas, 72, 80, input.SiteTitle, 28, maxWidth); err != nil {
+		return Result{}, err
+	}
+	if err := drawText(canvas, 72, 160, input.Title, 64, maxWidth); err != nil {
+		return Result{}, err
+	}
 	if input.Context != "" {
-		drawTextColor(canvas, 72, 420, input.Context, 24, maxWidth, secondary)
+		if err := drawTextColor(canvas, 72, 420, input.Context, 24, maxWidth, secondary); err != nil {
+			return Result{}, err
+		}
 	}
 	metadata := make([]string, 0, 3)
 	if input.Author != "" {
@@ -131,7 +137,9 @@ func Generate(input Input) (Result, error) {
 		metadata = append(metadata, input.Status)
 	}
 	for index, value := range metadata {
-		drawTextColor(canvas, 72, 540+index*24, value, 24, maxWidth, secondary)
+		if err := drawTextColor(canvas, 72, 540+index*24, value, 24, maxWidth, secondary); err != nil {
+			return Result{}, err
+		}
 	}
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, canvas); err != nil {
@@ -182,31 +190,31 @@ func fillRect(dst *image.RGBA, rect image.Rectangle, value color.Color) {
 	draw.Draw(dst, rect, &image.Uniform{C: value}, image.Point{}, draw.Src)
 }
 
-func drawText(dst *image.RGBA, x, y int, text string, size, maxWidth int) {
-	drawTextColorLines(dst, x, y, text, size, maxWidth, 3, primary)
+func drawText(dst *image.RGBA, x, y int, text string, size, maxWidth int) error {
+	return drawTextColorLines(dst, x, y, text, size, maxWidth, 3, primary)
 }
-func drawTextColor(dst *image.RGBA, x, y int, text string, size, maxWidth int, foreground color.Color) {
-	drawTextColorLines(dst, x, y, text, size, maxWidth, 1, foreground)
+func drawTextColor(dst *image.RGBA, x, y int, text string, size, maxWidth int, foreground color.Color) error {
+	return drawTextColorLines(dst, x, y, text, size, maxWidth, 1, foreground)
 }
-func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, maxLines int, foreground color.Color) {
+func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, maxLines int, foreground color.Color) error {
 	if text == "" {
-		return
+		return nil
 	}
 	fontValue, err := parsedCardFont()
 	if err != nil {
-		for lineIndex, line := range wrap(text, max(1, maxWidth/(size/2)), maxLines) {
-			drawLineColor(dst, x, y+lineIndex*76, line, size, foreground)
-		}
-		return
+		return fmt.Errorf("parse social-card font: %w", err)
 	}
 	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
 	if err != nil {
-		return
+		return fmt.Errorf("create social-card font face: %w", err)
 	}
 	lines := wrapMeasured(text, maxWidth, maxLines, face)
 	for lineIndex, line := range lines {
-		drawLineColor(dst, x, y+lineIndex*76, line, size, foreground)
+		if err := drawLineColor(dst, x, y+lineIndex*76, line, face, foreground); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 func wrapMeasured(text string, maxWidth, maxLines int, face font.Face) []string {
 	clusters := make([]string, 0)
@@ -255,94 +263,11 @@ func truncateMeasured(value string, maxWidth int, face font.Face) string {
 	return result + ellipsis
 }
 
-func wrap(text string, max, maxLines int) []string {
-	if max < 1 {
-		return nil
-	}
-	clusters := make([]string, 0)
-	iterator := uniseg.NewGraphemes(text)
-	for iterator.Next() {
-		clusters = append(clusters, iterator.Str())
-	}
-	lines := make([]string, 0, maxLines)
-	for len(clusters) > 0 && len(lines) < maxLines {
-		take := min(max, len(clusters))
-		line := strings.Join(clusters[:take], "")
-		clusters = clusters[take:]
-		if len(clusters) > 0 && len(lines) == maxLines-1 {
-			line = truncate(line, max-1) + "…"
-			clusters = nil
-		}
-		lines = append(lines, line)
-	}
-	return lines
-}
-func truncate(value string, max int) string {
-	if max <= 0 {
-		return ""
-	}
-	iterator := uniseg.NewGraphemes(value)
-	var b strings.Builder
-	count := 0
-	for iterator.Next() && count < max {
-		b.WriteString(iterator.Str())
-		count++
-	}
-	return b.String()
-}
-func drawLineColor(dst *image.RGBA, x, y int, text string, size int, foreground color.Color) {
-	fontValue, err := parsedCardFont()
-	if err != nil {
-		fallbackLine(dst, x, y, text, max(1, size/8), foreground)
-		return
-	}
-	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
-	if err != nil {
-		fallbackLine(dst, x, y, text, max(1, size/8), foreground)
-		return
+func drawLineColor(dst *image.RGBA, x, y int, text string, face font.Face, foreground color.Color) error {
+	if face == nil {
+		return fmt.Errorf("social-card font face is required")
 	}
 	drawer := &font.Drawer{Dst: dst, Src: image.NewUniform(foreground), Face: face, Dot: fixed.P(x, y+face.Metrics().Ascent.Ceil())}
 	drawer.DrawString(text)
-}
-
-func fallbackLine(dst *image.RGBA, x, y int, text string, scale int, foreground color.Color) {
-	cursor := x
-	iterator := uniseg.NewGraphemes(text)
-	for iterator.Next() {
-		cluster := iterator.Str()
-		if len([]rune(cluster)) == 1 {
-			drawGlyphColor(dst, cursor, y, []rune(cluster)[0], scale, foreground)
-		} else {
-			fillRect(dst, image.Rect(cursor, y, cursor+5*scale, y+7*scale), foreground)
-		}
-		cursor += 6 * scale
-	}
-}
-
-var glyphs = map[rune][7]string{
-	'A': {"01110", "10001", "10001", "11111", "10001", "10001", "10001"}, 'B': {"11110", "10001", "10001", "11110", "10001", "10001", "11110"}, 'C': {"01111", "10000", "10000", "10000", "10000", "10000", "01111"}, 'D': {"11110", "10001", "10001", "10001", "10001", "10001", "11110"}, 'E': {"11111", "10000", "10000", "11110", "10000", "10000", "11111"}, 'F': {"11111", "10000", "10000", "11110", "10000", "10000", "10000"}, 'G': {"01111", "10000", "10000", "10111", "10001", "10001", "01111"}, 'H': {"10001", "10001", "10001", "11111", "10001", "10001", "10001"}, 'I': {"11111", "00100", "00100", "00100", "00100", "00100", "11111"}, 'J': {"00111", "00010", "00010", "00010", "10010", "10010", "01100"}, 'K': {"10001", "10010", "10100", "11000", "10100", "10010", "10001"}, 'L': {"10000", "10000", "10000", "10000", "10000", "10000", "11111"}, 'M': {"10001", "11011", "10101", "10101", "10001", "10001", "10001"}, 'N': {"10001", "11001", "10101", "10011", "10001", "10001", "10001"}, 'O': {"01110", "10001", "10001", "10001", "10001", "10001", "01110"}, 'P': {"11110", "10001", "10001", "11110", "10000", "10000", "10000"}, 'Q': {"01110", "10001", "10001", "10001", "10101", "10010", "01101"}, 'R': {"11110", "10001", "10001", "11110", "10100", "10010", "10001"}, 'S': {"01111", "10000", "10000", "01110", "00001", "00001", "11110"}, 'T': {"11111", "00100", "00100", "00100", "00100", "00100", "00100"}, 'U': {"10001", "10001", "10001", "10001", "10001", "10001", "01110"}, 'V': {"10001", "10001", "10001", "10001", "10001", "01010", "00100"}, 'W': {"10001", "10001", "10001", "10101", "10101", "11011", "10001"}, 'X': {"10001", "10001", "01010", "00100", "01010", "10001", "10001"}, 'Y': {"10001", "10001", "01010", "00100", "00100", "00100", "00100"}, 'Z': {"11111", "00001", "00010", "00100", "01000", "10000", "11111"}, '0': {"01110", "10001", "10011", "10101", "11001", "10001", "01110"}, '1': {"00100", "01100", "00100", "00100", "00100", "00100", "01110"}, '2': {"01110", "10001", "00001", "00010", "00100", "01000", "11111"}, '3': {"11110", "00001", "00001", "01110", "00001", "00001", "11110"}, '4': {"00010", "00110", "01010", "10010", "11111", "00010", "00010"}, '5': {"11111", "10000", "10000", "11110", "00001", "00001", "11110"}, '6': {"01110", "10000", "10000", "11110", "10001", "10001", "01110"}, '7': {"11111", "00001", "00010", "00100", "01000", "01000", "01000"}, '8': {"01110", "10001", "10001", "01110", "10001", "10001", "01110"}, '9': {"01110", "10001", "10001", "01111", "00001", "00001", "01110"}, '-': {"00000", "00000", "00000", "11111", "00000", "00000", "00000"}, '.': {"00000", "00000", "00000", "00000", "00000", "00110", "00110"}, ':': {"00000", "00110", "00110", "00000", "00110", "00110", "00000"}, '/': {"00001", "00010", "00100", "01000", "10000", "00000", "00000"}, ' ': {"00000", "00000", "00000", "00000", "00000", "00000", "00000"}, '…': {"00000", "00000", "00000", "00000", "10101", "00000", "00000"},
-}
-
-func drawGlyphColor(dst *image.RGBA, x, y int, r rune, scale int, foreground color.Color) {
-	glyph, ok := glyphs[r]
-	if !ok {
-		glyph, ok = glyphs[toUpperASCII(r)]
-	}
-	if !ok {
-		fillRect(dst, image.Rect(x, y, x+5*scale, y+7*scale), foreground)
-		return
-	}
-	for row, line := range glyph {
-		for col, value := range line {
-			if value == '1' {
-				fillRect(dst, image.Rect(x+col*scale, y+row*scale, x+(col+1)*scale, y+(row+1)*scale), foreground)
-			}
-		}
-	}
-}
-func toUpperASCII(r rune) rune {
-	if r >= 'a' && r <= 'z' {
-		return r - 'a' + 'A'
-	}
-	return r
+	return nil
 }

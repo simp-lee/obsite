@@ -39,7 +39,7 @@ func TestStrictBuildPublishesSectionAndArticlePages(t *testing.T) {
 func TestStrictBuildPublishesBannersAndIndependentSocialCards(t *testing.T) {
 	vault := t.TempDir()
 	output := filepath.Join(t.TempDir(), "public")
-	writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\ndefaultImg: images/cover.png\n")
 	writeValidateFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\nbanner: images/banner.png\nbannerAlt: Home banner\n---\n")
 	writeValidateFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\nbanner: images/banner.png\nbannerAlt: Article banner\ncover: images/cover.png\n---\nArticle\n")
 	for _, name := range []string{"banner.png", "cover.png"} {
@@ -68,6 +68,35 @@ func TestStrictBuildPublishesBannersAndIndependentSocialCards(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, "assets", "banner.png")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStrictAndNormalBuildApplyWarningPolicyToTheSameAnalysis(t *testing.T) {
+	vault := t.TempDir()
+	normalOutput := filepath.Join(t.TempDir(), "normal")
+	strictOutput := filepath.Join(t.TempDir(), "strict")
+	writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeValidateFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeValidateFile(t, vault, "broken.md", "---\ntitle: Broken\npublish: true\ntype: page\n---\nSee [[Missing]].\n")
+	_, normalStderr, err := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", normalOutput})
+	if err != nil {
+		t.Fatalf("normal build error = %v", err)
+	}
+	if !strings.Contains(normalStderr, "deadlink") {
+		t.Fatalf("normal diagnostics = %q, want deadlink warning", normalStderr)
+	}
+	if _, err := os.Stat(filepath.Join(normalOutput, "broken", "index.html")); err != nil {
+		t.Fatalf("normal build did not publish output: %v", err)
+	}
+	_, strictStderr, err := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", strictOutput, "--strict"})
+	if err == nil || !strings.Contains(err.Error(), "warning") {
+		t.Fatalf("strict build error = %v, want warning failure", err)
+	}
+	if !strings.Contains(strictStderr, "deadlink") {
+		t.Fatalf("strict diagnostics = %q, want same deadlink category", strictStderr)
+	}
+	if _, err := os.Stat(strictOutput); !os.IsNotExist(err) {
+		t.Fatalf("strict warning changed output: %v", err)
 	}
 }
 

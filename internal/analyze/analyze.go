@@ -5,8 +5,12 @@ package analyze
 import (
 	"fmt"
 	"io"
+	"path/filepath"
+	"regexp"
+	"strconv"
 
 	diagnostic "github.com/simp-lee/obsite/internal/diag"
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/siteplan"
 )
 
@@ -20,15 +24,54 @@ type Result struct {
 // Analyze runs the strict configuration, source, section, route, collection,
 // and version checks before publication.
 func Analyze(vaultPath string) (Result, error) {
-	planned, err := siteplan.Build(vaultPath)
+	resolved, err := internalfsutil.ResolveVaultPath(vaultPath)
+	if err != nil {
+		collector := diagnostic.NewCollector()
+		collector.Errorf(diagnostic.KindSchema, analyzeErrorLocation(vaultPath, err), "%v", err)
+		return Result{Diagnostics: collector.Diagnostics()}, err
+	}
+	return AnalyzeWithOutput(resolved, filepath.Join(resolved, "public"))
+}
+
+// AnalyzeWithOutput uses the same strict plan for publication while excluding
+// the resolved output root from the vault source tree.
+func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
+	var planned *siteplan.Result
+	var err error
+	if outputPath == "" {
+		planned, err = siteplan.Build(vaultPath)
+	} else {
+		planned, err = siteplan.BuildForOutput(vaultPath, outputPath)
+	}
 	if planned == nil {
 		collector := diagnostic.NewCollector()
 		if err != nil {
-			collector.Errorf(diagnostic.KindSchema, diagnostic.Location{Path: vaultPath}, "%v", err)
+			collector.Errorf(diagnostic.KindSchema, analyzeErrorLocation(vaultPath, err), "%v", err)
 		}
 		return Result{Diagnostics: collector.Diagnostics()}, err
 	}
 	return Result{Plan: planned, Diagnostics: append([]diagnostic.Diagnostic(nil), planned.Diagnostics...)}, err
+}
+
+var analyzeErrorPathPattern = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
+var analyzeErrorLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
+
+func analyzeErrorLocation(vaultPath string, err error) diagnostic.Location {
+	location := diagnostic.Location{Path: filepath.Join(vaultPath, "obsite.yaml")}
+	if err == nil {
+		return location
+	}
+	if match := analyzeErrorPathPattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+		candidate := match[1]
+		if !filepath.IsAbs(candidate) {
+			candidate = filepath.Join(vaultPath, filepath.FromSlash(candidate))
+		}
+		location.Path = candidate
+	}
+	if match := analyzeErrorLinePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+		location.Line, _ = strconv.Atoi(match[1])
+	}
+	return location
 }
 
 // HasFailures reports whether either severity makes the selected operation

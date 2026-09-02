@@ -94,11 +94,7 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedV
 	resolvedConfigPath := filepath.Join(normalizedVaultPath, defaultConfigFilename)
 
 	build := func() error {
-		input, err := deps.loadSiteInput(normalizedVaultPath)
-		if err != nil {
-			return fmt.Errorf("load config: %w", err)
-		}
-		if _, err := deps.buildSiteWithOptions(input, normalizedVaultPath, resolvedOutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
+		if _, err := deps.buildSiteWithOptions(normalizedVaultPath, resolvedOutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 			return fmt.Errorf("build site: %w", err)
 		}
 		return nil

@@ -474,12 +474,16 @@ func noteOutputDir(note *model.Note) string {
 		return "."
 	}
 
-	slug := strings.Trim(strings.ReplaceAll(note.Slug, "\\", "/"), "/")
-	if slug == "" {
+	output := note.Route
+	if output == "" {
+		output = note.Slug
+	}
+	output = strings.Trim(strings.ReplaceAll(output, "\\", "/"), "/")
+	if output == "" {
 		return "."
 	}
 
-	return path.Clean(slug)
+	return path.Clean(output)
 }
 
 func normalizeSitePath(value string) string {

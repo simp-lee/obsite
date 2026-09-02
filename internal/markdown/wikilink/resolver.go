@@ -433,7 +433,7 @@ func BuildNoteHref(output *model.Note, source *model.Note, target *model.Note, f
 }
 
 func buildOutputHref(output *model.Note, target *model.Note) string {
-	href := relativeToNoteOutput(output, target.Slug)
+	href := relativeToNoteOutput(output, noteSiteOutputPath(target))
 	if href == "" || href == "." {
 		return "./"
 	}
@@ -459,12 +459,13 @@ func noteOutputDir(note *model.Note) string {
 		return "."
 	}
 
-	slug := strings.Trim(strings.ReplaceAll(note.Slug, `\`, "/"), "/")
-	if slug == "" {
+	output := noteSiteOutputPath(note)
+	output = strings.Trim(strings.ReplaceAll(output, `\`, "/"), "/")
+	if output == "" {
 		return "."
 	}
 
-	return path.Clean(slug)
+	return path.Clean(output)
 }
 
 func noteSourceDir(note *model.Note) string {
@@ -478,6 +479,16 @@ func noteSourceDir(note *model.Note) string {
 	}
 
 	return path.Dir(relPath)
+}
+
+func noteSiteOutputPath(note *model.Note) string {
+	if note == nil {
+		return ""
+	}
+	if note.Route != "" {
+		return note.Route
+	}
+	return note.Slug
 }
 
 func normalizeSitePath(value string) string {

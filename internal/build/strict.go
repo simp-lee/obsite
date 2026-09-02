@@ -2,32 +2,46 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"image"
 	"io"
-	"net/url"
+	"io/fs"
+	"os"
 	"path"
+	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	d "github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/link"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/recommend"
 	"github.com/simp-lee/obsite/internal/render"
-	"github.com/simp-lee/obsite/internal/seo"
+	"github.com/simp-lee/obsite/internal/siteplan"
+	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/simp-lee/obsite/internal/social"
 )
 
 // buildStrictSite publishes the normalized section model through the same
 // managed staging publisher used by the existing build foundation.
-func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnosticsWriter io.Writer) (result *BuildResult, err error) {
+func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer) (result *BuildResult, err error) {
 	result = &BuildResult{}
-	if plan == nil {
+	if planned == nil || planned.Plan == nil {
 		return result, fmt.Errorf("strict site plan is required")
 	}
+	plan := planned.Plan
+	graph, relatedByPath, relationErr := buildStrictRelations(planned)
+	if relationErr != nil {
+		return result, relationErr
+	}
+	result.Graph = graph
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
 		return result, err
@@ -58,8 +72,27 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 	if err := writeManagedOutputMarker(staging); err != nil {
 		return result, err
 	}
+	if err := writeStrictConfiguredAssets(boundary.VaultPath, staging, plan); err != nil {
+		return result, err
+	}
+	if planned.Index == nil {
+		return result, fmt.Errorf("strict site index is required")
+	}
+	result.Index = planned.Index
+	rebindStrictPlanNotes(plan, planned.Index)
+	assets, err := prepareStrictAssets(boundary.VaultPath, plan)
+	if err != nil {
+		return result, err
+	}
+	reservedAssetOutputs := strictReservedAssetOutputs(plan)
+	assetCollector, err := internalasset.NewCollectorWithResourceFiles(boundary.VaultPath, assets, reservedAssetOutputs, planned.Scan.ResourceFiles)
+	if err != nil {
+		return result, fmt.Errorf("plan strict assets: %w", err)
+	}
+	applyStrictPlannedDestinations(assets, assetCollector.PlanDestinations(assets))
+	applyStrictAssetURLs(plan, assets)
 	if plan.Config.Sidebar.Enabled {
-		data, sidebarErr := json.Marshal(strictSidebar(plan))
+		data, sidebarErr := json.Marshal(strictSidebar(plan, ""))
 		if sidebarErr != nil {
 			return result, sidebarErr
 		}
@@ -67,20 +100,11 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 			return result, writeErr
 		}
 	}
-	assets, err := prepareStrictAssets(boundary.VaultPath, plan)
-	if err != nil {
-		return result, err
-	}
-	if err := internalasset.CopyAssetsWithReservedPaths(boundary.VaultPath, staging, assets, nil, []string{"style.css", "assets/obsite-runtime", "assets/obsite"}); err != nil {
-		return result, fmt.Errorf("publish strict assets: %w", err)
-	}
-	applyStrictAssetURLs(plan, assets)
-	result.Assets = assets
 	for _, section := range plan.Sections {
 		if section == nil || section.Route == "" {
 			continue
 		}
-		data, renderErr := render.RenderStrictSection(plan, section)
+		data, renderErr := render.RenderStrictSection(plan, section, planned.Index, assetCollector)
 		if renderErr != nil {
 			return result, fmt.Errorf("render section %q: %w", section.RelPath, renderErr)
 		}
@@ -120,7 +144,7 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 			return result, writeErr
 		}
 		previous, next, position, total := strictReadingFlow(section, article)
-		data, renderErr := render.RenderStrictArticle(plan, article, previous, next, position, total)
+		data, renderErr := render.RenderStrictArticle(plan, article, previous, next, position, total, strictBacklinks(planned.Index, graph, article), relatedByPath[article.RelPath], planned.Index, assetCollector)
 		if renderErr != nil {
 			return result, fmt.Errorf("render article %q: %w", article.RelPath, renderErr)
 		}
@@ -129,13 +153,59 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 		}
 		result.NotePages++
 	}
+	if plan.Config.Popover.Enabled {
+		if err := writeStrictPopoverPayloads(staging, planned.Index); err != nil {
+			return result, err
+		}
+	}
+	for _, tag := range strictBuildTags(planned.Index.Tags) {
+		notes := make([]*model.Note, 0, len(tag.Notes))
+		for _, relPath := range tag.Notes {
+			if note := planned.Index.Notes[relPath]; note != nil {
+				notes = append(notes, note)
+			}
+		}
+		data, renderErr := render.RenderStrictTag(plan, tag, notes)
+		if renderErr != nil {
+			return result, fmt.Errorf("render tag %q: %w", tag.Name, renderErr)
+		}
+		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath("/"+tag.Slug+"/"), data); writeErr != nil {
+			return result, writeErr
+		}
+		result.TagPages++
+	}
+	if plan.Config.Timeline.Enabled {
+		data, renderErr := render.RenderStrictTimeline(plan, plan.Config.Timeline.Path, plan.Posts)
+		if renderErr != nil {
+			return result, fmt.Errorf("render timeline: %w", renderErr)
+		}
+		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath("/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/"), data); writeErr != nil {
+			return result, writeErr
+		}
+	}
+	allAssets := assetCollector.Snapshot()
+	for source, seed := range assets {
+		if allAssets[source] == nil {
+			clone := *seed
+			allAssets[source] = &clone
+		}
+	}
+	applyStrictPlannedDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
+	if err := internalasset.CopyAssetsWithReservedPaths(boundary.VaultPath, staging, allAssets, nil, reservedAssetOutputs); err != nil {
+		return result, fmt.Errorf("publish strict assets: %w", err)
+	}
+	applyStrictAssetURLs(plan, allAssets)
+	result.Assets = allAssets
 	if _, err := render.EmitStyleCSS(staging); err != nil {
 		return result, fmt.Errorf("emit style.css: %w", err)
 	}
 	if err := render.EmitRuntimeAssets(staging); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
 	}
-	if err := writeStrictMetadataOutputs(staging, plan); err != nil {
+	if err := writeStrictMetadataOutputs(staging, plan, planned.Index); err != nil {
+		return result, err
+	}
+	if err := writeStrictCacheManifest(staging, plan, planned.Index, allAssets); err != nil {
 		return result, err
 	}
 	if diagnosticsWriter != nil {
@@ -144,11 +214,289 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 	return result, nil
 }
 
-func strictSidebar(plan *model.SitePlan) []model.SidebarNode {
-	if plan == nil || plan.Root == nil {
+func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[string][]*model.Note, error) {
+	related := make(map[string][]*model.Note)
+	if planned == nil || planned.Plan == nil || planned.Index == nil {
+		return &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}, related, nil
+	}
+	graph := link.BuildSourceGraph(planned.Index)
+	if !planned.Plan.Config.Related.Enabled {
+		return graph, related, nil
+	}
+	groups := make(map[string][]model.RelatedSemanticDocument)
+	for _, semantic := range planned.RelatedSemantic {
+		versionID := ""
+		if note := planned.Index.Notes[semantic.RelPath]; note != nil {
+			versionID = note.VersionID
+		}
+		groups[versionID] = append(groups[versionID], semantic)
+	}
+	groupKeys := make([]string, 0, len(groups))
+	for key := range groups {
+		groupKeys = append(groupKeys, key)
+	}
+	sort.Strings(groupKeys)
+	for _, key := range groupKeys {
+		engine, err := recommend.BuildEngine(groups[key], planned.Index, graph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, 0))
+		if err != nil {
+			return nil, nil, fmt.Errorf("build related articles: %w", err)
+		}
+		for _, document := range engine.Documents {
+			items := make([]*model.Note, 0, len(document.Related))
+			for _, candidate := range document.Related {
+				if candidate.DocID < 0 || candidate.DocID >= len(engine.Documents) {
+					continue
+				}
+				target := planned.Index.Notes[engine.Documents[candidate.DocID].RelPath]
+				if target != nil {
+					items = append(items, target)
+				}
+			}
+			related[document.RelPath] = items
+		}
+	}
+	return graph, related, nil
+}
+
+func strictBacklinks(index *model.VaultIndex, graph *model.LinkGraph, article *model.Note) []*model.Note {
+	if index == nil || graph == nil || article == nil {
 		return nil
 	}
-	return strictSidebarChildren(plan.Root)
+	paths := graph.Backward[article.RelPath]
+	result := make([]*model.Note, 0, len(paths))
+	for _, source := range paths {
+		if note := index.Notes[source]; note != nil {
+			result = append(result, note)
+		}
+	}
+	return result
+}
+
+type strictPopoverPayload struct {
+	Title   string   `json:"title"`
+	Summary string   `json:"summary"`
+	Tags    []string `json:"tags"`
+}
+
+func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex) error {
+	if index == nil || len(index.Notes) == 0 {
+		return nil
+	}
+	paths := make([]string, 0, len(index.Notes))
+	for relPath := range index.Notes {
+		paths = append(paths, relPath)
+	}
+	sort.Strings(paths)
+	for _, relPath := range paths {
+		note := index.Notes[relPath]
+		if note == nil {
+			continue
+		}
+		data, err := json.Marshal(strictPopoverPayload{Title: note.Frontmatter.Title, Tags: append([]string(nil), note.Tags...)})
+		if err != nil {
+			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
+		}
+		if err := writeOutputFile(outputRoot, path.Join("_popover", relPath+".json"), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func strictBuildTags(tags map[string]*model.Tag) []*model.Tag {
+	values := make([]*model.Tag, 0, len(tags))
+	for _, tag := range tags {
+		if tag != nil {
+			values = append(values, tag)
+		}
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i].Name < values[j].Name })
+	return values
+}
+
+type strictCacheEntry struct {
+	Owner     string `json:"owner"`
+	Source    string `json:"source"`
+	Route     string `json:"route,omitempty"`
+	Signature string `json:"signature"`
+}
+
+type strictCacheManifest struct {
+	Version int                `json:"version"`
+	Entries []strictCacheEntry `json:"entries"`
+}
+
+func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, assets map[string]*model.Asset) error {
+	manifest := strictCacheManifest{Version: 1, Entries: make([]strictCacheEntry, 0)}
+	add := func(owner, source, route string, data []byte) {
+		hash := sha256.Sum256(data)
+		manifest.Entries = append(manifest.Entries, strictCacheEntry{Owner: owner, Source: source, Route: route, Signature: fmt.Sprintf("%x", hash)})
+	}
+	if plan != nil {
+		configData, _ := json.Marshal(plan.Config)
+		add("site", "obsite.yaml", "", configData)
+		for _, section := range plan.Sections {
+			if section != nil {
+				data := append([]byte(section.Title+"\x00"+section.Description+"\x00"+section.Banner+"\x00"+section.BannerAlt), section.RawContent...)
+				add("section", section.SourcePath, section.Route, data)
+			}
+		}
+		for _, article := range plan.Articles {
+			if article != nil {
+				meta, _ := json.Marshal(article.Frontmatter)
+				data := append(meta, article.RawContent...)
+				add("article", article.RelPath, article.Route, data)
+			}
+		}
+	}
+	if index != nil {
+		for _, tag := range strictBuildTags(index.Tags) {
+			if tag != nil {
+				data, _ := json.Marshal(tag)
+				add("tag", tag.Name, "/"+tag.Slug+"/", data)
+			}
+		}
+	}
+	assetSources := make([]string, 0, len(assets))
+	for source := range assets {
+		assetSources = append(assetSources, source)
+	}
+	sort.Strings(assetSources)
+	for _, source := range assetSources {
+		if asset := assets[source]; asset != nil {
+			data, _ := json.Marshal(asset)
+			add("asset", source, asset.DstPath, data)
+		}
+	}
+	if plan != nil && plan.Config.Timeline.Enabled {
+		add("timeline", "obsite.yaml", "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/", []byte(plan.Config.Timeline.Path))
+	}
+	sort.Slice(manifest.Entries, func(i, j int) bool {
+		left, right := manifest.Entries[i], manifest.Entries[j]
+		if left.Owner != right.Owner {
+			return left.Owner < right.Owner
+		}
+		if left.Source != right.Source {
+			return left.Source < right.Source
+		}
+		return left.Route < right.Route
+	})
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		return err
+	}
+	return writeOutputFile(outputRoot, ".obsite-cache/manifest.json", data)
+}
+
+func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SitePlan) error {
+	if plan == nil {
+		return nil
+	}
+	if plan.Config.CustomCSS != "" {
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, plan.Config.CustomCSS)
+		if err != nil {
+			return fmt.Errorf("read custom CSS: %w", err)
+		}
+		if err := writeOutputFile(outputRoot, customCSSOutputPath, data); err != nil {
+			return err
+		}
+	}
+	if plan.Config.ThemeDir == "" {
+		return nil
+	}
+	themeCSS := filepath.Join(plan.Config.ThemeDir, "theme.css")
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, themeCSS)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return writeStrictThemeAssets(vaultRoot, outputRoot, plan)
+		}
+		return fmt.Errorf("read theme CSS: %w", err)
+	}
+	plan.Config.ThemeCSS = "assets/theme/theme.css"
+	if err := writeOutputFile(outputRoot, plan.Config.ThemeCSS, data); err != nil {
+		return err
+	}
+	return writeStrictThemeAssets(vaultRoot, outputRoot, plan)
+}
+
+func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan) error {
+	if plan == nil || plan.Config.ThemeDir == "" {
+		return nil
+	}
+	return filepath.WalkDir(plan.Config.ThemeDir, func(current string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(plan.Config.ThemeDir, current)
+		if err != nil {
+			return err
+		}
+		if rel == "." {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("theme entry %q must not be a symbolic link", rel)
+		}
+		if entry.IsDir() {
+			if rel != "assets" && !strings.HasPrefix(rel, "assets/") {
+				return fmt.Errorf("unsupported theme directory %q", rel)
+			}
+			return nil
+		}
+		if rel == "theme.css" {
+			return nil
+		}
+		if rel == "slots.html" {
+			_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
+			if err != nil {
+				return fmt.Errorf("read theme slots: %w", err)
+			}
+			if err := render.ValidateThemeSlots(string(data)); err != nil {
+				return err
+			}
+			plan.Config.ThemeSlots = string(data)
+			return nil
+		}
+		if !strings.HasPrefix(rel, "assets/") {
+			return fmt.Errorf("unsupported theme entry %q", rel)
+		}
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
+		if err != nil {
+			return fmt.Errorf("read theme asset %q: %w", rel, err)
+		}
+		return writeOutputFile(outputRoot, path.Join("assets/theme", strings.TrimPrefix(rel, "assets/")), data)
+	})
+}
+
+func strictReservedAssetOutputs(plan *model.SitePlan) []string {
+	reserved := []string{"style.css", "assets/obsite-runtime", "assets/obsite", "assets/social"}
+	if plan != nil && plan.Config.CustomCSS != "" {
+		reserved = append(reserved, "assets/custom.css")
+	}
+	if plan != nil && plan.Config.ThemeDir != "" {
+		reserved = append(reserved, "assets/theme")
+	}
+	return reserved
+}
+
+func strictSidebar(plan *model.SitePlan, versionID string) []model.SidebarNode {
+	if plan == nil {
+		return nil
+	}
+	root := plan.Root
+	if versionID != "" {
+		for _, version := range plan.Versions {
+			if version != nil && version.ID == versionID {
+				root = version.Root
+				break
+			}
+		}
+	}
+	if root == nil {
+		return nil
+	}
+	return strictSidebarChildren(root)
 }
 func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	if section == nil {
@@ -168,7 +516,7 @@ func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	return result
 }
 
-func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan) error {
+func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *model.VaultIndex) error {
 	var sitemap strings.Builder
 	sitemap.WriteString(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
 	for _, section := range plan.Sections {
@@ -181,24 +529,61 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan) error {
 			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc>%s</url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, article.Route)), strictLastMod(article.LastModified))
 		}
 	}
+	if index != nil {
+		for _, tag := range strictBuildTags(index.Tags) {
+			if tag != nil {
+				_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+tag.Slug+"/")))
+			}
+		}
+	}
+	if plan.Config.Timeline.Enabled {
+		_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/")))
+	}
 	sitemap.WriteString(`</urlset>`)
 	if err := writeOutputFile(outputRoot, "sitemap.xml", []byte(sitemap.String())); err != nil {
 		return err
 	}
-	if err := writeOutputFile(outputRoot, "robots.txt", []byte(seo.BuildRobots(plan.Config.BaseURL))); err != nil {
+	if err := writeOutputFile(outputRoot, "robots.txt", []byte(strictBuildRobots(plan.Config.BaseURL))); err != nil {
 		return err
 	}
 	if plan.Config.RSS.Enabled {
 		var rss strings.Builder
-		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"><channel><title>%s</title>`, strictXMLEscape(plan.Config.Title))
+		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>%s</title>`, strictXMLEscape(plan.Config.Title))
 		for _, article := range plan.Posts {
 			if article == nil {
 				continue
 			}
 			link := strictBuildCanonicalURL(plan.Config.BaseURL, article.Route)
 			_, _ = fmt.Fprintf(&rss, `<item><title>%s</title><link>%s</link><guid>%s</guid>`, strictXMLEscape(article.Frontmatter.Title), strictXMLEscape(link), strictXMLEscape(link))
+			if article.Frontmatter.Description != "" {
+				_, _ = fmt.Fprintf(&rss, `<description>%s</description>`, strictXMLEscape(article.Frontmatter.Description))
+			}
+			if article.Frontmatter.Author != "" {
+				_, _ = fmt.Fprintf(&rss, `<dc:creator>%s</dc:creator>`, strictXMLEscape(article.Frontmatter.Author))
+			}
+			for _, tag := range article.Tags {
+				_, _ = fmt.Fprintf(&rss, `<category>%s</category>`, strictXMLEscape(tag))
+			}
+			if !article.Frontmatter.Reviewed.IsZero() {
+				_, _ = fmt.Fprintf(&rss, `<reviewed>%s</reviewed>`, strictXMLEscape(article.Frontmatter.Reviewed.UTC().Format(time.RFC3339)))
+			}
+			if article.Frontmatter.Status != "" {
+				_, _ = fmt.Fprintf(&rss, `<status>%s</status>`, strictXMLEscape(article.Frontmatter.Status))
+			}
+			if article.Frontmatter.Audience != "" {
+				_, _ = fmt.Fprintf(&rss, `<audience>%s</audience>`, strictXMLEscape(article.Frontmatter.Audience))
+			}
+			if article.Frontmatter.ProductVersion != "" {
+				_, _ = fmt.Fprintf(&rss, `<productVersion>%s</productVersion>`, strictXMLEscape(article.Frontmatter.ProductVersion))
+			}
+			if article.Frontmatter.Series != "" {
+				_, _ = fmt.Fprintf(&rss, `<series>%s</series>`, strictXMLEscape(article.Frontmatter.Series))
+			}
 			if !article.Frontmatter.Date.IsZero() {
 				_, _ = fmt.Fprintf(&rss, `<pubDate>%s</pubDate>`, article.Frontmatter.Date.UTC().Format(time.RFC1123Z))
+			}
+			if !article.Frontmatter.Updated.IsZero() {
+				_, _ = fmt.Fprintf(&rss, `<lastBuildDate>%s</lastBuildDate>`, article.Frontmatter.Updated.UTC().Format(time.RFC1123Z))
 			}
 			rss.WriteString(`</item>`)
 		}
@@ -207,8 +592,15 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan) error {
 			return err
 		}
 	}
-	notFound := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>Not found | %s</title></head><body><main><h1>Not found</h1><a href="%s">Home</a></main></body></html>`, plan.Config.Title, strictBuildLocalPath(plan.Config.BaseURL, "/"))
-	return writeOutputFile(outputRoot, "404.html", []byte(notFound))
+	notFound, err := render.RenderStrictNotFound(plan)
+	if err != nil {
+		return err
+	}
+	return writeOutputFile(outputRoot, "404.html", notFound)
+}
+
+func strictBuildRobots(baseURL string) string {
+	return "User-agent: *\nAllow: /\nSitemap: " + strings.TrimSuffix(baseURL, "/") + "/sitemap.xml\n"
 }
 
 func strictLastMod(value time.Time) string {
@@ -246,6 +638,11 @@ func prepareStrictAssets(vaultRoot string, plan *model.SitePlan) (map[string]*mo
 			}
 		}
 	}
+	if plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
+		if err := add(plan.Config.DefaultImg, "defaultImg"); err != nil {
+			return nil, err
+		}
+	}
 	for _, article := range plan.Articles {
 		if article != nil {
 			if err := add(article.Frontmatter.Banner, "banner"); err != nil {
@@ -262,7 +659,22 @@ func prepareStrictAssets(vaultRoot string, plan *model.SitePlan) (map[string]*mo
 	return assets, nil
 }
 
+func applyStrictPlannedDestinations(assets map[string]*model.Asset, destinations map[string]string) {
+	for source, destination := range destinations {
+		if asset := assets[source]; asset != nil {
+			asset.DstPath = destination
+		}
+	}
+}
+
 func applyStrictAssetURLs(plan *model.SitePlan, assets map[string]*model.Asset) {
+	if plan != nil {
+		if plan.Config.DefaultImgExternal {
+			plan.Config.DefaultImgURL = plan.Config.DefaultImg
+		} else if asset := assets[plan.Config.DefaultImg]; asset != nil {
+			plan.Config.DefaultImgURL = asset.DstPath
+		}
+	}
 	for _, section := range plan.Sections {
 		if section != nil && section.Banner != "" && assets[section.Banner] != nil {
 			section.BannerURL = assets[section.Banner].DstPath
@@ -290,7 +702,7 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 	}
 	lower := strings.ToLower(raw)
 	allowed := strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp")
-	if kind == "banner" {
+	if kind == "banner" || kind == "defaultImg" {
 		allowed = allowed || strings.HasSuffix(lower, ".svg")
 	}
 	if !allowed {
@@ -301,9 +713,8 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 		return nil, fmt.Errorf("%s %q: %w", kind, raw, err)
 	}
 	if strings.HasSuffix(lower, ".svg") {
-		text := strings.ToLower(string(data))
-		if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "//") || strings.Contains(text, "@import") {
-			return nil, fmt.Errorf("banner %q contains an external SVG reference", raw)
+		if err := internalasset.ValidateLocalSVG(data); err != nil {
+			return nil, fmt.Errorf("banner %q SVG: %w", raw, err)
 		}
 		return data, nil
 	}
@@ -317,17 +728,6 @@ func strictCoverBytes(vaultRoot, raw string) ([]byte, error) {
 	return validateStrictAsset(vaultRoot, raw, "cover")
 }
 
-func strictBuildLocalPath(baseURL, route string) string {
-	parsed, err := url.Parse(baseURL)
-	prefix := ""
-	if err == nil {
-		prefix = strings.TrimSuffix(parsed.EscapedPath(), "/")
-	}
-	if prefix == "" {
-		return route
-	}
-	return prefix + "/" + strings.TrimPrefix(route, "/")
-}
 func strictBuildCanonicalURL(baseURL, route string) string {
 	return strings.TrimSuffix(baseURL, "/") + route
 }
@@ -345,6 +745,64 @@ func strictArticleSection(plan *model.SitePlan, article *model.Note) *model.Sect
 	for _, section := range plan.Sections {
 		if section != nil && section.RelPath == article.SectionPath && section.VersionID == article.VersionID {
 			return section
+		}
+	}
+	return nil
+}
+
+func rebindStrictPlanNotes(plan *model.SitePlan, index *model.VaultIndex) {
+	if plan == nil || index == nil {
+		return
+	}
+	for _, note := range index.Notes {
+		if note == nil {
+			continue
+		}
+		original := strictPlanNote(plan, note.RelPath)
+		if original == nil {
+			continue
+		}
+		note.Route = original.Route
+		note.SectionPath = original.SectionPath
+		note.VersionID = original.VersionID
+		note.VersionRoutes = original.VersionRoutes
+		note.Slug = original.Slug
+	}
+	index.NoteBySlug = make(map[string]*model.Note, len(index.Notes))
+	for _, note := range index.Notes {
+		if note != nil && note.Slug != "" {
+			index.NoteBySlug[slug.Canonicalize(note.Slug)] = note
+		}
+	}
+	rebind := func(notes []*model.Note) []*model.Note {
+		for i, note := range notes {
+			if note != nil {
+				if replacement := index.Notes[note.RelPath]; replacement != nil {
+					notes[i] = replacement
+				}
+			}
+		}
+		return notes
+	}
+	plan.Articles = rebind(plan.Articles)
+	plan.Documents = rebind(plan.Documents)
+	plan.Posts = rebind(plan.Posts)
+	plan.Pages = rebind(plan.Pages)
+	for _, section := range plan.Sections {
+		if section == nil {
+			continue
+		}
+		section.Articles = rebind(section.Articles)
+		section.Documents = rebind(section.Documents)
+		section.Posts = rebind(section.Posts)
+		section.Pages = rebind(section.Pages)
+	}
+}
+
+func strictPlanNote(plan *model.SitePlan, relPath string) *model.Note {
+	for _, note := range plan.Articles {
+		if note != nil && note.RelPath == relPath {
+			return note
 		}
 	}
 	return nil

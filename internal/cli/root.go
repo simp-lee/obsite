@@ -24,8 +24,7 @@ type previewServer interface {
 }
 
 type commandDependencies struct {
-	loadSiteInput        func(resolvedVault string) (internalbuild.SiteInput, error)
-	buildSiteWithOptions func(input internalbuild.SiteInput, vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
+	buildSiteWithOptions func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
 	newPreviewServer     func(outputPath string, port int) (previewServer, error)
 	newFileWatcher       func() (fileWatcher, error)
 }
@@ -50,7 +49,6 @@ func executeWithDeps(args []string, deps commandDependencies, stdout io.Writer, 
 
 func defaultCommandDependencies() commandDependencies {
 	return commandDependencies{
-		loadSiteInput:        internalbuild.LoadSiteInput,
 		buildSiteWithOptions: internalbuild.BuildWithOptions,
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {
 			return internalserver.New(outputPath, port)

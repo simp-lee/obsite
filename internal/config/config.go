@@ -30,22 +30,21 @@ const (
 )
 
 type fileConfig struct {
-	Title          string               `yaml:"title"`
-	BaseURL        string               `yaml:"baseURL"`
-	Author         string               `yaml:"author"`
-	Description    string               `yaml:"description"`
-	Language       string               `yaml:"language"`
-	DefaultImg     string               `yaml:"defaultImg"`
-	DefaultPublish *bool                `yaml:"defaultPublish"`
-	Navigation     []navigationFileItem `yaml:"navigation"`
-	Source         sourceFileConfig     `yaml:"source"`
-	Versions       *versionsFileConfig  `yaml:"versions"`
-	Pagination     paginationFileConfig `yaml:"pagination"`
-	Sidebar        enabledFileConfig    `yaml:"sidebar"`
-	Popover        enabledFileConfig    `yaml:"popover"`
-	Related        relatedFileConfig    `yaml:"related"`
-	RSS            enabledFileConfig    `yaml:"rss"`
-	Timeline       timelineFileConfig   `yaml:"timeline"`
+	Title       string               `yaml:"title"`
+	BaseURL     string               `yaml:"baseURL"`
+	Author      string               `yaml:"author"`
+	Description string               `yaml:"description"`
+	Language    string               `yaml:"language"`
+	DefaultImg  string               `yaml:"defaultImg"`
+	Navigation  []navigationFileItem `yaml:"navigation"`
+	Source      sourceFileConfig     `yaml:"source"`
+	Versions    *versionsFileConfig  `yaml:"versions"`
+	Pagination  paginationFileConfig `yaml:"pagination"`
+	Sidebar     enabledFileConfig    `yaml:"sidebar"`
+	Popover     enabledFileConfig    `yaml:"popover"`
+	Related     relatedFileConfig    `yaml:"related"`
+	RSS         enabledFileConfig    `yaml:"rss"`
+	Timeline    timelineFileConfig   `yaml:"timeline"`
 }
 
 type navigationFileItem struct {
@@ -93,8 +92,7 @@ type timelineFileConfig struct {
 // Defaults returns the single canonical product default set.
 func Defaults() model.SiteConfig {
 	return model.SiteConfig{
-		Language:       defaultLanguage,
-		DefaultPublish: true,
+		Language: defaultLanguage,
 		Pagination: model.PaginationConfig{
 			PageSize: defaultPaginationPageSize,
 		},
@@ -110,47 +108,15 @@ func Defaults() model.SiteConfig {
 	}
 }
 
-// InitialYAML renders the init file from the canonical defaults. The required
-// title and baseURL use explicit starter placeholders.
-func InitialYAML() string {
-	defaults := Defaults()
-	return fmt.Sprintf(`# Obsite site configuration.
+// InitialStrictYAML renders the minimal strict section-schema configuration.
+func InitialStrictYAML() string {
+	return `# Obsite site configuration.
 # Replace baseURL with the real public URL before publishing.
 baseURL: https://example.com/
 title: My Obsite Site
-author: ""
-description: ""
-language: %s
-defaultPublish: %t
-defaultImg: ""
-pagination:
-  pageSize: %d
-sidebar:
-  enabled: %t
-popover:
-  enabled: %t
-related:
-  enabled: %t
-  count: %d
-rss:
-  enabled: %t
-timeline:
-  enabled: %t
-  asHomepage: %t
-  path: %s
-`,
-		defaults.Language,
-		defaults.DefaultPublish,
-		defaults.Pagination.PageSize,
-		defaults.Sidebar.Enabled,
-		defaults.Popover.Enabled,
-		defaults.Related.Enabled,
-		defaults.Related.Count,
-		defaults.RSS.Enabled,
-		defaults.Timeline.Enabled,
-		defaults.Timeline.AsHomepage,
-		defaults.Timeline.Path,
-	)
+navigation: []
+source: {}
+`
 }
 
 // LoadForBuild reads exactly <resolvedVault>/obsite.yaml and discovers only the
@@ -167,73 +133,6 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 		return model.SiteConfig{}, fmt.Errorf("read config %q: %w", configPath, err)
 	}
 
-	parsed, err := parseFileConfig(data)
-	if err != nil {
-		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
-	}
-	if err := validateParsedFileConfig(parsed); err != nil {
-		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
-	}
-
-	cfg := applyFileConfig(Defaults(), parsed)
-	cfg, err = normalizeAndValidate(cfg)
-	if err != nil {
-		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
-	}
-
-	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
-	if err != nil {
-		return model.SiteConfig{}, err
-	}
-	cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, ThemeDirRelPath, "theme directory")
-	if err != nil {
-		return model.SiteConfig{}, err
-	}
-	return cfg, nil
-}
-
-// UsesStrictSchema reports whether the vault configuration declares the
-// revised navigation field. Callers use it only to choose the strict parser;
-// malformed revised files still fail that parser rather than falling back.
-func UsesStrictSchema(resolvedVault string) (bool, error) {
-	vaultRoot := filepath.Clean(strings.TrimSpace(resolvedVault))
-	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
-		return false, fmt.Errorf("resolved vault path is required")
-	}
-	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, filepath.Join(vaultRoot, Filename))
-	if err != nil {
-		return false, err
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	var document yaml.Node
-	if err := decoder.Decode(&document); err != nil {
-		return false, err
-	}
-	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
-		return false, nil
-	}
-	root := document.Content[0]
-	for index := 0; index+1 < len(root.Content); index += 2 {
-		if root.Content[index].Value == "navigation" {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-// LoadStrictForBuild loads the revised section-based configuration contract.
-// It intentionally rejects the superseded defaultPublish setting and requires
-// an explicit navigation sequence (including an explicit empty sequence).
-func LoadStrictForBuild(resolvedVault string) (model.SiteConfig, error) {
-	vaultRoot := filepath.Clean(strings.TrimSpace(resolvedVault))
-	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
-		return model.SiteConfig{}, fmt.Errorf("resolved vault path is required")
-	}
-	configPath := filepath.Join(vaultRoot, Filename)
-	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, configPath)
-	if err != nil {
-		return model.SiteConfig{}, fmt.Errorf("read config %q: %w", configPath, err)
-	}
 	if err := validateStrictConfigDocument(data); err != nil {
 		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
 	}
@@ -244,11 +143,13 @@ func LoadStrictForBuild(resolvedVault string) (model.SiteConfig, error) {
 	if err := validateParsedFileConfig(parsed); err != nil {
 		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
 	}
+
 	cfg := applyFileConfig(Defaults(), parsed)
 	cfg, err = normalizeAndValidate(cfg)
 	if err != nil {
 		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
 	}
+
 	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
 	if err != nil {
 		return model.SiteConfig{}, err
@@ -258,13 +159,6 @@ func LoadStrictForBuild(resolvedVault string) (model.SiteConfig, error) {
 		return model.SiteConfig{}, err
 	}
 	return cfg, nil
-}
-
-// InitialStrictYAML is the minimal revised-schema configuration used by the
-// section-based initializer. The legacy initializer remains available while
-// the CLI publication pipeline is migrated to the strict analyzer.
-func InitialStrictYAML() string {
-	return "baseURL: https://example.com/\ntitle: My Obsite Site\nnavigation: []\nsource: {}\n"
 }
 
 // NormalizeSiteConfig normalizes an already-constructed internal config. The
@@ -336,9 +230,6 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 		cfg.Language = value
 	}
 	cfg.DefaultImg = strings.TrimSpace(parsed.DefaultImg)
-	if parsed.DefaultPublish != nil {
-		cfg.DefaultPublish = *parsed.DefaultPublish
-	}
 	cfg.Navigation = make([]model.NavigationItem, 0, len(parsed.Navigation))
 	for _, item := range parsed.Navigation {
 		cfg.Navigation = append(cfg.Navigation, model.NavigationItem{

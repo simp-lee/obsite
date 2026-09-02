@@ -2,7 +2,7 @@ package render
 
 import "embed"
 
-//go:embed site/* vendor/**/*
+//go:embed site/style.css site/runtime.js vendor/**/*
 var embeddedSiteFS embed.FS
 
 func embeddedSiteAssetPath(name string) string {

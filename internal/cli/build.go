@@ -10,7 +10,6 @@ import (
 func newBuildCommand(deps commandDependencies) *cobra.Command {
 	var vaultPath string
 	var outputPath string
-	var force bool
 	var strict bool
 
 	cmd := &cobra.Command{
@@ -23,12 +22,7 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 				return err
 			}
 
-			input, err := deps.loadSiteInput(boundary.VaultPath)
-			if err != nil {
-				return fmt.Errorf("load config: %w", err)
-			}
-
-			if _, err := deps.buildSiteWithOptions(input, boundary.VaultPath, boundary.OutputPath, internalbuild.Options{Force: force, Strict: strict, DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
+			if _, err := deps.buildSiteWithOptions(boundary.VaultPath, boundary.OutputPath, internalbuild.Options{Strict: strict, DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
 				return fmt.Errorf("build site: %w", err)
 			}
 
@@ -39,7 +33,6 @@ func newBuildCommand(deps commandDependencies) *cobra.Command {
 	flags := cmd.Flags()
 	flags.StringVar(&vaultPath, "vault", "", "Path to the Obsidian vault")
 	flags.StringVar(&outputPath, "output", "", "Path to write the generated site")
-	flags.BoolVar(&force, "force", false, "Ignore the incremental cache and rebuild all note pages")
 	flags.BoolVar(&strict, "strict", false, "Fail before publication when validation finds a warning or error")
 
 	return cmd

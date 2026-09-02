@@ -61,7 +61,7 @@ check_embed_inventory() {
   fi
 
   site_files=$(find internal/render/site -type f -print | sed 's#^internal/render/site/##' | sort)
-  expected_site_files=$(printf '%s\n' 404.html base.html folder.html index.html note.html runtime.js style.css tag.html timeline.html | sort)
+  expected_site_files=$(printf '%s\n' runtime.js style.css | sort)
   if [ "$site_files" != "$expected_site_files" ]; then
     printf 'embedded site inventory changed:\n%s\n' "$site_files" >&2
     exit 1
@@ -132,6 +132,11 @@ check_artifacts() {
     cd "$vault"
     "$binary" init >/dev/null
     cat > audit.md <<'MARKDOWN'
+---
+title: Boundary audit
+publish: true
+type: doc
+---
 # Boundary audit
 
 Inline math: $x^2$.

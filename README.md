@@ -1,206 +1,156 @@
 # Obsite
 
-Obsite is a self-contained CLI that turns one Obsidian Markdown vault into a static website.
-
-## Quick start
-
-Run these commands from the parent of an existing vault directory:
-
 ```bash
-cd vault
-obsite init
-obsite build
-obsite serve --watch
+cd vault && obsite init && obsite build && obsite serve --watch
 ```
 
-Open <http://localhost:8080>. `init` creates `obsite.yaml` exclusively and will not overwrite an existing file. The generated configuration builds immediately; replace its example `baseURL` with the real public URL before publishing.
-
-The current directory is the default vault. `build` reads `<vault>/obsite.yaml` and publishes transactionally to `<vault>/public`. `serve --watch` performs that same build first, then watches valid vault inputs and reloads the browser only after a successful rebuild.
-
-## Install
-
-Download the archive for Linux, macOS, or Windows (`amd64` or `arm64`) from [GitHub Releases](https://github.com/simp-lee/obsite/releases). Each archive contains one `obsite` executable, the project license, and third-party notices. Verify the archive with the published SHA-256 `checksums.txt` before use.
-
-The versioned Go entrypoint is also supported and requires Go 1.25 or newer:
-
-```bash
-go install github.com/simp-lee/obsite/cmd/obsite@vX.Y.Z
-```
-
-Official release archives contain one `CGO_ENABLED=0` binary; source installs honor the caller's Go and CGO environment. Running `init`, `build`, or `serve` does not require Node.js, npm, an external search indexer, a browser tool, a CDN, another executable, or a runtime download. Obsite does not expose a public Go library API.
+Obsite is a self-contained Go CLI that publishes one Obsidian vault as a deterministic static site. The vault is the only content source and `<vault>/obsite.yaml` is the only site configuration. The generated site is written transactionally to `<vault>/public` by default.
 
 ## Commands
 
 ```text
 obsite init [--vault PATH]
-obsite build [--vault PATH] [--output PATH] [--force]
+obsite build [--vault PATH] [--output PATH] [--strict]
+obsite validate --vault PATH
 obsite serve [--vault PATH] [--output PATH] [--port NUM] [--watch]
 obsite version
 obsite --version
 ```
 
-- `init` defaults to the current directory. The vault must already exist.
-- `build` defaults to the current directory and `<vault>/public`. `--output` may select another directory; `--force` bypasses page-cache reuse.
-- `serve` defaults to `<vault>/public` on port `8080`. Without `--watch`, a missing output is an error. With `--watch`, Obsite builds before serving.
-- The optional `--vault` changes the vault root. There is no external config or theme flag.
-- Running `obsite` without arguments prints concise help. Unknown commands, arguments, and removed flags fail explicitly.
+`init` accepts only a nonexistent or completely empty directory. It creates a strict `obsite.yaml` and a root `_index.md`, and never overwrites existing files. `validate` is read-only and returns a failure for either errors or warnings. Normal builds show warnings and continue; `build --strict` fails before publication for either severity. `serve --watch` uses the same strict build and reloads only after a successful rebuild.
 
-Shell completions are available through `obsite completion <bash|zsh|fish|powershell>`.
+## Vault and section model
 
-## Vault contract
+A publishable vault must contain a root `_index.md`. Every content directory must contain exactly one `_index.md`; a section source is never an article. Section frontmatter allows only:
 
-The vault is the only file data source. Obsite recognizes these fixed inputs:
+```yaml
+---
+title: Documentation
+publish: true
+description: Public documentation.
+order: 1
+banner: images/docs-banner.png
+bannerAlt: Documentation banner
+---
+```
 
-- `obsite.yaml` — the only site configuration.
-- Markdown notes and publishable vault resources.
-- `.obsidian/app.json` — only for Obsidian's `attachmentFolderPath` setting.
-- `custom.css` — an optional final user stylesheet.
-- `.obsite/theme/theme.css` — an optional CSS-variable theme.
-- `.obsite/theme/slots.html` — optional append-only HTML slots.
-- `.obsite/theme/assets/**` — optional theme assets.
+`title` and `publish` are required. Section routes are derived from their vault-relative directory (`/` for the root and `/guide/` for `guide`). A published section produces a landing page with its own body, direct child sections, direct published articles, breadcrumbs, navigation, and optional banner. `publish: false` hides the section and all descendants and is diagnosed when a descendant attempts to publish.
 
-Ordinary scanning excludes `.obsite`, `.obsidian`, `node_modules`, unrelated hidden paths, and the resolved output directory. Config, CSS, theme files, Markdown, and resources must be regular contained vault files; symlink escapes are rejected. `serve --watch` watches the fixed inputs above and excludes the generated output.
+Ordinary articles also require explicit `title`, `publish`, and `type`. `type` is one of `doc`, `post`, or `page`:
+
+```yaml
+---
+title: Getting Started
+publish: true
+type: doc
+order: 1
+description: A short description.
+tags: [guide]
+author: Documentation Team
+status: stable
+---
+```
+
+Document ordering uses explicit `order`, filename numeric prefix, normalized title, and normalized source path. Document pages expose one collection's previous/next flow and position. Posts require an explicit date, are ordered by date, and are the only article type included in RSS. Pages are standalone. No title, publish, date, folder-page, or route value is inferred from filenames or filesystem time.
 
 ## Configuration
 
-Only `title` and an absolute HTTP(S) `baseURL` are required. YAML is strict: unknown and removed fields are errors.
+YAML keys, values, nulls, and nested structures are strict. Unknown keys, duplicate keys, removed legacy fields, invalid paths, and invalid values are errors. `navigation` is required even when empty:
 
 ```yaml
-baseURL: https://example.com/notes/
+baseURL: https://example.com/docs/
 title: My Obsite Site
-author: ""
-description: ""
+author: Site Team
+description: Project documentation.
 language: en
-defaultPublish: true
-defaultImg: ""
-pagination:
-  pageSize: 20
+navigation:
+  - name: Home
+    section: .
+  - name: Repository
+    url: https://github.com/example/project
+source:
+  editURL: https://github.com/example/project/edit/main/:path
+  viewURL: https://github.com/example/project/blob/main/:path
+versions:
+  root: docs
+  default: v2
+  entries:
+    - id: v1
+      label: Version 1
+      source: v1
+    - id: v2
+      label: Version 2
+      source: v2
 sidebar:
-  enabled: false
+  enabled: true
 popover:
-  enabled: false
+  enabled: true
 related:
-  enabled: false
+  enabled: true
   count: 5
 rss:
   enabled: true
 timeline:
   enabled: false
   asHomepage: false
-  path: notes
+  path: timeline
+defaultImg: ""
 ```
 
-`baseURL` and `title` above are required examples; the remaining values shown are the product defaults. `related.count` must be from `1` through `20`. Related notes use build-time dynamic TF-IDF cosine similarity plus source-link and normalized-tag signals; disabling related notes avoids tokenizer and recommendation-index work.
+Navigation entries use exactly one site-relative `url` or section reference. Site-relative links honor `baseURL`; external HTTP(S) links are rendered as supplied and are never requested. Source `editURL` and `viewURL` are independent absolute templates with exactly one `:path`; each source path segment is RFC 3986 percent-encoded.
+
+Explicit `versions` create independent section trees, sidebars, routes, canonical URLs, sitemaps, breadcrumbs, reading flows, source paths, and static version selectors. A missing same-path document links to the target version root, never to content from another version.
 
 ### `defaultImg`
 
-`defaultImg` has exactly two non-empty meanings:
+`defaultImg` has only two non-empty meanings:
 
-1. An absolute `http` or `https` URL with a host is used as the hosted Open Graph/Twitter image without local lookup.
-2. Any other value must be a clean `/`-separated resource path relative to the vault root, such as `media/social-card.png`.
+1. An absolute HTTP(S) URL with a host is an explicit hosted image URL.
+2. A normalized vault-relative path is a local planned asset.
 
-A local image is resolved from the vault root, published even when no note references it, and routed through the same collision-safe asset plan as other resources. Metadata uses its final public URL. Missing, ambiguous, directory, symlink, absolute filesystem, query/fragment, backslash, or escaping paths fail the build. An empty value emits no image metadata.
+Empty means no default image. Local paths must be contained regular files and cannot contain query/fragment syntax, backslashes, traversal, or symlinks. Obsite never downloads an image.
 
-## Markdown and generated site
+## Rendering and metadata
 
-Obsite keeps page content server-rendered and supports frontmatter publishing/metadata, wikilinks, note and image embeds, callouts, comment stripping, hashtags, headings/TOC, syntax highlighting, permitted raw HTML, attachments, backlinks, tags, folders, pagination, timeline, RSS, sitemap, robots, canonical metadata, Open Graph, Twitter cards, JSON-LD, and a static 404 page.
+The fixed HTML shell is server-rendered and usable without JavaScript. It includes global navigation, section/version context, breadcrumbs, Sidebar data, source links, semantic landmarks, canonical URLs, descriptions, Open Graph/Twitter metadata, JSON-LD, RSS, Sitemap, robots, 404, and a shared offline runtime. Markdown supports the built-in wikilink, embed, callout, hashtag, heading/TOC, highlighting, raw-HTML, math, Mermaid, and attachment behavior; unresolved links and unsupported syntax become deterministic diagnostics without hiding authored content.
 
-The stable note, index, tag, folder, timeline, and 404 shells are built into Obsite. Themes cannot replace page structure, SEO, headers, content, navigation mounts, or footers. Stable integrations can target `data-obsite-root`, `data-obsite-kind`, `data-obsite-main`, and `data-page-content`; decorative classes are not compatibility promises.
+The optional article metadata fields are `date`, `updated`, `tags`, `aliases`, `slug`, `order`, `author`, `reviewed`, `status`, `audience`, `productVersion`, `series`, `cover`, `banner`, and `bannerAlt`. Dates are normalized to UTC. A banner requires a non-empty matching `bannerAlt`, is published once through the asset planner, and appears only in its owning section or article header. Banners use a responsive `16:5` display ratio with `object-fit: cover` and a 280px maximum height. Covers are local PNG, JPEG, or WebP files and are used only as social-card source images.
 
-### Offline math and diagrams
+`status: deprecated` emits an explicit text notice independent of color or JavaScript. Metadata is omitted when its optional source value is absent; no current time or filesystem fallback is inserted.
 
-Obsite embeds unmodified official browser distributions of KaTeX `0.18.4` and Mermaid `11.17.2`, including KaTeX fonts. Math source is protected by the pinned upstream Goldmark passthrough extension. Generated sites render math and diagrams without CDN, npm, or other network requests. Pages without a feature do not start its vendor runtime.
+## Page-level social cards
 
-### Shared runtime, Sidebar, and Popover
+Every published `doc`, `post`, and `page` article receives one deterministic 1200×630 PNG. Cards use the fixed text-first colors and geometry, an optional center-cropped cover, an embedded audited font, grapheme-aware truncation, and no clock, random, browser, system-font, CDN, or network input. The final URL is content-addressed under:
 
-Every page references one content-addressed `assets/obsite/runtime.<hash>.js`. It applies the base-path-isolated light/dark preference before paint, then initializes enabled enhancements. When Sidebar is enabled, the tree is serialized once at `assets/obsite/sidebar.json`; it is not copied into each page. Popovers use delegated behavior for both server-rendered note links and Sidebar links created later.
-
-JavaScript or shared-data failure does not remove the server-rendered title, body, breadcrumbs, built-in links, SEO, or static resources. Sidebar and Popover are progressive enhancements.
-
-## CSS themes and assets
-
-Stylesheets always load in this order:
-
-1. Obsite structural CSS and default light/dark/system variables.
-2. Official runtime CSS.
-3. Optional `.obsite/theme/theme.css`, published as `assets/theme/theme.css`.
-4. Optional vault-root `custom.css`, published as `assets/custom.css`.
-
-A distributable theme changes the public variables rather than replacing HTML:
-
-```css
-:root {
-  --obsite-background: #fff;
-  --obsite-surface: #f7f7f7;
-  --obsite-text: #171717;
-  --obsite-muted: #686868;
-  --obsite-accent: #315efb;
-  --obsite-border: #dedede;
-  --obsite-font-body: system-ui, sans-serif;
-  --obsite-font-display: system-ui, sans-serif;
-  --obsite-font-mono: ui-monospace, monospace;
-  --obsite-content-width: 48rem;
-  --obsite-sidebar-width: 18rem;
-  --obsite-radius: 0.5rem;
-  --obsite-shadow: 0 0.5rem 1.5rem rgb(0 0 0 / 12%);
-}
+```text
+assets/social/<sha256(canonical-article-url)>/<sha256(canonical-card-input)>-<sha256(png-bytes)>.png
 ```
 
-Files below `.obsite/theme/assets/` are copied without that source `assets/` prefix to `assets/theme/`. Relative URLs in `theme.css` therefore remain relative to the published theme stylesheet. `custom.css` may use arbitrary CSS as the final site-specific override.
+Article `og:image` and `twitter:image` point to that generated local PNG with `summary_large_image`. Sections never receive article social cards, and banners are not implicitly used as cards.
 
-## Append-only theme slots
+## Assets, themes, and offline runtime
 
-`.obsite/theme/slots.html` may contain only Go `html/template` definitions for these four names:
+All source assets pass through one contained asset planner. The planner owns Markdown images/embeds, banners, covers, local `defaultImg`, theme assets, and output collision checks. The generated output contains one shared content-addressed runtime, offline KaTeX/Mermaid resources, one optional Sidebar JSON, structural CSS, optional `.obsite/theme/theme.css`, and optional vault-root `custom.css`. Themes can change variables and append-only slots but cannot replace the HTML shell or renderer. No runtime resource is downloaded and no public Go SDK is provided.
 
-- `obsite-head-end`
-- `obsite-header-end`
-- `obsite-main-end`
-- `obsite-footer-end`
+Related recommendations retain the existing dynamic TF-IDF, sparse-cosine, source-link/tag signal algorithm and fixed tokenizer. `related.count` is restricted to `1..20`.
 
-Each is appended exactly once at its named structural boundary. Example:
+## Install and development
 
-```gotemplate
-{{ define "obsite-footer-end" }}
-  <img src="{{ themeAssetURL .SiteRootRel "brand/mark.svg" }}" alt="">
-{{ end }}
-```
-
-Slots can read only `.Kind`, `.Title`, `.Canonical`, `.RelPath`, `.SiteRootRel`, `.Site.Title`, `.Site.BaseURL`, `.Site.Author`, `.Site.Description`, and `.Site.Language`. The only added helper is `themeAssetURL .SiteRootRel "path-relative-to-theme-assets"`. Unknown definitions, raw content outside definitions, template invocation, unsupported files in `.obsite/theme/`, and invalid asset paths fail the build.
-
-## Note frontmatter
-
-```yaml
----
-title: My Note Title
-description: A short SEO description.
-publish: true
-date: 2026-01-15
-updated: 2026-02-10
-tags: [example, notes]
-aliases: [alternate-name]
-slug: custom-url-slug
----
-```
-
-`publish` overrides `defaultPublish`; title falls back to the filename. Dates, aliases, tags, descriptions, and custom slugs feed the corresponding page, link, list, related-note, and SEO behavior.
-
-## Development
-
-Pinned development versions used by CI are Go `1.26.2`, Node.js `24.14.1`, Playwright `1.62.1`, Chromium from that exact Playwright package, GoReleaser `v2.18.0`, actionlint `v1.7.7`, golangci-lint `v2.11.4`, gofumpt `v0.9.2`, and goimports `v0.44.0`.
+Release archives contain one `CGO_ENABLED=0` executable, the project license, and third-party notices. Verify the published SHA-256 checksums. Source installation requires Go 1.25 or newer:
 
 ```bash
-make tools       # install the pinned Go format/lint tools
-make check       # format check, lint, Go tests, and product/workflow audits
+go install github.com/simp-lee/obsite/cmd/obsite@vX.Y.Z
+```
+
+Development checks use pinned Go, Node.js, Playwright, GoReleaser, actionlint, golangci-lint, gofumpt, and goimports versions:
+
+```bash
+make tools
+make check
+go test -race ./internal/analyze ./internal/build ./internal/cli ./internal/render ./internal/server ./internal/recommend/... ./internal/vault ./internal/link
 npm ci
 npx --no-install playwright install chromium
 npm run test:e2e
 ```
 
-Release verification is available through the pinned wrappers:
-
-```bash
-sh scripts/verify-version-builds.sh
-scripts/goreleaser.sh check
-scripts/goreleaser.sh release --snapshot --clean
-sh scripts/verify-release.sh dist
-```
+Obsite does not provide site search, migration of old vault formats, complete template replacement, online search, a database, or external runtime downloads.

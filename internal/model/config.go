@@ -8,9 +8,9 @@ type SiteConfig struct {
 	Author             string
 	Description        string
 	Language           string
-	DefaultPublish     bool
 	DefaultImg         string
 	DefaultImgExternal bool
+	DefaultImgURL      string
 	ThemeDir           string
 	ThemeCSS           string
 	ThemeSlots         string
