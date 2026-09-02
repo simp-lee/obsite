@@ -81,6 +81,7 @@ func newRootCommand(deps commandDependencies) *cobra.Command {
 		newBuildCommand(deps),
 		newServeCommand(deps),
 		newInitCommand(),
+		newValidateCommand(),
 		newVersionCommand(),
 	)
 

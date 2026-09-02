@@ -69,6 +69,7 @@ type noteRenderSignatureBuilder struct {
 // Options controls build-time behavior that should remain stable across the CLI and serve paths.
 type Options struct {
 	Force             bool
+	Strict            bool
 	DiagnosticsWriter io.Writer
 }
 

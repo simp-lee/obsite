@@ -18,6 +18,7 @@ import (
 
 	xhtml "golang.org/x/net/html"
 
+	internalanalyze "github.com/simp-lee/obsite/internal/analyze"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	"github.com/simp-lee/obsite/internal/diag"
@@ -51,7 +52,8 @@ type BuildResult struct {
 
 // SiteInput is the build-owned contract for site generation.
 type SiteInput struct {
-	Config model.SiteConfig
+	Config       model.SiteConfig
+	StrictSchema bool
 }
 
 type buildOptions struct {
@@ -236,16 +238,52 @@ func (e diagnosticBuildError) Error() string {
 
 // LoadSiteInput loads build input using config-layer normalization.
 func LoadSiteInput(resolvedVault string) (SiteInput, error) {
+	strict, err := internalconfig.UsesStrictSchema(resolvedVault)
+	if err != nil {
+		return SiteInput{}, err
+	}
+	if strict {
+		cfg, err := internalconfig.LoadStrictForBuild(resolvedVault)
+		if err != nil {
+			return SiteInput{}, err
+		}
+		return SiteInput{Config: cfg, StrictSchema: true}, nil
+	}
 	cfg, err := internalconfig.LoadForBuild(resolvedVault)
 	if err != nil {
 		return SiteInput{}, err
 	}
-
 	return SiteInput{Config: cfg}, nil
+}
+
+func buildResultFromAnalysis(diagnostics []diag.Diagnostic) *BuildResult {
+	result := &BuildResult{Diagnostics: append([]diag.Diagnostic(nil), diagnostics...)}
+	for _, diagnostic := range diagnostics {
+		switch diagnostic.Severity {
+		case diag.SeverityError:
+			result.ErrorCount++
+		case diag.SeverityWarning:
+			result.WarningCount++
+		}
+	}
+	return result
 }
 
 // BuildWithOptions runs the full Obsite site-generation pipeline from a build.SiteInput contract.
 func BuildWithOptions(input SiteInput, vaultPath string, outputPath string, options Options) (*BuildResult, error) {
+	if input.StrictSchema || options.Strict {
+		analysis, analyzeErr := internalanalyze.Analyze(vaultPath)
+		if writeErr := internalanalyze.WriteDiagnostics(options.DiagnosticsWriter, analysis.Diagnostics); writeErr != nil {
+			return nil, fmt.Errorf("write strict diagnostics: %w", writeErr)
+		}
+		result := buildResultFromAnalysis(analysis.Diagnostics)
+		if analyzeErr != nil || result.ErrorCount > 0 || options.Strict && result.WarningCount > 0 {
+			if analyzeErr != nil {
+				return result, analyzeErr
+			}
+			return result, internalanalyze.Failure(analysis.Diagnostics)
+		}
+	}
 	return buildWithOptions(input.Config, vaultPath, outputPath, buildOptions{
 		force:             options.Force,
 		diagnosticsWriter: options.DiagnosticsWriter,

@@ -123,8 +123,6 @@ description: ""
 language: %s
 defaultPublish: %t
 defaultImg: ""
-navigation: []
-source: {}
 pagination:
   pageSize: %d
 sidebar:
@@ -192,6 +190,35 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 		return model.SiteConfig{}, err
 	}
 	return cfg, nil
+}
+
+// UsesStrictSchema reports whether the vault configuration declares the
+// revised navigation field. Callers use it only to choose the strict parser;
+// malformed revised files still fail that parser rather than falling back.
+func UsesStrictSchema(resolvedVault string) (bool, error) {
+	vaultRoot := filepath.Clean(strings.TrimSpace(resolvedVault))
+	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
+		return false, fmt.Errorf("resolved vault path is required")
+	}
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, filepath.Join(vaultRoot, Filename))
+	if err != nil {
+		return false, err
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	var document yaml.Node
+	if err := decoder.Decode(&document); err != nil {
+		return false, err
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return false, nil
+	}
+	root := document.Content[0]
+	for index := 0; index+1 < len(root.Content); index += 2 {
+		if root.Content[index].Value == "navigation" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // LoadStrictForBuild loads the revised section-based configuration contract.

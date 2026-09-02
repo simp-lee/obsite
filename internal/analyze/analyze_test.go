@@ -1,0 +1,57 @@
+package analyze
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestAnalyzeUsesStrictPlanWithoutWritingVault(t *testing.T) {
+	vault := t.TempDir()
+	writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeAnalyzeFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writeAnalyzeFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: doc\n---\n")
+	before, err := os.ReadDir(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := Analyze(vault)
+	if err != nil {
+		t.Fatalf("Analyze() error = %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	if result.Plan == nil || result.Plan.Plan == nil || len(result.Plan.Plan.Articles) != 1 {
+		t.Fatalf("result = %#v", result)
+	}
+	after, err := os.ReadDir(vault)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("vault entry count changed: %d -> %d", len(before), len(after))
+	}
+}
+
+func TestAnalyzeReturnsStableSchemaDiagnostic(t *testing.T) {
+	vault := t.TempDir()
+	writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\ndefaultPublish: true\n")
+	result, err := Analyze(vault)
+	if err == nil || len(result.Diagnostics) != 1 {
+		t.Fatalf("Analyze() error=%v diagnostics=%v", err, result.Diagnostics)
+	}
+	item := result.Diagnostics[0]
+	if item.Severity != "error" || item.Kind != "schema" || !strings.Contains(item.Message, "defaultPublish") {
+		t.Fatalf("diagnostic = %#v", item)
+	}
+}
+
+func writeAnalyzeFile(t *testing.T, root, rel, content string) {
+	t.Helper()
+	filename := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(filename), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filename, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

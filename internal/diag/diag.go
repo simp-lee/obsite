@@ -44,7 +44,11 @@ type Diagnostic struct {
 	Severity Severity
 	Kind     Kind
 	Location Location
-	Message  string
+	// Field and Target make schema/link diagnostics machine-actionable while
+	// remaining optional for older parser diagnostics.
+	Field   string
+	Target  string
+	Message string
 }
 
 // Collector accumulates diagnostics and supports concurrent writers and merges.
@@ -227,6 +231,12 @@ func sortDiagnostics(diagnostics []Diagnostic) {
 		}
 		if left.Kind != right.Kind {
 			return left.Kind < right.Kind
+		}
+		if left.Field != right.Field {
+			return left.Field < right.Field
+		}
+		if left.Target != right.Target {
+			return left.Target < right.Target
 		}
 		return left.Message < right.Message
 	})
