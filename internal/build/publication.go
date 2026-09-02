@@ -43,6 +43,47 @@ const (
 	customCSSOutputPath         = "assets/custom.css"
 )
 
+type strictOutputRegistry struct {
+	claims map[string]string
+}
+
+func newStrictOutputRegistry() *strictOutputRegistry {
+	return &strictOutputRegistry{claims: make(map[string]string)}
+}
+
+func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, content []byte) error {
+	if registry == nil {
+		return fmt.Errorf("output registry is required")
+	}
+	cleaned := strings.Trim(strings.ReplaceAll(relPath, `\\`, "/"), "/")
+	if cleaned == "" || cleaned == "." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("invalid output path %q", relPath)
+	}
+	if existing, ok := registry.claims[cleaned]; ok {
+		return fmt.Errorf("output path %q claimed by %q and written again by %q", cleaned, existing, owner)
+	}
+	registry.claims[cleaned] = owner
+	return writeOutputFile(outputRoot, cleaned, content)
+}
+
+func (registry *strictOutputRegistry) claim(relPath, owner string) error {
+	if registry == nil {
+		return fmt.Errorf("output registry is required")
+	}
+	cleaned := strings.Trim(strings.ReplaceAll(relPath, `\\`, "/"), "/")
+	if cleaned == "" || cleaned == "." || strings.HasPrefix(cleaned, "../") {
+		return fmt.Errorf("invalid output path %q", relPath)
+	}
+	if existing, ok := registry.claims[cleaned]; ok && existing != owner {
+		if !strings.HasPrefix(existing, "asset:") || !strings.HasPrefix(owner, "asset:") {
+			return fmt.Errorf("output path %q claimed by %q and %q", cleaned, existing, owner)
+		}
+		return nil
+	}
+	registry.claims[cleaned] = owner
+	return nil
+}
+
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
@@ -411,16 +452,6 @@ func inspectManagedOutputDir(outputPath string) (managedOutputDirState, error) {
 	}
 
 	return state, nil
-}
-
-func previousManagedOutputPath(publisher *stagedOutputPublisher) string {
-	if publisher == nil {
-		return ""
-	}
-	if strings.TrimSpace(publisher.backupPath) != "" {
-		return publisher.backupPath
-	}
-	return publisher.outputPath
 }
 
 func writeOutputFile(outputRoot string, relPath string, content []byte) error {

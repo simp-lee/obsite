@@ -27,6 +27,8 @@ import (
 	"github.com/simp-lee/obsite/internal/siteplan"
 	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/simp-lee/obsite/internal/social"
+	"github.com/tdewolff/minify/v2"
+	minhtml "github.com/tdewolff/minify/v2/html"
 )
 
 // buildStrictSite publishes the normalized section model through the same
@@ -69,10 +71,11 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 	}()
 	staging := publisher.OutputPath()
+	outputs := newStrictOutputRegistry()
 	if err := writeManagedOutputMarker(staging); err != nil {
 		return result, err
 	}
-	if err := writeStrictConfiguredAssets(boundary.VaultPath, staging, plan); err != nil {
+	if err := writeStrictConfiguredAssets(boundary.VaultPath, staging, plan, outputs); err != nil {
 		return result, err
 	}
 	if planned.Index == nil {
@@ -96,7 +99,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if sidebarErr != nil {
 			return result, sidebarErr
 		}
-		if writeErr := writeOutputFile(staging, "assets/obsite/sidebar.json", data); writeErr != nil {
+		if writeErr := outputs.write(staging, "assets/obsite/sidebar.json", "sidebar", data); writeErr != nil {
 			return result, writeErr
 		}
 	}
@@ -108,7 +111,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render section %q: %w", section.RelPath, renderErr)
 		}
-		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath(section.Route), data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(section.Route), "section:"+section.SourcePath, data); writeErr != nil {
 			return result, writeErr
 		}
 	}
@@ -140,7 +143,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			return result, fmt.Errorf("generate social card for %q: %w", article.RelPath, cardErr)
 		}
 		article.SocialImage = card.Path
-		if writeErr := writeOutputFile(staging, card.Path, card.PNG); writeErr != nil {
+		if writeErr := outputs.write(staging, card.Path, "social:"+article.RelPath, card.PNG); writeErr != nil {
 			return result, writeErr
 		}
 		previous, next, position, total := strictReadingFlow(section, article)
@@ -148,13 +151,13 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render article %q: %w", article.RelPath, renderErr)
 		}
-		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath(article.Route), data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(article.Route), "article:"+article.RelPath, data); writeErr != nil {
 			return result, writeErr
 		}
 		result.NotePages++
 	}
 	if plan.Config.Popover.Enabled {
-		if err := writeStrictPopoverPayloads(staging, planned.Index); err != nil {
+		if err := writeStrictPopoverPayloads(staging, planned.Index, outputs); err != nil {
 			return result, err
 		}
 	}
@@ -169,7 +172,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render tag %q: %w", tag.Name, renderErr)
 		}
-		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath("/"+tag.Slug+"/"), data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+tag.Slug+"/"), "tag:"+tag.Name, data); writeErr != nil {
 			return result, writeErr
 		}
 		result.TagPages++
@@ -179,7 +182,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render timeline: %w", renderErr)
 		}
-		if writeErr := writeOutputFile(staging, render.StrictRouteOutputPath("/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/"), data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/"), "timeline", data); writeErr != nil {
 			return result, writeErr
 		}
 	}
@@ -191,27 +194,57 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 	}
 	applyStrictPlannedDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
+	assetSources := make([]string, 0, len(allAssets))
+	for source := range allAssets {
+		assetSources = append(assetSources, source)
+	}
+	sort.Strings(assetSources)
+	for _, source := range assetSources {
+		if asset := allAssets[source]; asset != nil {
+			if err := outputs.claim(asset.DstPath, "asset:"+source); err != nil {
+				return result, err
+			}
+		}
+	}
 	if err := internalasset.CopyAssetsWithReservedPaths(boundary.VaultPath, staging, allAssets, nil, reservedAssetOutputs); err != nil {
 		return result, fmt.Errorf("publish strict assets: %w", err)
 	}
 	applyStrictAssetURLs(plan, allAssets)
 	result.Assets = allAssets
+	if err := outputs.claim("style.css", "built-in CSS"); err != nil {
+		return result, err
+	}
+	for _, runtimePath := range render.RuntimeAssetOutputPaths() {
+		if err := outputs.claim(runtimePath, "runtime"); err != nil {
+			return result, err
+		}
+	}
 	if _, err := render.EmitStyleCSS(staging); err != nil {
 		return result, fmt.Errorf("emit style.css: %w", err)
 	}
 	if err := render.EmitRuntimeAssets(staging); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
 	}
-	if err := writeStrictMetadataOutputs(staging, plan, planned.Index); err != nil {
+	if err := writeStrictMetadataOutputs(staging, plan, planned.Index, outputs); err != nil {
 		return result, err
 	}
-	if err := writeStrictCacheManifest(staging, plan, planned.Index, allAssets); err != nil {
+	if err := writeStrictCacheManifest(staging, plan, planned.Index, allAssets, outputs); err != nil {
 		return result, err
 	}
 	if diagnosticsWriter != nil {
 		_ = diagnosticsWriter
 	}
 	return result, nil
+}
+
+func writeStrictHTML(outputs *strictOutputRegistry, outputRoot, relPath, owner string, data []byte) error {
+	minifier := minify.New()
+	minifier.AddFunc("text/html", minhtml.Minify)
+	compact, err := minifier.Bytes("text/html", data)
+	if err != nil {
+		return fmt.Errorf("minify %s: %w", relPath, err)
+	}
+	return outputs.write(outputRoot, relPath, owner, compact)
 }
 
 func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[string][]*model.Note, error) {
@@ -278,7 +311,7 @@ type strictPopoverPayload struct {
 	Tags    []string `json:"tags"`
 }
 
-func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex) error {
+func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outputs *strictOutputRegistry) error {
 	if index == nil || len(index.Notes) == 0 {
 		return nil
 	}
@@ -296,7 +329,7 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex) erro
 		if err != nil {
 			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
 		}
-		if err := writeOutputFile(outputRoot, path.Join("_popover", relPath+".json"), data); err != nil {
+		if err := outputs.write(outputRoot, path.Join("_popover", relPath+".json"), "popover:"+relPath, data); err != nil {
 			return err
 		}
 	}
@@ -326,7 +359,7 @@ type strictCacheManifest struct {
 	Entries []strictCacheEntry `json:"entries"`
 }
 
-func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, assets map[string]*model.Asset) error {
+func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, assets map[string]*model.Asset, outputs *strictOutputRegistry) error {
 	manifest := strictCacheManifest{Version: 1, Entries: make([]strictCacheEntry, 0)}
 	add := func(owner, source, route string, data []byte) {
 		hash := sha256.Sum256(data)
@@ -346,6 +379,9 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 				meta, _ := json.Marshal(article.Frontmatter)
 				data := append(meta, article.RawContent...)
 				add("article", article.RelPath, article.Route, data)
+				if article.SocialImage != "" {
+					add("social", article.RelPath, article.SocialImage, append(meta, []byte(article.Route+"\x00"+article.SocialImage)...))
+				}
 			}
 		}
 	}
@@ -385,10 +421,10 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 	if err != nil {
 		return err
 	}
-	return writeOutputFile(outputRoot, ".obsite-cache/manifest.json", data)
+	return outputs.write(outputRoot, ".obsite-cache/manifest.json", "cache", data)
 }
 
-func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SitePlan) error {
+func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SitePlan, outputs *strictOutputRegistry) error {
 	if plan == nil {
 		return nil
 	}
@@ -397,7 +433,7 @@ func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SiteP
 		if err != nil {
 			return fmt.Errorf("read custom CSS: %w", err)
 		}
-		if err := writeOutputFile(outputRoot, customCSSOutputPath, data); err != nil {
+		if err := outputs.write(outputRoot, customCSSOutputPath, "custom CSS", data); err != nil {
 			return err
 		}
 	}
@@ -408,18 +444,18 @@ func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SiteP
 	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, themeCSS)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return writeStrictThemeAssets(vaultRoot, outputRoot, plan)
+			return writeStrictThemeAssets(vaultRoot, outputRoot, plan, outputs)
 		}
 		return fmt.Errorf("read theme CSS: %w", err)
 	}
 	plan.Config.ThemeCSS = "assets/theme/theme.css"
-	if err := writeOutputFile(outputRoot, plan.Config.ThemeCSS, data); err != nil {
+	if err := outputs.write(outputRoot, plan.Config.ThemeCSS, "theme CSS", data); err != nil {
 		return err
 	}
-	return writeStrictThemeAssets(vaultRoot, outputRoot, plan)
+	return writeStrictThemeAssets(vaultRoot, outputRoot, plan, outputs)
 }
 
-func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan) error {
+func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan, outputs *strictOutputRegistry) error {
 	if plan == nil || plan.Config.ThemeDir == "" {
 		return nil
 	}
@@ -465,7 +501,7 @@ func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan) 
 		if err != nil {
 			return fmt.Errorf("read theme asset %q: %w", rel, err)
 		}
-		return writeOutputFile(outputRoot, path.Join("assets/theme", strings.TrimPrefix(rel, "assets/")), data)
+		return outputs.write(outputRoot, path.Join("assets/theme", strings.TrimPrefix(rel, "assets/")), "theme:"+rel, data)
 	})
 }
 
@@ -516,7 +552,7 @@ func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	return result
 }
 
-func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *model.VaultIndex) error {
+func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, outputs *strictOutputRegistry) error {
 	var sitemap strings.Builder
 	sitemap.WriteString(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
 	for _, section := range plan.Sections {
@@ -540,10 +576,10 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 		_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/")))
 	}
 	sitemap.WriteString(`</urlset>`)
-	if err := writeOutputFile(outputRoot, "sitemap.xml", []byte(sitemap.String())); err != nil {
+	if err := outputs.write(outputRoot, "sitemap.xml", "sitemap", []byte(sitemap.String())); err != nil {
 		return err
 	}
-	if err := writeOutputFile(outputRoot, "robots.txt", []byte(strictBuildRobots(plan.Config.BaseURL))); err != nil {
+	if err := outputs.write(outputRoot, "robots.txt", "robots", []byte(strictBuildRobots(plan.Config.BaseURL))); err != nil {
 		return err
 	}
 	if plan.Config.RSS.Enabled {
@@ -588,7 +624,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 			rss.WriteString(`</item>`)
 		}
 		rss.WriteString(`</channel></rss>`)
-		if err := writeOutputFile(outputRoot, "index.xml", []byte(rss.String())); err != nil {
+		if err := outputs.write(outputRoot, "index.xml", "rss", []byte(rss.String())); err != nil {
 			return err
 		}
 	}
@@ -596,7 +632,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 	if err != nil {
 		return err
 	}
-	return writeOutputFile(outputRoot, "404.html", notFound)
+	return writeStrictHTML(outputs, outputRoot, "404.html", "404", notFound)
 }
 
 func strictBuildRobots(baseURL string) string {

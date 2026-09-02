@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -28,6 +30,10 @@ var runtimeTemplateAssets = func() []embeddedOutputAsset {
 		{name: "vendor/katex/katex.min.js", outputPath: katexJSOutputPath},
 		{name: "vendor/katex/contrib/auto-render.min.js", outputPath: katexAutoOutputPath},
 		{name: "vendor/mermaid/mermaid.min.js", outputPath: mermaidJSOutputPath},
+	}
+	fonts, _ := fs.Glob(embeddedSiteFS, "vendor/katex/fonts/*")
+	for _, name := range fonts {
+		assets = append(assets, embeddedOutputAsset{name: name, outputPath: path.Join("assets/obsite-runtime/fonts", path.Base(name))})
 	}
 	return assets
 }()

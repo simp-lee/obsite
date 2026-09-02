@@ -476,7 +476,9 @@ func validVersionID(value string) bool {
 		return false
 	}
 	for _, r := range value {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '~') {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '~':
+		default:
 			return false
 		}
 	}
@@ -499,7 +501,7 @@ func normalizeNavigation(items []model.NavigationItem) ([]model.NavigationItem, 
 		if (item.URL == "") == (item.Section == "") {
 			return nil, fmt.Errorf("navigation[%d] must contain exactly one of url or section", index)
 		}
-		key := "section:" + item.Section
+		key := ""
 		if item.URL != "" {
 			if err := validateNavigationURL(item.URL); err != nil {
 				return nil, fmt.Errorf("navigation[%d].url: %w", index, err)

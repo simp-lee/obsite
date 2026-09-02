@@ -30,6 +30,9 @@ function contentType(filePath) {
     case '.css': return 'text/css; charset=utf-8';
     case '.json': return 'application/json; charset=utf-8';
     case '.png': return 'image/png';
+    case '.woff2': return 'font/woff2';
+    case '.woff': return 'font/woff';
+    case '.ttf': return 'font/ttf';
     default: return 'application/octet-stream';
   }
 }

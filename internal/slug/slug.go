@@ -178,7 +178,9 @@ func NumericPrefix(value string) (prefix string, separator bool, err error) {
 
 func validArticleSegment(value string) bool {
 	for _, r := range value {
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-' || r == '_' || r == '~') {
+		switch {
+		case unicode.IsLetter(r), unicode.IsDigit(r), r == '-', r == '_', r == '~':
+		default:
 			return false
 		}
 	}

@@ -353,7 +353,9 @@ func validVersionID(value string) bool {
 		return false
 	}
 	for _, r := range value {
-		if !(r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '~') {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z', r >= '0' && r <= '9', r == '-', r == '_', r == '~':
+		default:
 			return false
 		}
 	}

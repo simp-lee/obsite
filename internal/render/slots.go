@@ -8,8 +8,6 @@ import (
 	"path"
 	"strings"
 	textparse "text/template/parse"
-
-	"github.com/simp-lee/obsite/internal/model"
 )
 
 const (
@@ -141,23 +139,6 @@ func rejectThemeSlotTemplateCalls(node textparse.Node) error {
 		return fmt.Errorf("template invocation %q is not allowed", current.Name)
 	}
 	return nil
-}
-
-func projectSlotData(page model.PageData) SlotData {
-	return SlotData{
-		Kind:        string(page.Kind),
-		Title:       page.Title,
-		Canonical:   page.Canonical,
-		RelPath:     page.RelPath,
-		SiteRootRel: page.SiteRootRel,
-		Site: SlotSiteData{
-			Title:       page.Site.Title,
-			BaseURL:     page.Site.BaseURL,
-			Author:      page.Site.Author,
-			Description: page.Site.Description,
-			Language:    page.Site.Language,
-		},
-	}
 }
 
 func themeAssetURL(siteRootRel string, assetPath string) (string, error) {
