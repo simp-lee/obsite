@@ -14,6 +14,9 @@ test-results/
 playwright-report/
 dist/
 
+# Local manual content/visual test vaults
+/local-test-vault/
+
 .codex
 
 # Local OS files
