@@ -153,6 +153,13 @@ test('strict Markdown runtime stays local and social PNG is independently reacha
   await expect(page.locator('article > header h1')).toHaveText('Math and Diagrams');
   await expect(page.locator('[data-obsite-main]')).toContainText('After invalid diagram remains visible.');
   await expect(page.locator('script[src*="/assets/obsite/runtime."]')).toHaveCount(1);
+  await page.goto(`${origin}/alpha/child/child/`);
+  await expect.poll(() => page.locator('[data-site-body]').getAttribute('data-sidebar-ready')).toBe('true');
+  await expect(page.locator('[data-sidebar-root] a[aria-current="page"]')).toHaveText('Child Article');
+  const reference = page.locator('[data-page-content] a[data-popover-path="reference.md"]');
+  await reference.focus();
+  await expect.poll(() => page.locator('[data-popover-card]').getAttribute('aria-hidden')).toBe('false');
+  await expect(page.locator('[data-popover-card]')).toContainText('Reference');
   const social = await glob(path.join(alphaVault, 'public', 'assets', 'social', '*', '*.png'));
   expect(social.length).toBeGreaterThanOrEqual(5);
   const response = await page.request.get(`${origin}/alpha/${path.relative(path.join(alphaVault, 'public'), social[0]).replaceAll(path.sep, '/')}`);

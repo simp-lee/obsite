@@ -331,7 +331,7 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outp
 		if note == nil {
 			continue
 		}
-		data, err := json.Marshal(strictPopoverPayload{Title: note.Frontmatter.Title, Tags: append([]string(nil), note.Tags...)})
+		data, err := json.Marshal(strictPopoverPayload{Title: note.Frontmatter.Title, Tags: append([]string{}, note.Tags...)})
 		if err != nil {
 			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
 		}
