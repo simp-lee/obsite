@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"image"
 	"io"
+	"net/url"
 	"path"
 	"strings"
 	"time"
 
 	internalasset "github.com/simp-lee/obsite/internal/asset"
+	d "github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/render"
@@ -41,6 +43,14 @@ func buildStrictSite(plan *model.SitePlan, vaultPath, outputPath string, diagnos
 				err = finalizeErr
 			} else {
 				err = fmt.Errorf("publish strict site: %w; cleanup: %v", err, finalizeErr)
+			}
+		}
+		if publisher.cleanupErr != nil {
+			warning := d.Diagnostic{Severity: d.SeverityWarning, Kind: d.KindOutputCleanup, Message: publisher.cleanupErr.Error()}
+			result.Diagnostics = append(result.Diagnostics, warning)
+			result.WarningCount++
+			if diagnosticsWriter != nil {
+				_, _ = fmt.Fprintf(diagnosticsWriter, "%s %s: %s\n", warning.Severity, warning.Kind, warning.Message)
 			}
 		}
 	}()
@@ -163,12 +173,12 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan) error {
 	sitemap.WriteString(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
 	for _, section := range plan.Sections {
 		if section != nil && section.Route != "" {
-			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, section.Route)))
+			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc>%s</url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, section.Route)), strictLastMod(section.LastModified))
 		}
 	}
 	for _, article := range plan.Articles {
 		if article != nil && article.Route != "" {
-			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, article.Route)))
+			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc>%s</url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, article.Route)), strictLastMod(article.LastModified))
 		}
 	}
 	sitemap.WriteString(`</urlset>`)
@@ -197,10 +207,16 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan) error {
 			return err
 		}
 	}
-	notFound := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>Not found | %s</title></head><body><main><h1>Not found</h1><a href="/">Home</a></main></body></html>`, plan.Config.Title)
+	notFound := fmt.Sprintf(`<!doctype html><html><head><meta charset="utf-8"><title>Not found | %s</title></head><body><main><h1>Not found</h1><a href="%s">Home</a></main></body></html>`, plan.Config.Title, strictBuildLocalPath(plan.Config.BaseURL, "/"))
 	return writeOutputFile(outputRoot, "404.html", []byte(notFound))
 }
 
+func strictLastMod(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return `<lastmod>` + value.UTC().Format(time.RFC3339) + `</lastmod>`
+}
 func strictXMLEscape(value string) string {
 	var output bytes.Buffer
 	_ = xml.EscapeText(&output, []byte(value))
@@ -301,6 +317,17 @@ func strictCoverBytes(vaultRoot, raw string) ([]byte, error) {
 	return validateStrictAsset(vaultRoot, raw, "cover")
 }
 
+func strictBuildLocalPath(baseURL, route string) string {
+	parsed, err := url.Parse(baseURL)
+	prefix := ""
+	if err == nil {
+		prefix = strings.TrimSuffix(parsed.EscapedPath(), "/")
+	}
+	if prefix == "" {
+		return route
+	}
+	return prefix + "/" + strings.TrimPrefix(route, "/")
+}
 func strictBuildCanonicalURL(baseURL, route string) string {
 	return strings.TrimSuffix(baseURL, "/") + route
 }

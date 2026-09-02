@@ -20,6 +20,8 @@ type Section struct {
 	BodyStartLine    int
 	LastModified     time.Time
 	VersionID        string
+	VersionRoutes    map[string]string
+	HiddenBy         string
 	Parent           *Section
 	Children         []*Section
 	Articles         []*Note

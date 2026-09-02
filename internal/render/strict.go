@@ -56,7 +56,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section) ([]byte, 
 		}
 		body.WriteString(`</ul>`)
 	}
-	return strictDocument(plan, section.Route, section.Title, section.Description, section.Breadcrumbs, section.VersionID, nil, "", nil, section.SourcePath, body.String()), nil
+	return strictDocument(plan, section.Route, section.Title, section.Description, section.Breadcrumbs, section.VersionID, section.VersionRoutes, "", nil, section.SourcePath, body.String()), nil
 }
 
 // RenderStrictArticle renders a normalized article page and its single shared
@@ -158,7 +158,17 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		}
 		_, _ = fmt.Fprintf(&output, `<a href="%s"%s>%s</a>`, esc(href), aria, esc(item.Name))
 	}
-	output.WriteString(`</nav></header><main data-obsite-main><nav class="breadcrumbs" aria-label="Breadcrumb">`)
+	output.WriteString(`</nav></header><main data-obsite-main>`)
+	if plan.Config.Sidebar.Enabled {
+		output.WriteString(`<aside class="sidebar" data-obsite-sidebar><nav aria-label="Sidebar">`)
+		for _, section := range plan.Sections {
+			if section != nil && section.EffectivePublish && section.VersionID == versionID {
+				_, _ = fmt.Fprintf(&output, `<a href="%s">%s</a>`, esc(strictSitePath(plan, section.Route)), esc(section.Title))
+			}
+		}
+		output.WriteString(`</nav></aside>`)
+	}
+	output.WriteString(`<nav class="breadcrumbs" aria-label="Breadcrumb">`)
 	for _, crumb := range breadcrumbs {
 		_, _ = fmt.Fprintf(&output, `<a href="%s">%s</a>`, esc(strictSitePath(plan, crumb.URL)), esc(crumb.Name))
 	}
@@ -219,7 +229,7 @@ func strictSitePath(plan *model.SitePlan, route string) string {
 	if err != nil {
 		return route
 	}
-	prefix := strings.TrimSuffix(parsed.Path, "/")
+	prefix := strings.TrimSuffix(parsed.EscapedPath(), "/")
 	if prefix == "" {
 		return route
 	}

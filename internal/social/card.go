@@ -115,10 +115,10 @@ func Generate(input Input) (Result, error) {
 	if cover != nil {
 		maxWidth = 624
 	}
-	drawText(canvas, 72, 80, input.SiteTitle, 4, maxWidth)
-	drawText(canvas, 72, 160, input.Title, 8, maxWidth)
+	drawText(canvas, 72, 80, input.SiteTitle, 28, maxWidth)
+	drawText(canvas, 72, 160, input.Title, 64, maxWidth)
 	if input.Context != "" {
-		drawTextColor(canvas, 72, 420, input.Context, 3, maxWidth, secondary)
+		drawTextColor(canvas, 72, 420, input.Context, 24, maxWidth, secondary)
 	}
 	metadata := make([]string, 0, 3)
 	if input.Author != "" {
@@ -131,7 +131,7 @@ func Generate(input Input) (Result, error) {
 		metadata = append(metadata, input.Status)
 	}
 	for index, value := range metadata {
-		drawTextColor(canvas, 72, 540+index*24, value, 3, maxWidth, secondary)
+		drawTextColor(canvas, 72, 540+index*24, value, 24, maxWidth, secondary)
 	}
 	var encoded bytes.Buffer
 	if err := png.Encode(&encoded, canvas); err != nil {
@@ -182,18 +182,79 @@ func fillRect(dst *image.RGBA, rect image.Rectangle, value color.Color) {
 	draw.Draw(dst, rect, &image.Uniform{C: value}, image.Point{}, draw.Src)
 }
 
-func drawText(dst *image.RGBA, x, y int, text string, scale, maxWidth int) {
-	drawTextColor(dst, x, y, text, scale, maxWidth, primary)
+func drawText(dst *image.RGBA, x, y int, text string, size, maxWidth int) {
+	drawTextColorLines(dst, x, y, text, size, maxWidth, 3, primary)
 }
-func drawTextColor(dst *image.RGBA, x, y int, text string, scale, maxWidth int, foreground color.Color) {
+func drawTextColor(dst *image.RGBA, x, y int, text string, size, maxWidth int, foreground color.Color) {
+	drawTextColorLines(dst, x, y, text, size, maxWidth, 1, foreground)
+}
+func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, maxLines int, foreground color.Color) {
 	if text == "" {
 		return
 	}
-	lines := wrap(text, maxWidth/(6*scale), 3)
+	fontValue, err := parsedCardFont()
+	if err != nil {
+		for lineIndex, line := range wrap(text, max(1, maxWidth/(size/2)), maxLines) {
+			drawLineColor(dst, x, y+lineIndex*76, line, size, foreground)
+		}
+		return
+	}
+	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
+	if err != nil {
+		return
+	}
+	lines := wrapMeasured(text, maxWidth, maxLines, face)
 	for lineIndex, line := range lines {
-		drawLineColor(dst, x, y+lineIndex*76, line, scale, foreground)
+		drawLineColor(dst, x, y+lineIndex*76, line, size, foreground)
 	}
 }
+func wrapMeasured(text string, maxWidth, maxLines int, face font.Face) []string {
+	clusters := make([]string, 0)
+	iterator := uniseg.NewGraphemes(text)
+	for iterator.Next() {
+		clusters = append(clusters, iterator.Str())
+	}
+	lines := make([]string, 0, maxLines)
+	current := ""
+	currentWidth := 0
+	for len(clusters) > 0 {
+		cluster := clusters[0]
+		clusters = clusters[1:]
+		width := font.MeasureString(face, cluster).Ceil()
+		if current != "" && currentWidth+width > maxWidth {
+			if len(lines) == maxLines-1 {
+				return append(lines, truncateMeasured(current, maxWidth, face))
+			}
+			lines = append(lines, current)
+			current, currentWidth = "", 0
+		}
+		current += cluster
+		currentWidth += width
+	}
+	if current != "" && len(lines) < maxLines {
+		lines = append(lines, current)
+	} else if current != "" && len(lines) == maxLines {
+		lines[maxLines-1] = truncateMeasured(lines[maxLines-1], maxWidth, face)
+	}
+	return lines
+}
+func truncateMeasured(value string, maxWidth int, face font.Face) string {
+	ellipsis := "…"
+	if font.MeasureString(face, value+ellipsis).Ceil() <= maxWidth {
+		return value + ellipsis
+	}
+	iterator := uniseg.NewGraphemes(value)
+	result := ""
+	for iterator.Next() {
+		candidate := result + iterator.Str()
+		if font.MeasureString(face, candidate+ellipsis).Ceil() > maxWidth {
+			break
+		}
+		result = candidate
+	}
+	return result + ellipsis
+}
+
 func wrap(text string, max, maxLines int) []string {
 	if max < 1 {
 		return nil
@@ -229,15 +290,15 @@ func truncate(value string, max int) string {
 	}
 	return b.String()
 }
-func drawLineColor(dst *image.RGBA, x, y int, text string, scale int, foreground color.Color) {
+func drawLineColor(dst *image.RGBA, x, y int, text string, size int, foreground color.Color) {
 	fontValue, err := parsedCardFont()
 	if err != nil {
-		fallbackLine(dst, x, y, text, scale, foreground)
+		fallbackLine(dst, x, y, text, max(1, size/8), foreground)
 		return
 	}
-	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(scale * 8), DPI: 72, Hinting: font.HintingNone})
+	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
 	if err != nil {
-		fallbackLine(dst, x, y, text, scale, foreground)
+		fallbackLine(dst, x, y, text, max(1, size/8), foreground)
 		return
 	}
 	drawer := &font.Drawer{Dst: dst, Src: image.NewUniform(foreground), Face: face, Dot: fixed.P(x, y+face.Metrics().Ascent.Ceil())}

@@ -3,7 +3,11 @@
 package siteplan
 
 import (
+	"bytes"
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"net/url"
 	"path"
 	"sort"
@@ -16,6 +20,7 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/simp-lee/obsite/internal/vault"
+	_ "golang.org/x/image/webp"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
 )
@@ -116,6 +121,7 @@ func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
 	validateNavigation(sections, cfg.Navigation, collector)
+	validatePlannedAssets(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
 
@@ -373,6 +379,7 @@ func computeEffectivePublish(sections map[string]*model.Section, versions []*mod
 			record(collector, diag.KindSection, section.SourcePath, "published section %q is hidden by ancestor %q", section.RelPath, hiddenBy)
 		}
 		section.EffectivePublish = inherited && section.Publish
+		section.HiddenBy = hiddenBy
 		nextHiddenBy := hiddenBy
 		if inherited && !section.Publish {
 			nextHiddenBy = section.SourcePath
@@ -392,9 +399,20 @@ func computeEffectivePublish(sections map[string]*model.Section, versions []*mod
 		visit(root, true, "")
 	}
 	for _, version := range versions {
-		if version != nil && version.Root != nil {
-			visit(version.Root, true, "")
+		if version == nil || version.Root == nil {
+			continue
 		}
+		inherited, hiddenBy := true, ""
+		for parentPath := path.Dir(version.Root.RelPath); parentPath != "." && parentPath != ""; parentPath = path.Dir(parentPath) {
+			parent := sections[parentPath]
+			if parent != nil && !parent.EffectivePublish {
+				inherited = false
+				if hiddenBy == "" {
+					hiddenBy = parent.SourcePath
+				}
+			}
+		}
+		visit(version.Root, inherited, hiddenBy)
 	}
 }
 
@@ -441,7 +459,13 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 			record(collector, diag.KindSection, article.RelPath, "article directory %q has no _index.md", sectionPath)
 			continue
 		}
-		if !section.EffectivePublish || article.Frontmatter.Publish == nil || !*article.Frontmatter.Publish {
+		if article.Frontmatter.Publish == nil || !*article.Frontmatter.Publish {
+			continue
+		}
+		if !section.EffectivePublish {
+			if section.HiddenBy != "" {
+				record(collector, diag.KindSection, article.RelPath, "published article %q is hidden by ancestor %q", article.RelPath, section.HiddenBy)
+			}
 			continue
 		}
 		explicit := (*string)(nil)
@@ -507,14 +531,75 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 	}
 }
 
+func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {
+	seen := make(map[string]struct{})
+	check := func(source, kind string) {
+		if source == "" {
+			return
+		}
+		seenKey := kind + "\x00" + source
+		if _, exists := seen[seenKey]; exists {
+			return
+		}
+		seen[seenKey] = struct{}{}
+		if strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !internalfsutil.IsPortableSitePath(source) {
+			record(collector, diag.KindMetadata, source, "%s must be a normalized vault-relative local asset", kind)
+			return
+		}
+		lower := strings.ToLower(source)
+		supported := strings.HasSuffix(lower, ".png") || strings.HasSuffix(lower, ".jpg") || strings.HasSuffix(lower, ".jpeg") || strings.HasSuffix(lower, ".webp")
+		if kind == "banner" {
+			supported = supported || strings.HasSuffix(lower, ".svg")
+		}
+		if !supported {
+			record(collector, diag.KindMetadata, source, "%s has an unsupported format", kind)
+			return
+		}
+		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, source)
+		if err != nil {
+			record(collector, diag.KindMetadata, source, "%s cannot be read: %v", kind, err)
+			return
+		}
+		if strings.HasSuffix(lower, ".svg") {
+			text := strings.ToLower(string(data))
+			if strings.Contains(text, "http://") || strings.Contains(text, "https://") || strings.Contains(text, "//") || strings.Contains(text, "@import") {
+				record(collector, diag.KindMetadata, source, "banner contains an external SVG reference")
+			}
+			return
+		}
+		if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+			record(collector, diag.KindMetadata, source, "%s cannot be decoded: %v", kind, err)
+		}
+	}
+	for _, section := range plan.Sections {
+		if section != nil {
+			check(section.Banner, "banner")
+		}
+	}
+	for _, article := range plan.Articles {
+		if article != nil {
+			check(article.Frontmatter.Banner, "banner")
+			check(article.Frontmatter.Cover, "cover")
+		}
+	}
+}
+
 func buildVersionCorrespondence(versions []*model.Version) {
 	byVersionPath := make(map[string]map[string]*model.Note)
+	byVersionSectionPath := make(map[string]map[string]*model.Section)
 	for _, version := range versions {
 		if version == nil {
 			continue
 		}
 		items := make(map[string]*model.Note)
+		sections := make(map[string]*model.Section)
 		for _, section := range version.Sections {
+			if section == nil {
+				continue
+			}
+			relSection := strings.TrimPrefix(section.RelPath, version.Source)
+			relSection = strings.TrimPrefix(relSection, "/")
+			sections[relSection] = section
 			for _, article := range section.Articles {
 				rel := strings.TrimPrefix(article.RelPath, version.Source)
 				rel = strings.TrimPrefix(rel, "/")
@@ -523,6 +608,27 @@ func buildVersionCorrespondence(versions []*model.Version) {
 			}
 		}
 		byVersionPath[version.ID] = items
+		byVersionSectionPath[version.ID] = sections
+	}
+	for _, version := range versions {
+		if version == nil {
+			continue
+		}
+		for rel, section := range byVersionSectionPath[version.ID] {
+			if section.VersionRoutes == nil {
+				section.VersionRoutes = make(map[string]string, len(versions))
+			}
+			for _, otherVersion := range versions {
+				if otherVersion == nil {
+					continue
+				}
+				if other := byVersionSectionPath[otherVersion.ID][rel]; other != nil {
+					section.VersionRoutes[otherVersion.ID] = other.Route
+				} else if otherVersion.Root != nil && otherVersion.Root.Route != "" {
+					section.VersionRoutes[otherVersion.ID] = otherVersion.Root.Route
+				}
+			}
+		}
 	}
 	for _, version := range versions {
 		if version == nil {
