@@ -1,7 +1,7 @@
 # Third-Party Notices
 
 ## KaTeX
-Version: 0.18.4. License: MIT (`internal/render/vendor/katex/LICENSE`).
+Version: 0.18.4. License: MIT (`internal/render/vendor/katex/LICENSE`). The same pinned `KaTeX_Main-Regular.ttf` is embedded by the deterministic social-card generator.
 
 ## Mermaid
 Version: 11.17.2. License: MIT (`internal/render/vendor/mermaid/LICENSE`).
@@ -44,6 +44,7 @@ all paths referenced by this notice.
 - `f1d6ef86f3b11a528bd5185199bd2443ecb2b0dead96d88674b5a2c12be24bdf  internal/render/vendor/katex/fonts/KaTeX_Main-Italic.woff`
 - `97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267  internal/render/vendor/katex/fonts/KaTeX_Main-Italic.woff2`
 - `d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830  internal/render/vendor/katex/fonts/KaTeX_Main-Regular.ttf`
+- `d0332f52868370fd83ae7fa46470f90c8f2eab2fcf12bc4f88080b340c95a830  internal/social/assets/KaTeX_Main-Regular.ttf`
 - `c6368d87e8a1a3a5d337623d83d8dc4b868f242a9ad476237d6f8d1e0f168cdc  internal/render/vendor/katex/fonts/KaTeX_Main-Regular.woff`
 - `c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866  internal/render/vendor/katex/fonts/KaTeX_Main-Regular.woff2`
 - `f9377ab0271cda59af24bcffbd46a4d0c8a3572ffafdbb38de2ad5ea7b0d5ee5  internal/render/vendor/katex/fonts/KaTeX_Math-BoldItalic.ttf`

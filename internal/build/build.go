@@ -283,6 +283,7 @@ func BuildWithOptions(input SiteInput, vaultPath string, outputPath string, opti
 			}
 			return result, internalanalyze.Failure(analysis.Diagnostics)
 		}
+		return buildStrictSite(analysis.Plan.Plan, vaultPath, outputPath, options.DiagnosticsWriter)
 	}
 	return buildWithOptions(input.Config, vaultPath, outputPath, buildOptions{
 		force:             options.Force,

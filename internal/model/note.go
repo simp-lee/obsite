@@ -14,6 +14,9 @@ type Note struct {
 	SectionPath     string
 	VersionID       string
 	VersionRoutes   map[string]string
+	SocialImage     string
+	BannerURL       string
+	CoverURL        string
 	Slug            string
 	Aliases         []string
 	Tags            []string

@@ -14,6 +14,7 @@ type Section struct {
 	EffectivePublish bool
 	Order            *int
 	Banner           string
+	BannerURL        string
 	BannerAlt        string
 	RawContent       []byte
 	BodyStartLine    int

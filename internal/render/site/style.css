@@ -1484,3 +1484,11 @@ samp {
   }
 }
 }
+
+.page-banner {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 5;
+  max-height: 280px;
+  object-fit: cover;
+}
