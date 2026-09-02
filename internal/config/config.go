@@ -745,15 +745,13 @@ func normalizeBaseURL(raw string) (string, error) {
 	}
 
 	cleanPath := path.Clean(parsed.Path)
-	if strings.Contains(escapedPath, "%") && cleanPath != parsed.Path {
-		return "", fmt.Errorf("baseURL with escaped path components cannot be normalized")
-	}
+	cleanEscapedPath := path.Clean(escapedPath)
 	if cleanPath == "." || cleanPath == "/" {
 		parsed.Path = "/"
 		escapedPath = "/"
 	} else {
 		parsed.Path = strings.TrimSuffix(cleanPath, "/") + "/"
-		escapedPath = strings.TrimSuffix(escapedPath, "/") + "/"
+		escapedPath = strings.TrimSuffix(cleanEscapedPath, "/") + "/"
 	}
 	if escapedPath != parsed.Path {
 		parsed.RawPath = escapedPath

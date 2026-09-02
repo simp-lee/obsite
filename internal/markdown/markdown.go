@@ -131,6 +131,7 @@ func newMarkdownWithState(
 	hashtagResolver := newRenderHashtagResolver(idx, outputNote)
 	extensions := append(
 		newCoreExtensions(resolver, hashtagResolver),
+		strictLinkExtender{index: idx, sourceNote: sourceNote, outputNote: outputNote, diagnostics: diagCollector},
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),

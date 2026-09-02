@@ -10,6 +10,7 @@ import (
 func TestStrictBuildUsesCanonicalRoutesForNestedMarkdownLinks(t *testing.T) {
 	vault := copyFixtureVault(t, "runtime-vault")
 	output := filepath.Join(t.TempDir(), "site")
+	writeStrictFile(t, vault, "child/child.md", "---\ntitle: Child Article\npublish: true\ntype: doc\n---\n[Reference](../reference.md#reference)\n")
 	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
 		t.Fatal(err)
 	}

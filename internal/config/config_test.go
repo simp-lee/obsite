@@ -68,6 +68,20 @@ related:
 	}
 }
 
+func TestNormalizeSiteConfigPreservesEncodedBasePathTrailingSlash(t *testing.T) {
+	for _, value := range []string{"https://example.test/文档/", "https://example.test/docs%20x/"} {
+		t.Run(value, func(t *testing.T) {
+			cfg, err := NormalizeSiteConfig(model.SiteConfig{Title: "Site", BaseURL: value})
+			if err != nil {
+				t.Fatalf("NormalizeSiteConfig(%q) error = %v", value, err)
+			}
+			if !strings.HasSuffix(cfg.BaseURL, "/") {
+				t.Fatalf("BaseURL = %q, want trailing slash", cfg.BaseURL)
+			}
+		})
+	}
+}
+
 func TestNormalizeSiteConfigValidatesStrictURLAndVersionRules(t *testing.T) {
 	for _, value := range []string{
 		"https://example.test/a%2Fb",

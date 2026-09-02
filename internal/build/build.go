@@ -43,7 +43,7 @@ func BuildWithOptions(vaultPath, outputPath string, options Options) (*BuildResu
 		}
 		return result, internalanalyze.Failure(analysis.Diagnostics)
 	}
-	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter)
+	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Strict)
 	if strictResult == nil {
 		strictResult = &BuildResult{}
 	}

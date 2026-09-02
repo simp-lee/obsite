@@ -33,7 +33,7 @@ import (
 
 // buildStrictSite publishes the normalized section model through the same
 // managed staging publisher used by the existing build foundation.
-func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer) (result *BuildResult, err error) {
+func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, strict bool) (result *BuildResult, err error) {
 	result = &BuildResult{}
 	if planned == nil || planned.Plan == nil {
 		return result, fmt.Errorf("strict site plan is required")
@@ -68,6 +68,9 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			result.WarningCount++
 			if diagnosticsWriter != nil {
 				_, _ = fmt.Fprintf(diagnosticsWriter, "%s %s: %s\n", warning.Severity, warning.Kind, warning.Message)
+			}
+			if strict && err == nil {
+				err = fmt.Errorf("strict build output cleanup failed: %w", publisher.cleanupErr)
 			}
 		}
 	}()
@@ -387,6 +390,17 @@ type strictCacheManifest struct {
 	Entries []strictCacheEntry `json:"entries"`
 }
 
+func strictCacheRelativePath(vaultRoot, value string) string {
+	if value == "" || !filepath.IsAbs(value) {
+		return filepath.ToSlash(value)
+	}
+	relative, err := filepath.Rel(vaultRoot, value)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return filepath.ToSlash(relative)
+}
+
 func loadStrictCacheManifest(outputRoot string) *strictCacheManifest {
 	if strings.TrimSpace(outputRoot) == "" {
 		return nil
@@ -409,7 +423,12 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 		manifest.Entries = append(manifest.Entries, strictCacheEntry{Owner: owner, Source: source, Route: route, Signature: fmt.Sprintf("%x", hash)})
 	}
 	if plan != nil {
-		configData, _ := json.Marshal(plan.Config)
+		cacheConfig := plan.Config
+		cacheConfig.CustomCSS = strictCacheRelativePath(plan.VaultPath, cacheConfig.CustomCSS)
+		cacheConfig.ThemeDir = strictCacheRelativePath(plan.VaultPath, cacheConfig.ThemeDir)
+		configData, _ := json.Marshal(struct {
+			Config model.SiteConfig `json:"config"`
+		}{Config: cacheConfig})
 		add("site", "obsite.yaml", "", configData)
 		for _, section := range plan.Sections {
 			if section != nil {
@@ -636,7 +655,16 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 	}
 	if plan.Config.RSS.Enabled {
 		var rss strings.Builder
-		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>%s</title>`, strictXMLEscape(plan.Config.Title))
+		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>%s</title><link>%s</link>`, strictXMLEscape(plan.Config.Title), strictXMLEscape(strings.TrimSuffix(plan.Config.BaseURL, "/")+"/"))
+		if plan.Config.Description != "" {
+			_, _ = fmt.Fprintf(&rss, `<description>%s</description>`, strictXMLEscape(plan.Config.Description))
+		}
+		if plan.Config.Language != "" {
+			_, _ = fmt.Fprintf(&rss, `<language>%s</language>`, strictXMLEscape(plan.Config.Language))
+		}
+		if latest := strictLatestPostTime(plan.Posts); !latest.IsZero() {
+			_, _ = fmt.Fprintf(&rss, `<lastBuildDate>%s</lastBuildDate>`, latest.UTC().Format(time.RFC1123Z))
+		}
 		for _, article := range plan.Posts {
 			if article == nil {
 				continue
@@ -685,6 +713,23 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 		return err
 	}
 	return writeStrictHTML(outputs, outputRoot, "404.html", "404", notFound)
+}
+
+func strictLatestPostTime(posts []*model.Note) time.Time {
+	var latest time.Time
+	for _, article := range posts {
+		if article == nil {
+			continue
+		}
+		value := article.Frontmatter.Updated
+		if value.IsZero() {
+			value = article.Frontmatter.Date
+		}
+		if value.After(latest) {
+			latest = value
+		}
+	}
+	return latest
 }
 
 func strictBuildRobots(baseURL string) string {

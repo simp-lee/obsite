@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -92,7 +93,9 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	}
 	sources, err := vault.ParseStrictFrontmatter(scan)
 	if err != nil {
-		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: resolvedVault}, diag.KindSchema, err)}, err
+		diagnostic := strictParseDiagnostic(resolvedVault, err)
+		collector.Add(diagnostic)
+		return &Result{Diagnostics: collector.Diagnostics()}, err
 	}
 
 	plan := &model.SitePlan{
@@ -173,6 +176,31 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		return result, fmt.Errorf("site plan has %d error(s)", collector.ErrorCount())
 	}
 	return result, nil
+}
+
+var (
+	strictParsePathPattern  = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
+	strictParseLinePattern  = regexp.MustCompile(`\bline ([0-9]+)\b`)
+	strictParseFieldPattern = regexp.MustCompile(`(?:field|key) "([^"]+)"`)
+)
+
+func strictParseDiagnostic(vaultRoot string, err error) diag.Diagnostic {
+	diagnostic := diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindSchema, Location: diag.Location{Path: vaultRoot}}
+	if err == nil {
+		return diagnostic
+	}
+	message := err.Error()
+	if match := strictParsePathPattern.FindStringSubmatch(message); len(match) == 2 {
+		diagnostic.Location.Path = filepath.Join(vaultRoot, filepath.FromSlash(match[1]))
+	}
+	if match := strictParseLinePattern.FindStringSubmatch(message); len(match) == 2 {
+		diagnostic.Location.Line, _ = strconv.Atoi(match[1])
+	}
+	if match := strictParseFieldPattern.FindStringSubmatch(message); len(match) == 2 {
+		diagnostic.Field = match[1]
+	}
+	diagnostic.Message = message
+	return diagnostic
 }
 
 func diagnosticsWithError(collector *diag.Collector, location diag.Location, kind diag.Kind, err error) []diag.Diagnostic {
@@ -508,8 +536,12 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 			continue
 		}
 		if !section.EffectivePublish {
-			if section.HiddenBy != "" {
-				record(collector, diag.KindSection, article.RelPath, "published article %q is hidden by ancestor %q", article.RelPath, section.HiddenBy)
+			hiddenBy := section.HiddenBy
+			if hiddenBy == "" && !section.Publish {
+				hiddenBy = section.SourcePath
+			}
+			if hiddenBy != "" {
+				record(collector, diag.KindSection, article.RelPath, "published article %q is hidden by ancestor %q", article.RelPath, hiddenBy)
 			}
 			continue
 		}
@@ -989,6 +1021,10 @@ func reservedRoutes() map[string]struct{} {
 func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {
 	key := routeKey(route)
 	destination := routeDestination(key)
+	if forbiddenPhysicalSegment(key) {
+		record(collector, diag.KindRoute, owner, "route %q contains a Windows-reserved path segment", route)
+		return
+	}
 	for reserved := range plan.ReservedRoutes {
 		if outputPathsConflict(destination, reservedDestination(reserved)) {
 			record(collector, diag.KindRoute, owner, "route %q conflicts with reserved output", route)
@@ -1032,7 +1068,28 @@ func routeDestination(route string) string {
 func reservedDestination(route string) string { return strings.Trim(route, "/") }
 func outputPathsConflict(left, right string) bool {
 	left, right = strings.Trim(left, "/"), strings.Trim(right, "/")
+	return physicalPathConflict(left, right) || physicalPathConflict(fold(left), fold(right))
+}
+
+func physicalPathConflict(left, right string) bool {
 	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+}
+
+func forbiddenPhysicalSegment(route string) bool {
+	for _, segment := range strings.Split(strings.Trim(route, "/"), "/") {
+		decoded, err := url.PathUnescape(segment)
+		if err != nil {
+			decoded = segment
+		}
+		base := strings.ToUpper(strings.SplitN(decoded, ".", 2)[0])
+		switch {
+		case base == "CON", base == "PRN", base == "AUX", base == "NUL":
+			return true
+		case len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9':
+			return true
+		}
+	}
+	return false
 }
 
 func sectionRoute(rel string) string {

@@ -288,7 +288,15 @@
     }
 
     function normalizeSitePath(value) {
-      return typeof value === "string" ? value.replace(/^\/+|\/+$/g, "").trim() : "";
+      if (typeof value !== "string") {
+        return "";
+      }
+      try {
+        value = decodeURIComponent(value);
+      } catch (error) {
+        report("warn", "Unable to decode a Sidebar path.", error);
+      }
+      return value.replace(/^\/+|\/+$/g, "").trim();
     }
 
     function stableNodeKey(node) {

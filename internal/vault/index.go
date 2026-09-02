@@ -305,6 +305,10 @@ func extractNoteMetadata(
 			if tagName := normalizeTag(string(current.Tag)); tagName != "" {
 				inlineTags = append(inlineTags, tagName)
 			}
+		case *gast.Link:
+			if ref := extractStandardLinkRef(current, source, lineStarts, lineOffset); ref.RawTarget != "" || ref.Fragment != "" {
+				note.OutLinks = append(note.OutLinks, ref)
+			}
 		case *gmwikilink.Node:
 			if current.Embed {
 				embedRef := extractEmbedRef(note, scanResult, current, source, lineStarts, lineOffset)
@@ -356,6 +360,19 @@ func extractLinkRef(node *gmwikilink.Node, source []byte, lineStarts []int, line
 		Line:      lineNumberForNode(node, lineStarts, lineOffset),
 		Offset:    offset,
 	}
+}
+
+func extractStandardLinkRef(node *gast.Link, source []byte, lineStarts []int, lineOffset int) model.LinkRef {
+	if node == nil {
+		return model.LinkRef{}
+	}
+	target := strings.TrimSpace(string(node.Destination))
+	fragment := ""
+	if before, after, ok := strings.Cut(target, "#"); ok {
+		target, fragment = before, after
+	}
+	offset, _ := nodeStartOffset(node)
+	return model.LinkRef{RawTarget: composeRawTarget(target, fragment), Display: normalizeInlineText(wikilinkNodeText(source, node)), Fragment: strings.TrimSpace(fragment), Line: lineNumberForNode(node, lineStarts, lineOffset), Offset: offset}
 }
 
 func extractImageRef(node *gast.Image, lineStarts []int, lineOffset int) model.ImageRef {

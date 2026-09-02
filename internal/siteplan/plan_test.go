@@ -116,6 +116,21 @@ func TestBuildWithConfigNormalizesUnicodeRoutesAndClaimsReservedOutputs(t *testi
 	}
 }
 
+func TestBuildWithConfigRejectsCaseInsensitiveAndReservedPhysicalRoutes(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "Foo/_index.md", "---\ntitle: Upper\npublish: true\n---\n")
+	writePlanFile(t, vault, "foo/_index.md", "---\ntitle: Lower\npublish: true\n---\n")
+	writePlanFile(t, vault, "CON.md", "---\ntitle: Device\npublish: true\ntype: page\n---\n")
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil || !strings.Contains(diagnosticMessages(result.Diagnostics), "Windows-reserved") {
+		t.Fatalf("BuildWithConfig() error=%v diagnostics=%v, want physical route rejection", err, result.Diagnostics)
+	}
+	if !strings.Contains(diagnosticMessages(result.Diagnostics), "conflicts") {
+		t.Fatalf("diagnostics=%v, want case-insensitive route collision", result.Diagnostics)
+	}
+}
+
 func TestBuildWithConfigRejectsUnknownAndImplicitArticleMetadata(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")

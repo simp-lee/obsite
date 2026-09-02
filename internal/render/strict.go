@@ -339,7 +339,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	if description != "" {
 		_, _ = fmt.Fprintf(&output, `<meta name="description" content="%s">`, esc(description))
 	}
-	_, _ = fmt.Fprintf(&output, `<meta property="og:url" content="%s"><meta property="og:title" content="%s">`, esc(canonical), esc(title))
+	_, _ = fmt.Fprintf(&output, `<meta property="og:url" content="%s"><meta property="og:title" content="%s"><meta name="twitter:title" content="%s">`, esc(canonical), esc(title), esc(title))
 	if description != "" {
 		_, _ = fmt.Fprintf(&output, `<meta property="og:description" content="%s"><meta name="twitter:description" content="%s">`, esc(description), esc(description))
 	}
@@ -354,7 +354,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		_, _ = fmt.Fprintf(&output, `<meta property="og:image" content="%s">`, esc(imageURL))
 	}
 	if metadata != nil {
-		_, _ = fmt.Fprintf(&output, `<meta property="og:type" content="article"><meta name="twitter:title" content="%s">`, esc(metadata.Frontmatter.Title))
+		output.WriteString(`<meta property="og:type" content="article">`)
 		if metadata.Frontmatter.Author != "" {
 			_, _ = fmt.Fprintf(&output, `<meta name="author" content="%s"><meta property="article:author" content="%s">`, esc(metadata.Frontmatter.Author), esc(metadata.Frontmatter.Author))
 		}

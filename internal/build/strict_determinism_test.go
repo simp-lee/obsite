@@ -10,12 +10,13 @@ import (
 
 func TestStrictBuildIsByteStableAcrossOutputRootsAndRebuilds(t *testing.T) {
 	vault := copyFixtureVault(t, "feature-vault")
+	secondVault := copyFixtureVault(t, "feature-vault")
 	firstRoot := filepath.Join(t.TempDir(), "first")
 	secondRoot := filepath.Join(t.TempDir(), "second")
 	if _, err := BuildWithOptions(vault, firstRoot, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := BuildWithOptions(vault, secondRoot, Options{}); err != nil {
+	if _, err := BuildWithOptions(secondVault, secondRoot, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	first := strictOutputBytes(t, firstRoot)

@@ -29,9 +29,9 @@ var liveReloadScript = []byte(`<script data-obsite-livereload>(function(){if(!wi
 // Server serves a generated Obsite output directory over HTTP.
 type Server struct {
 	outputPath     string
+	fileServer     http.Handler
 	realOutputPath string
 	port           int
-	fileServer     http.Handler
 	notFoundPath   string
 	liveReload     *liveReloadHub
 }
@@ -64,9 +64,9 @@ func New(outputPath string, port int) (*Server, error) {
 
 	server := &Server{
 		outputPath:     normalizedOutputPath,
+		fileServer:     http.FileServer(http.Dir(normalizedOutputPath)),
 		realOutputPath: realOutputPath,
 		port:           normalizedPort,
-		fileServer:     http.FileServer(http.Dir(normalizedOutputPath)),
 	}
 
 	notFoundPath := filepath.Join(normalizedOutputPath, "404.html")
@@ -120,12 +120,16 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if cleanPath, _ := cleanRequestPath(r.URL.Path); cleanPath == liveReloadEndpoint && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
+	requestPath := r.URL.EscapedPath()
+	if requestPath == "" {
+		requestPath = r.URL.Path
+	}
+	if cleanPath, _ := cleanRequestPath(requestPath); cleanPath == liveReloadEndpoint && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
 		s.serveLiveReload(w, r)
 		return
 	}
 
-	servePath, redirectPath := s.resolvePath(r.URL.Path)
+	servePath, redirectPath := s.resolvePath(requestPath)
 	if redirectPath != "" {
 		if rawQuery := r.URL.RawQuery; rawQuery != "" {
 			redirectPath += "?" + rawQuery
@@ -232,14 +236,22 @@ func shouldServeLiveReloadRequest(r *http.Request) bool {
 func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, servePath string) {
 	req := r.Clone(r.Context())
 	req.URL.Path = servePath
+	serve := func(writer http.ResponseWriter, request *http.Request) {
+		if s.outputPath == "" && s.fileServer != nil {
+			s.fileServer.ServeHTTP(writer, request)
+			return
+		}
+		filePath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(servePath, "/")))
+		if strings.HasSuffix(servePath, "/") {
+			filePath = filepath.Join(filePath, "index.html")
+		}
+		http.ServeFile(writer, request, filePath)
+	}
 	if s.liveReload == nil || !shouldBufferInjectedResponse(req, servePath) {
-		s.fileServer.ServeHTTP(w, req)
+		serve(w, req)
 		return
 	}
-
-	s.serveInjectedResponse(w, req, func(recorder http.ResponseWriter, request *http.Request) {
-		s.fileServer.ServeHTTP(recorder, request)
-	})
+	s.serveInjectedResponse(w, req, serve)
 }
 
 func shouldBufferInjectedResponse(r *http.Request, servePath string) bool {

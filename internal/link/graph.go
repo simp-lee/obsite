@@ -1,6 +1,7 @@
 package link
 
 import (
+	"path"
 	"sort"
 	"strings"
 
@@ -118,7 +119,11 @@ func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex,
 	if targets == nil || idx == nil || source == nil {
 		return
 	}
-	lookup := internalwikilink.LookupTarget(idx, source, strings.TrimSpace(target), strings.TrimSpace(fragment))
+	target = strings.TrimSpace(target)
+	if target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../")) {
+		target = path.Join(path.Dir(source.RelPath), target)
+	}
+	lookup := internalwikilink.LookupTarget(idx, source, target, strings.TrimSpace(fragment))
 	if lookup.Note == nil || lookup.Unpublished || lookup.MissingFragment {
 		return
 	}
