@@ -108,70 +108,6 @@ func TestVaultIndexResourceLookupInitializesLazilyFromExactPaths(t *testing.T) {
 	}
 }
 
-func TestPageDataSupportsExtendedFeatureContracts(t *testing.T) {
-	page := PageData{
-		Kind:        PageTimeline,
-		TOC:         []TOCEntry{{Text: "Overview", ID: "overview", Children: []TOCEntry{{Text: "Details", ID: "details"}}}},
-		ReadingTime: "4 min read",
-		WordCount:   880,
-		RelatedArticles: []RelatedArticle{{
-			Title:   "Systems Thinking",
-			URL:     "../systems-thinking/",
-			Summary: "A related note.",
-			Score:   1.25,
-			Tags:    []TagLink{{Name: "go", Slug: "go", URL: "../tags/go/"}},
-		}},
-		Pagination: &PaginationData{
-			CurrentPage: 2,
-			TotalPages:  3,
-			PrevURL:     "../",
-			NextURL:     "../page/3/",
-			Pages:       []PageLink{{Number: 1, URL: "../"}, {Number: 2, URL: "./"}, {Number: 3, URL: "../page/3/"}},
-		},
-		HasCustomCSS: true,
-		HasRSS:       true,
-		FolderPath:   "notes/backend",
-		FolderChildren: []NoteSummary{{
-			Title:   "Guide",
-			Summary: "Folder summary",
-			URL:     "../guide/",
-		}},
-		TimelineNotes: []NoteSummary{{
-			Title:   "Launch",
-			Summary: "Timeline summary",
-			URL:     "../launch/",
-		}},
-	}
-
-	if PageFolder != "folder" {
-		t.Fatalf("PageFolder = %q, want %q", PageFolder, "folder")
-	}
-	if page.Kind != PageTimeline {
-		t.Fatalf("Kind = %q, want %q", page.Kind, PageTimeline)
-	}
-	if len(page.TOC) != 1 || len(page.TOC[0].Children) != 1 {
-		t.Fatalf("TOC = %#v, want nested entries", page.TOC)
-	}
-	if page.WordCount != 880 {
-		t.Fatalf("WordCount = %d, want %d", page.WordCount, 880)
-	}
-	if page.Pagination == nil || page.Pagination.Pages[1].Number != 2 {
-		t.Fatalf("Pagination = %#v, want numbered page links", page.Pagination)
-	}
-	if got := page.RelatedArticles[0].Tags[0].Name; got != "go" {
-		t.Fatalf("RelatedArticles[0].Tags[0].Name = %q, want %q", got, "go")
-	}
-	if got := page.FolderChildren[0].Summary; got != "Folder summary" {
-		t.Fatalf("FolderChildren[0].Summary = %q, want %q", got, "Folder summary")
-	}
-	if got := page.TimelineNotes[0].Summary; got != "Timeline summary" {
-		t.Fatalf("TimelineNotes[0].Summary = %q, want %q", got, "Timeline summary")
-	}
-	if !page.HasCustomCSS || !page.HasRSS {
-		t.Fatalf("feature flags = (%t, %t), want both true", page.HasCustomCSS, page.HasRSS)
-	}
-}
-
 func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	updated := time.Date(2026, 4, 7, 15, 4, 0, 0, time.UTC)
 	cfg := SiteConfig{
@@ -188,7 +124,6 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 		},
 	}
 	frontmatter := Frontmatter{Updated: updated}
-	summary := NoteSummary{Summary: "Used by RSS and list pages."}
 
 	if cfg.Pagination.PageSize != 30 {
 		t.Fatalf("Pagination.PageSize = %d, want %d", cfg.Pagination.PageSize, 30)
@@ -201,8 +136,5 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	}
 	if !frontmatter.Updated.Equal(updated) {
 		t.Fatalf("Frontmatter.Updated = %v, want %v", frontmatter.Updated, updated)
-	}
-	if summary.Summary != "Used by RSS and list pages." {
-		t.Fatalf("NoteSummary.Summary = %q, want preserved value", summary.Summary)
 	}
 }

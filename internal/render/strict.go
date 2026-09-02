@@ -323,6 +323,9 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	if plan.Config.Sidebar.Enabled {
 		rootAttrs += ` data-obsite-sidebar`
 	}
+	if versionID != "" {
+		rootAttrs += ` data-obsite-version="` + esc(versionID) + `"`
+	}
 	if plan.Config.Popover.Enabled {
 		rootAttrs += ` data-obsite-popover`
 	}

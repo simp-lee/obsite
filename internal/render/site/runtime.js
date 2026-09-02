@@ -141,9 +141,14 @@
         throw new Error("Sidebar data returned HTTP " + response.status);
       }
       return response.json();
-    }).then(function (nodes) {
+    }).then(function (payload) {
+      var nodes = payload;
+      if (payload && !Array.isArray(payload) && typeof payload === "object") {
+        var versionID = root.getAttribute("data-obsite-version") || "";
+        nodes = versionID && payload.versions && Array.isArray(payload.versions[versionID]) ? payload.versions[versionID] : payload.default;
+      }
       if (!Array.isArray(nodes)) {
-        throw new Error("Sidebar data is not an array");
+        throw new Error("Sidebar data is not an array or versioned sidebar payload");
       }
       if (!nodes.length) {
         return;

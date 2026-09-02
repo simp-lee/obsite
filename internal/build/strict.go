@@ -95,7 +95,13 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	applyStrictPlannedDestinations(assets, assetCollector.PlanDestinations(assets))
 	applyStrictAssetURLs(plan, assets)
 	if plan.Config.Sidebar.Enabled {
-		data, sidebarErr := json.Marshal(strictSidebar(plan, ""))
+		payload := strictSidebarPayload{Default: strictSidebar(plan, ""), Versions: make(map[string][]model.SidebarNode)}
+		for _, version := range plan.Versions {
+			if version != nil {
+				payload.Versions[version.ID] = strictSidebar(plan, version.ID)
+			}
+		}
+		data, sidebarErr := json.Marshal(payload)
 		if sidebarErr != nil {
 			return result, sidebarErr
 		}
@@ -514,6 +520,11 @@ func strictReservedAssetOutputs(plan *model.SitePlan) []string {
 		reserved = append(reserved, "assets/theme")
 	}
 	return reserved
+}
+
+type strictSidebarPayload struct {
+	Default  []model.SidebarNode            `json:"default"`
+	Versions map[string][]model.SidebarNode `json:"versions,omitempty"`
 }
 
 func strictSidebar(plan *model.SitePlan, versionID string) []model.SidebarNode {

@@ -18,7 +18,6 @@ type BuildResult struct {
 	Diagnostics  []diag.Diagnostic
 	NotePages    int
 	TagPages     int
-	RecentNotes  []model.NoteSummary
 	WarningCount int
 	ErrorCount   int
 }
