@@ -863,6 +863,7 @@ func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Sectio
 func sortArticles(items []*model.Note) {
 	sort.SliceStable(items, func(i, j int) bool { return articleLess(items[i], items[j]) })
 }
+
 func articleLess(left, right *model.Note) bool {
 	if left == nil || right == nil {
 		return left != nil
@@ -902,9 +903,11 @@ func numericPrefixValue(prefix string) int64 {
 	value, _ := strconv.ParseInt(prefix, 10, 32)
 	return value
 }
+
 func sortSections(items []*model.Section) {
 	sort.SliceStable(items, func(i, j int) bool { return sectionLess(items[i], items[j]) })
 }
+
 func sectionLess(left, right *model.Section) bool {
 	if left == nil || right == nil {
 		return left != nil
@@ -932,6 +935,7 @@ func sectionLess(left, right *model.Section) bool {
 	}
 	return left.RelPath < right.RelPath
 }
+
 func sectionPathKey(section *model.Section) string {
 	if section == nil {
 		return ""
@@ -950,6 +954,7 @@ func collectSubsections(root *model.Section) []*model.Section {
 	}
 	return result
 }
+
 func findVersion(versions []*model.Version, id string) *model.Version {
 	for _, v := range versions {
 		if v != nil && v.ID == id {
@@ -958,6 +963,7 @@ func findVersion(versions []*model.Version, id string) *model.Version {
 	}
 	return nil
 }
+
 func breadcrumbs(section *model.Section) []model.Breadcrumb {
 	var reversed []model.Breadcrumb
 	for current := section; current != nil; current = current.Parent {
@@ -979,6 +985,7 @@ func reservedRoutes() map[string]struct{} {
 	}
 	return result
 }
+
 func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {
 	key := routeKey(route)
 	destination := routeDestination(key)
@@ -1027,12 +1034,14 @@ func outputPathsConflict(left, right string) bool {
 	left, right = strings.Trim(left, "/"), strings.Trim(right, "/")
 	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
 }
+
 func sectionRoute(rel string) string {
 	if rel == "." {
 		return "/"
 	}
 	return "/" + encodePath(rel) + "/"
 }
+
 func versionRoute(root, id, relative string) string {
 	base := "/" + encodePath(root) + "/" + encodePath(id) + "/"
 	if relative == "" {
@@ -1040,12 +1049,14 @@ func versionRoute(root, id, relative string) string {
 	}
 	return base + encodePath(relative) + "/"
 }
+
 func joinRoute(section, segment string) string {
 	if section == "/" {
 		return "/" + encodePath(segment) + "/"
 	}
 	return strings.TrimSuffix(section, "/") + "/" + encodePath(segment) + "/"
 }
+
 func encodePath(value string) string {
 	parts := strings.Split(value, "/")
 	for i, part := range parts {

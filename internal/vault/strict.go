@@ -20,12 +20,16 @@ import (
 
 const maxInt32 = int64(1<<31 - 1)
 
-var utf8BOM = []byte{0xef, 0xbb, 0xbf}
-var errMissingClosingFrontmatterDelimiter = errors.New("missing closing frontmatter delimiter")
+var (
+	utf8BOM                               = []byte{0xef, 0xbb, 0xbf}
+	errMissingClosingFrontmatterDelimiter = errors.New("missing closing frontmatter delimiter")
+)
 
-var strictDatePattern = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
-var strictSlugPattern = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
-var strictOrderPattern = regexp.MustCompile(`^[0-9]+$`)
+var (
+	strictDatePattern  = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
+	strictSlugPattern  = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
+	strictOrderPattern = regexp.MustCompile(`^[0-9]+$`)
+)
 
 // StrictFrontmatterResult is the schema-safe source handoff used by the
 // section planner. It keeps _index.md out of the article list and rejects

@@ -53,8 +53,10 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 	return Result{Plan: planned, Diagnostics: append([]diagnostic.Diagnostic(nil), planned.Diagnostics...)}, err
 }
 
-var analyzeErrorPathPattern = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
-var analyzeErrorLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
+var (
+	analyzeErrorPathPattern = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
+	analyzeErrorLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
+)
 
 func analyzeErrorLocation(vaultPath string, err error) diagnostic.Location {
 	location := diagnostic.Location{Path: filepath.Join(vaultPath, "obsite.yaml")}

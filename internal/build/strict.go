@@ -585,6 +585,7 @@ func strictSidebar(plan *model.SitePlan, versionID string) []model.SidebarNode {
 	}
 	return strictSidebarChildren(root)
 }
+
 func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	if section == nil {
 		return nil
@@ -696,6 +697,7 @@ func strictLastMod(value time.Time) string {
 	}
 	return `<lastmod>` + value.UTC().Format(time.RFC3339) + `</lastmod>`
 }
+
 func strictXMLEscape(value string) string {
 	var output bytes.Buffer
 	_ = xml.EscapeText(&output, []byte(value))
@@ -818,6 +820,7 @@ func strictCoverBytes(vaultRoot, raw string) ([]byte, error) {
 func strictBuildCanonicalURL(baseURL, route string) string {
 	return strings.TrimSuffix(baseURL, "/") + route
 }
+
 func strictCardDate(value time.Time) string {
 	if value.IsZero() {
 		return ""

@@ -471,6 +471,7 @@ func validConfigRelativeDir(value string) bool {
 	cleaned := path.Clean(value)
 	return cleaned == value && cleaned != "." && cleaned != ".." && !strings.HasPrefix(cleaned, "../") && internalfsutil.IsPortableSitePath(cleaned)
 }
+
 func validVersionID(value string) bool {
 	if value == "" {
 		return false

@@ -186,6 +186,7 @@ func drawCover(dst *image.RGBA, src image.Image) {
 		}
 	}
 }
+
 func fillRect(dst *image.RGBA, rect image.Rectangle, value color.Color) {
 	draw.Draw(dst, rect, &image.Uniform{C: value}, image.Point{}, draw.Src)
 }
@@ -193,9 +194,11 @@ func fillRect(dst *image.RGBA, rect image.Rectangle, value color.Color) {
 func drawText(dst *image.RGBA, x, y int, text string, size, maxWidth int) error {
 	return drawTextColorLines(dst, x, y, text, size, maxWidth, 3, primary)
 }
+
 func drawTextColor(dst *image.RGBA, x, y int, text string, size, maxWidth int, foreground color.Color) error {
 	return drawTextColorLines(dst, x, y, text, size, maxWidth, 1, foreground)
 }
+
 func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, maxLines int, foreground color.Color) error {
 	if text == "" {
 		return nil
@@ -216,6 +219,7 @@ func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, 
 	}
 	return nil
 }
+
 func wrapMeasured(text string, maxWidth, maxLines int, face font.Face) []string {
 	clusters := make([]string, 0)
 	iterator := uniseg.NewGraphemes(text)
@@ -246,6 +250,7 @@ func wrapMeasured(text string, maxWidth, maxLines int, face font.Face) []string 
 	}
 	return lines
 }
+
 func truncateMeasured(value string, maxWidth int, face font.Face) string {
 	ellipsis := "…"
 	if font.MeasureString(face, value+ellipsis).Ceil() <= maxWidth {

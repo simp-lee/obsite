@@ -597,6 +597,7 @@ func strictMarkdown(index *model.VaultIndex, note *model.Note, assets markdown.A
 	}
 	return output.String(), nil
 }
+
 func findStrictSection(plan *model.SitePlan, relPath, versionID string) *model.Section {
 	for _, section := range plan.Sections {
 		if section != nil && section.RelPath == relPath && section.VersionID == versionID {
@@ -605,6 +606,7 @@ func findStrictSection(plan *model.SitePlan, relPath, versionID string) *model.S
 	}
 	return nil
 }
+
 func strictSitePath(plan *model.SitePlan, route string) string {
 	if plan == nil || route == "" {
 		return route
@@ -619,12 +621,15 @@ func strictSitePath(plan *model.SitePlan, route string) string {
 	}
 	return prefix + "/" + strings.TrimPrefix(route, "/")
 }
+
 func strictAbsoluteURL(plan *model.SitePlan, route string) string {
 	return strings.TrimSuffix(plan.Config.BaseURL, "/") + route
 }
+
 func strictSourceURL(templateURL, sourcePath string) string {
 	return strings.Replace(templateURL, ":path", strictEncodePath(sourcePath), 1)
 }
+
 func strictEncodePath(value string) string {
 	parts := strings.Split(value, "/")
 	for i, part := range parts {
@@ -632,6 +637,7 @@ func strictEncodePath(value string) string {
 	}
 	return strings.Join(parts, "/")
 }
+
 func strictEncodeSegment(value string) string {
 	const hex = "0123456789ABCDEF"
 	var builder strings.Builder
