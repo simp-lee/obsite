@@ -32,6 +32,18 @@ func TestAnalyzeUsesStrictPlanWithoutWritingVault(t *testing.T) {
 	}
 }
 
+func TestAnalyzeExcludesDefaultPublicationOutputFromVaultInputs(t *testing.T) {
+	vault := t.TempDir()
+	writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeAnalyzeFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writeAnalyzeFile(t, vault, "public/old.html", "generated output")
+	writeAnalyzeFile(t, vault, "public/invalid.md", "not strict frontmatter")
+	result, err := Analyze(vault)
+	if err != nil || len(result.Diagnostics) != 0 {
+		t.Fatalf("Analyze() error = %v diagnostics = %#v, want output excluded", err, result.Diagnostics)
+	}
+}
+
 func TestAnalyzeReturnsStableSchemaDiagnostic(t *testing.T) {
 	vault := t.TempDir()
 	writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\ndefaultPublish: true\n")
