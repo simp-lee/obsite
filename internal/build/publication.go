@@ -1,6 +1,7 @@
 package build
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -44,11 +45,22 @@ const (
 )
 
 type strictOutputRegistry struct {
-	claims map[string]string
+	claims       map[string]string
+	previousRoot string
+	previous     map[string]strictCacheEntry
+	records      []strictCacheEntry
 }
 
-func newStrictOutputRegistry() *strictOutputRegistry {
-	return &strictOutputRegistry{claims: make(map[string]string)}
+func newStrictOutputRegistry(previousRoot string, manifest *strictCacheManifest) *strictOutputRegistry {
+	previous := make(map[string]strictCacheEntry)
+	if manifest != nil {
+		for _, entry := range manifest.Entries {
+			if entry.Route != "" {
+				previous[entry.Route] = entry
+			}
+		}
+	}
+	return &strictOutputRegistry{claims: make(map[string]string), previousRoot: previousRoot, previous: previous}
 }
 
 func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, content []byte) error {
@@ -63,7 +75,18 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 		return fmt.Errorf("output path %q claimed by %q and written again by %q", cleaned, existing, owner)
 	}
 	registry.claims[cleaned] = owner
-	return writeOutputFile(outputRoot, cleaned, content)
+	writeContent := content
+	hash := sha256.Sum256(content)
+	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.Signature == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
+		if previousContent, err := os.ReadFile(filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))); err == nil {
+			writeContent = previousContent
+		}
+	}
+	if err := writeOutputFile(outputRoot, cleaned, writeContent); err != nil {
+		return err
+	}
+	registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+	return nil
 }
 
 func (registry *strictOutputRegistry) claim(relPath, owner string) error {
@@ -82,6 +105,15 @@ func (registry *strictOutputRegistry) claim(relPath, owner string) error {
 	}
 	registry.claims[cleaned] = owner
 	return nil
+}
+
+func (registry *strictOutputRegistry) record(relPath, owner string, content []byte) {
+	if registry == nil {
+		return
+	}
+	cleaned := strings.Trim(strings.ReplaceAll(relPath, `\\`, "/"), "/")
+	hash := sha256.Sum256(content)
+	registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
 }
 
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {

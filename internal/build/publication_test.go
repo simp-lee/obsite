@@ -8,7 +8,7 @@ import (
 
 func TestStrictOutputRegistryRejectsDuplicateOwners(t *testing.T) {
 	root := t.TempDir()
-	registry := newStrictOutputRegistry()
+	registry := newStrictOutputRegistry("", nil)
 	if err := registry.write(root, "index.html", "index", []byte("one")); err != nil {
 		t.Fatal(err)
 	}

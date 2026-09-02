@@ -53,6 +53,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	if err != nil {
 		return result, err
 	}
+	previousCache := loadStrictCacheManifest(boundary.OutputPath)
 	defer func() {
 		if finalizeErr := publisher.Finalize(err == nil); finalizeErr != nil {
 			if err == nil {
@@ -71,7 +72,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 	}()
 	staging := publisher.OutputPath()
-	outputs := newStrictOutputRegistry()
+	outputs := newStrictOutputRegistry(boundary.OutputPath, previousCache)
 	if err := writeManagedOutputMarker(staging); err != nil {
 		return result, err
 	}
@@ -215,6 +216,15 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	if err := internalasset.CopyAssetsWithReservedPaths(boundary.VaultPath, staging, allAssets, nil, reservedAssetOutputs); err != nil {
 		return result, fmt.Errorf("publish strict assets: %w", err)
 	}
+	for _, source := range assetSources {
+		if asset := allAssets[source]; asset != nil && asset.DstPath != "" {
+			data, err := os.ReadFile(filepath.Join(staging, filepath.FromSlash(asset.DstPath)))
+			if err != nil {
+				return result, fmt.Errorf("read published asset %q: %w", source, err)
+			}
+			outputs.record(asset.DstPath, "asset:"+source, data)
+		}
+	}
 	applyStrictAssetURLs(plan, allAssets)
 	result.Assets = allAssets
 	if err := outputs.claim("style.css", "built-in CSS"); err != nil {
@@ -228,8 +238,20 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	if _, err := render.EmitStyleCSS(staging); err != nil {
 		return result, fmt.Errorf("emit style.css: %w", err)
 	}
+	if data, err := os.ReadFile(filepath.Join(staging, "style.css")); err == nil {
+		outputs.record("style.css", "built-in CSS", data)
+	} else {
+		return result, err
+	}
 	if err := render.EmitRuntimeAssets(staging); err != nil {
 		return result, fmt.Errorf("emit runtime assets: %w", err)
+	}
+	for _, runtimePath := range render.RuntimeAssetOutputPaths() {
+		data, err := os.ReadFile(filepath.Join(staging, filepath.FromSlash(runtimePath)))
+		if err != nil {
+			return result, err
+		}
+		outputs.record(runtimePath, "runtime", data)
 	}
 	if err := writeStrictMetadataOutputs(staging, plan, planned.Index, outputs); err != nil {
 		return result, err
@@ -365,6 +387,21 @@ type strictCacheManifest struct {
 	Entries []strictCacheEntry `json:"entries"`
 }
 
+func loadStrictCacheManifest(outputRoot string) *strictCacheManifest {
+	if strings.TrimSpace(outputRoot) == "" {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(outputRoot, ".obsite-cache", "manifest.json"))
+	if err != nil {
+		return nil
+	}
+	var manifest strictCacheManifest
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != 1 {
+		return nil
+	}
+	return &manifest
+}
+
 func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, assets map[string]*model.Asset, outputs *strictOutputRegistry) error {
 	manifest := strictCacheManifest{Version: 1, Entries: make([]strictCacheEntry, 0)}
 	add := func(owner, source, route string, data []byte) {
@@ -412,6 +449,9 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 	}
 	if plan != nil && plan.Config.Timeline.Enabled {
 		add("timeline", "obsite.yaml", "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/", []byte(plan.Config.Timeline.Path))
+	}
+	if outputs != nil {
+		manifest.Entries = append(manifest.Entries, outputs.records...)
 	}
 	sort.Slice(manifest.Entries, func(i, j int) bool {
 		left, right := manifest.Entries[i], manifest.Entries[j]
