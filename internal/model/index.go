@@ -13,8 +13,8 @@ import (
 // Pass 2 must clone any per-render note state instead of mutating notes held here.
 //
 // Exact asset and resource sets remain the source of truth. Derived canonical
-// fallback tables are populated eagerly by constructors like BuildIndex and are
-// also rebuilt lazily on first lookup so tests and callers cannot observe a
+// fallback tables are populated eagerly by the strict index builder and are
+// also rebuilt lazily on first lookup so callers cannot observe a
 // half-initialized handoff object.
 type VaultIndex struct {
 	AttachmentFolderPath string

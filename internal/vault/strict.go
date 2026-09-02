@@ -191,7 +191,7 @@ func isLikelyYAMLMappingLine(line []byte) bool {
 }
 
 func noteLookupName(relPath string) string {
-	base := path.Base(strings.ReplaceAll(relPath, `\\`, "/"))
+	base := path.Base(strings.ReplaceAll(relPath, `\`, "/"))
 	if ext := path.Ext(base); ext != "" {
 		base = strings.TrimSuffix(base, ext)
 	}
