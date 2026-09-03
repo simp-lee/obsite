@@ -13,6 +13,7 @@ import (
 
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
 	"gopkg.in/yaml.v3"
 )
 
@@ -507,7 +508,7 @@ func normalizeNavigation(items []model.NavigationItem) ([]model.NavigationItem, 
 			if err := validateNavigationURL(item.URL); err != nil {
 				return nil, fmt.Errorf("navigation[%d].url: %w", index, err)
 			}
-			key = "url:" + item.URL
+			key = "url:" + normalizeNavigationTarget(item.URL)
 		} else {
 			section, err := normalizeSectionReference(item.Section)
 			if err != nil {
@@ -523,6 +524,23 @@ func normalizeNavigation(items []model.NavigationItem) ([]model.NavigationItem, 
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func normalizeNavigationTarget(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+		return raw
+	}
+	pathValue := parsed.Path
+	if pathValue == "" || pathValue == "/" {
+		pathValue = "/"
+	} else {
+		pathValue = "/" + slug.EncodePath(strings.Trim(pathValue, "/"))
+		if path.Ext(pathValue) == "" {
+			pathValue += "/"
+		}
+	}
+	return pathValue + "?" + parsed.RawQuery + "#" + parsed.Fragment
 }
 
 func validateNavigationURL(raw string) error {
