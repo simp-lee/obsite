@@ -41,6 +41,7 @@ type LookupResult struct {
 	CanvasResource  bool
 	Unpublished     bool
 	MissingFragment bool
+	Section         *model.Section
 }
 
 // NewRenderVaultResolver builds a render-time resolver with separate source and output-note contexts.
@@ -138,14 +139,14 @@ func LookupRouteTarget(idx *model.VaultIndex, current *model.Note, target string
 	for _, section := range sortedRouteSections(idx.SectionsByRoute) {
 		if section != nil && section.Route == route && (current == nil || section.VersionID == "" || current.VersionID == section.VersionID) {
 			if fragment == "" {
-				return LookupResult{}
+				return LookupResult{Section: section}
 			}
 			for _, heading := range section.Headings {
 				if headingid.CanonicalText(heading.ID) == headingid.CanonicalText(fragment) || headingid.CanonicalText(heading.Text) == headingid.CanonicalText(fragment) {
-					return LookupResult{FragmentID: heading.ID}
+					return LookupResult{FragmentID: heading.ID, Section: section}
 				}
 			}
-			return LookupResult{MissingFragment: true}
+			return LookupResult{MissingFragment: true, Section: section}
 		}
 	}
 	return LookupResult{}

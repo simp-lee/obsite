@@ -106,8 +106,15 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, "", fragment)
 	}
 	if lookup.Note == nil {
-		if section := lookupSectionTarget(r.index, r.sourceNote, targetPath); section != nil && inLinkVersionScope(r.sourceNote, section) {
+		section := lookup.Section
+		if section == nil {
+			section = lookupSectionTarget(r.index, r.sourceNote, targetPath)
+		}
+		if section != nil && inLinkVersionScope(r.sourceNote, section) {
 			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
+			if section.Route == "/" && !rootRelative {
+				href = strings.TrimSuffix(relativeToNoteOutput(r.outputNote, "index.html"), "index.html")
+			}
 			if rootRelative {
 				href = strings.TrimSuffix(r.outputNote.BasePath, "/") + section.Route
 			}
