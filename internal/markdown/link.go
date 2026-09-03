@@ -94,16 +94,20 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		vaultPath = ""
 	}
 	lookup := internalwikilink.LookupResult{}
-	if rootRelative && strings.HasSuffix(strings.ToLower(targetPath), ".md") {
-		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
-	} else if !rootRelative && (strings.HasSuffix(strings.ToLower(targetPath), ".md") || strings.Contains(targetPath, "/")) {
+	if rootRelative {
+		lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, targetPath, fragment)
+		if lookup.Note == nil && !lookup.MissingFragment {
+			lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
+		}
+	} else if targetPath != "" {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
-	} else if !rootRelative {
-		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
 	}
 	if lookup.Note == nil {
 		if section := lookupSectionTarget(r.index, r.sourceNote, targetPath); section != nil && inLinkVersionScope(r.sourceNote, section) {
 			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
+			if rootRelative {
+				href = strings.TrimSuffix(r.outputNote.BasePath, "/") + section.Route
+			}
 			if fragment != "" {
 				if id, ok := sectionFragmentID(section, fragment); ok {
 					fragment = id

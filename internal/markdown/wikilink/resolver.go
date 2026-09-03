@@ -113,6 +113,66 @@ func LookupTarget(idx *model.VaultIndex, current *model.Note, target string, fra
 	return resolver.lookup(strings.TrimSpace(target), strings.TrimSpace(fragment))
 }
 
+// LookupRouteTarget resolves a generated section or article route without
+// falling back to a basename or alias.
+func LookupRouteTarget(idx *model.VaultIndex, current *model.Note, target string, fragment string) LookupResult {
+	if idx == nil {
+		return LookupResult{}
+	}
+	parsed, err := url.Parse(target)
+	if err != nil {
+		return LookupResult{}
+	}
+	route := parsed.EscapedPath()
+	if route == "" {
+		route = "/"
+	}
+	if route != "/" && !strings.HasSuffix(route, "/") {
+		route += "/"
+	}
+	for _, note := range sortedRouteNotes(idx.Notes) {
+		if note != nil && note.Route == route && inVersionScope(current, note) {
+			return finalizeLookup(resolutionResult{note: note}, fragment)
+		}
+	}
+	for _, section := range sortedRouteSections(idx.SectionsByRoute) {
+		if section != nil && section.Route == route && (current == nil || section.VersionID == "" || current.VersionID == section.VersionID) {
+			if fragment == "" {
+				return LookupResult{}
+			}
+			for _, heading := range section.Headings {
+				if headingid.CanonicalText(heading.ID) == headingid.CanonicalText(fragment) || headingid.CanonicalText(heading.Text) == headingid.CanonicalText(fragment) {
+					return LookupResult{FragmentID: heading.ID}
+				}
+			}
+			return LookupResult{MissingFragment: true}
+		}
+	}
+	return LookupResult{}
+}
+
+func sortedRouteNotes(notes map[string]*model.Note) []*model.Note {
+	result := make([]*model.Note, 0, len(notes))
+	for _, note := range notes {
+		if note != nil {
+			result = append(result, note)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].RelPath < result[j].RelPath })
+	return result
+}
+
+func sortedRouteSections(sections map[string]*model.Section) []*model.Section {
+	result := make([]*model.Section, 0, len(sections))
+	for _, section := range sections {
+		if section != nil {
+			result = append(result, section)
+		}
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].RelPath < result[j].RelPath })
+	return result
+}
+
 // LookupPathTarget resolves a normalized source path without falling back to a
 // basename or alias. It is used for ordinary relative Markdown links.
 func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string, fragment string) LookupResult {
