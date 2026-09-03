@@ -80,7 +80,8 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	if err != nil || parsed.IsAbs() || parsed.Host != "" || strings.HasPrefix(raw, "//") {
 		return raw
 	}
-	targetPath, err := url.PathUnescape(parsed.Path)
+	escapedTargetPath := parsed.EscapedPath()
+	targetPath, err := url.PathUnescape(escapedTargetPath)
 	if err != nil {
 		return raw
 	}
@@ -95,18 +96,23 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	}
 	lookup := internalwikilink.LookupResult{}
 	if rootRelative {
-		lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, targetPath, fragment)
+		lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, escapedTargetPath, fragment)
 		if lookup.Note == nil && !lookup.MissingFragment {
 			lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
 		}
 	} else if targetPath != "" {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
+	} else {
+		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, "", fragment)
 	}
 	if lookup.Note == nil {
 		if section := lookupSectionTarget(r.index, r.sourceNote, targetPath); section != nil && inLinkVersionScope(r.sourceNote, section) {
 			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
 			if rootRelative {
 				href = strings.TrimSuffix(r.outputNote.BasePath, "/") + section.Route
+			}
+			if parsed.RawQuery != "" || parsed.ForceQuery {
+				href += "?" + parsed.RawQuery
 			}
 			if fragment != "" {
 				if id, ok := sectionFragmentID(section, fragment); ok {
@@ -116,7 +122,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 				}
 				href += "#" + fragment
 			}
-			return basePathDestination(r.outputNote, href)
+			return href
 		}
 		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" && resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
 			destination := resource
@@ -161,7 +167,17 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 		return raw
 	}
-	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
+	href := internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, "", "")
+	if rootRelative {
+		href = strings.TrimSuffix(r.outputNote.BasePath, "/") + lookup.Note.Route
+	}
+	if parsed.RawQuery != "" || parsed.ForceQuery {
+		href += "?" + parsed.RawQuery
+	}
+	if lookup.FragmentID != "" {
+		href += "#" + lookup.FragmentID
+	}
+	return href
 }
 
 func sectionFragmentID(section *model.Section, fragment string) (string, bool) {
@@ -202,13 +218,6 @@ func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target strin
 
 func inLinkVersionScope(note *model.Note, section *model.Section) bool {
 	return note == nil || section == nil || section.VersionID == "" || note.VersionID == section.VersionID
-}
-
-func basePathDestination(note *model.Note, raw string) string {
-	if note == nil || note.BasePath == "" || raw == "" || !strings.HasPrefix(raw, "/") {
-		return raw
-	}
-	return strings.TrimSuffix(note.BasePath, "/") + raw
 }
 
 func escapeDestination(value string) string {
