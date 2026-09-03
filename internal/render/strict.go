@@ -74,6 +74,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		}
 		body.WriteString(`</ul>`)
 	}
+	body.WriteString(`</section>`)
 	return strictDocument(plan, section.Route, section.Title, section.Description, section.Breadcrumbs, section.VersionID, section.VersionRoutes, "", nil, section.SourcePath, body.String())
 }
 
@@ -153,6 +154,7 @@ func RenderStrictArticle(plan *model.SitePlan, article *model.Note, previous, ne
 		}
 		body.WriteString(`</nav>`)
 	}
+	body.WriteString(`</article>`)
 	return strictDocument(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, breadcrumbs, article.VersionID, article.VersionRoutes, article.SocialImage, article, article.RelPath, body.String())
 }
 

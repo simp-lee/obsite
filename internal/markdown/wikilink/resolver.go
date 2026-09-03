@@ -122,10 +122,10 @@ func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string,
 	if decoded, err := url.PathUnescape(target); err == nil {
 		target = decoded
 	}
-	if note := resolver.exactPublicPathMatch(target); note != nil {
+	if note := resolver.exactPublicPathMatch(target); note != nil && inVersionScope(current, note) {
 		return finalizeLookup(resolutionResult{note: note}, fragment)
 	}
-	if note := resolver.exactUnpublishedPathMatch(target); note != nil {
+	if note := resolver.exactUnpublishedPathMatch(target); note != nil && inVersionScope(current, note) {
 		result := finalizeLookup(resolutionResult{note: note}, fragment)
 		result.Unpublished = true
 		return result
@@ -211,10 +211,10 @@ func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
 	}
 
 	if explicitPathTarget(target) {
-		if note := r.exactPublicPathMatch(target); note != nil {
+		if note := r.exactPublicPathMatch(target); note != nil && inVersionScope(r.CurrentNote, note) {
 			return finalizeLookup(resolutionResult{note: note}, fragment)
 		}
-		if note := r.exactUnpublishedPathMatch(target); note != nil {
+		if note := r.exactUnpublishedPathMatch(target); note != nil && inVersionScope(r.CurrentNote, note) {
 			result := finalizeLookup(resolutionResult{note: note}, fragment)
 			result.Unpublished = true
 			return result
@@ -294,6 +294,13 @@ func resolveCandidateSet(current *model.Note, candidates []*model.Note) resoluti
 	}
 
 	return result
+}
+
+func inVersionScope(current, candidate *model.Note) bool {
+	if candidate == nil {
+		return false
+	}
+	return current == nil || current.VersionID == candidate.VersionID
 }
 
 func scopedNotes(current *model.Note, candidates []*model.Note) []*model.Note {

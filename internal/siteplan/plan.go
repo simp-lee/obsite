@@ -154,7 +154,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
 	validateNavigation(sections, cfg.Navigation, collector)
-	validatePlannedAssets(resolvedVault, plan, sources, collector)
+	validatePlannedAssets(resolvedVault, outputPath, plan, sources, collector)
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
@@ -686,7 +686,14 @@ func navigationTargetKey(item model.NavigationItem, sections map[string]*model.S
 	} else {
 		pathValue = "/" + encodePath(strings.Trim(pathValue, "/")) + "/"
 	}
-	return "route:" + pathValue + "?" + parsed.RawQuery + "#" + parsed.Fragment
+	key := "route:" + pathValue
+	if parsed.RawQuery != "" {
+		key += "?" + parsed.RawQuery
+	}
+	if parsed.Fragment != "" {
+		key += "#" + parsed.Fragment
+	}
+	return key
 }
 
 func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {
@@ -731,6 +738,9 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 			return nil
 		}
 		if rel == "theme.css" {
+			if _, _, _, readErr := internalfsutil.ReadContainedRegularFile(vaultRoot, current); readErr != nil {
+				record(collector, diag.KindMetadata, current, "theme CSS: %v", readErr)
+			}
 			return nil
 		}
 		_, data, _, readErr := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
@@ -776,7 +786,7 @@ func assetRecord(collector *diag.Collector, owner, field, target, format string,
 	})
 }
 
-func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault.StrictFrontmatterResult, collector *diag.Collector) {
+func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, sources vault.StrictFrontmatterResult, collector *diag.Collector) {
 	seen := make(map[string]struct{})
 	check := func(source, kind, owner string) {
 		if source == "" {
@@ -787,6 +797,11 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 			return
 		}
 		seen[seenKey] = struct{}{}
+		candidate := filepath.Join(vaultRoot, filepath.FromSlash(source))
+		if outputPath != "" && internalfsutil.PathWithinRoot(outputPath, candidate) {
+			assetRecord(collector, owner, kind, source, "%s must not be inside the generated output", kind)
+			return
+		}
 		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !portableVaultAssetPath(source) {
 			assetRecord(collector, owner, kind, source, "%s must be a normalized vault-relative local asset", kind)
 			return

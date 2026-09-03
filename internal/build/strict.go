@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -188,13 +189,37 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		result.TagPages++
 	}
 	if plan.Config.Timeline.Enabled {
-		timelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
-		data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, plan.Posts)
-		if renderErr != nil {
-			return result, fmt.Errorf("render timeline: %w", renderErr)
+		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
+		pageSize := plan.Config.Pagination.PageSize
+		if pageSize <= 0 || pageSize >= len(plan.Posts) {
+			pageSize = len(plan.Posts)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(timelineRoute), "timeline", data); writeErr != nil {
-			return result, writeErr
+		if pageSize == 0 {
+			pageSize = 1
+		}
+		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
+		if pageCount == 0 {
+			pageCount = 1
+		}
+		for page := 1; page <= pageCount; page++ {
+			start := (page - 1) * pageSize
+			end := start + pageSize
+			if end > len(plan.Posts) {
+				end = len(plan.Posts)
+			}
+			timelineRoute := baseTimelineRoute
+			owner := "timeline"
+			if page > 1 {
+				timelineRoute = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
+				owner += ":" + strconv.Itoa(page)
+			}
+			data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, plan.Posts[start:end])
+			if renderErr != nil {
+				return result, fmt.Errorf("render timeline: %w", renderErr)
+			}
+			if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(timelineRoute), owner, data); writeErr != nil {
+				return result, writeErr
+			}
 		}
 	}
 	allAssets := assetCollector.Snapshot()
@@ -464,7 +489,25 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 		}
 	}
 	if plan != nil && plan.Config.Timeline.Enabled {
-		add("timeline", "obsite.yaml", "/"+slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/"))+"/", []byte(plan.Config.Timeline.Path))
+		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
+		pageSize := plan.Config.Pagination.PageSize
+		if pageSize <= 0 || pageSize >= len(plan.Posts) {
+			pageSize = len(plan.Posts)
+		}
+		if pageSize == 0 {
+			pageSize = 1
+		}
+		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
+		if pageCount == 0 {
+			pageCount = 1
+		}
+		for page := 1; page <= pageCount; page++ {
+			route := baseTimelineRoute
+			if page > 1 {
+				route = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
+			}
+			add("timeline", "obsite.yaml", route, []byte(route))
+		}
 	}
 	if outputs != nil {
 		manifest.Entries = append(manifest.Entries, outputs.records...)
@@ -641,7 +684,25 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 		}
 	}
 	if plan.Config.Timeline.Enabled {
-		_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/"))+"/")))
+		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
+		pageSize := plan.Config.Pagination.PageSize
+		if pageSize <= 0 || pageSize >= len(plan.Posts) {
+			pageSize = len(plan.Posts)
+		}
+		if pageSize == 0 {
+			pageSize = 1
+		}
+		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
+		if pageCount == 0 {
+			pageCount = 1
+		}
+		for page := 1; page <= pageCount; page++ {
+			route := baseTimelineRoute
+			if page > 1 {
+				route = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
+			}
+			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, route)))
+		}
 	}
 	sitemap.WriteString(`</urlset>`)
 	if err := outputs.write(outputRoot, "sitemap.xml", "sitemap", []byte(sitemap.String())); err != nil {
