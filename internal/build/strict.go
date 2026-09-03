@@ -182,7 +182,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render tag %q: %w", tag.Name, renderErr)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+tag.Slug+"/"), "tag:"+tag.Name, data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+slug.EncodePath(tag.Slug)+"/"), "tag:"+tag.Name, data); writeErr != nil {
 			return result, writeErr
 		}
 		result.TagPages++
@@ -210,24 +210,30 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		assetSources = append(assetSources, source)
 	}
 	sort.Strings(assetSources)
+	assetOwners := make(map[string]string, len(assetSources))
+	assetHashes := make(map[string]string, len(assetSources))
 	for _, source := range assetSources {
-		if asset := allAssets[source]; asset != nil {
-			if err := outputs.claim(asset.DstPath, "asset:"+source); err != nil {
-				return result, err
-			}
+		asset := allAssets[source]
+		if asset == nil || asset.DstPath == "" {
+			continue
 		}
-	}
-	if err := internalasset.CopyAssetsWithReservedPaths(boundary.VaultPath, staging, allAssets, nil, reservedAssetOutputs); err != nil {
-		return result, fmt.Errorf("publish strict assets: %w", err)
-	}
-	for _, source := range assetSources {
-		if asset := allAssets[source]; asset != nil && asset.DstPath != "" {
-			data, err := os.ReadFile(filepath.Join(staging, filepath.FromSlash(asset.DstPath)))
-			if err != nil {
-				return result, fmt.Errorf("read published asset %q: %w", source, err)
-			}
-			outputs.record(asset.DstPath, "asset:"+source, data)
+		_, data, _, readErr := internalfsutil.ReadContainedRegularFile(boundary.VaultPath, source)
+		if readErr != nil {
+			return result, fmt.Errorf("read asset %q: %w", source, readErr)
 		}
+		hash := sha256.Sum256(data)
+		hashValue := fmt.Sprintf("%x", hash)
+		if owner, exists := assetOwners[asset.DstPath]; exists {
+			if assetHashes[asset.DstPath] != hashValue {
+				return result, fmt.Errorf("asset destination %q is claimed by %q and %q with different content", asset.DstPath, owner, source)
+			}
+			continue
+		}
+		if err := outputs.write(staging, asset.DstPath, "asset:"+source, data); err != nil {
+			return result, err
+		}
+		assetOwners[asset.DstPath] = source
+		assetHashes[asset.DstPath] = hashValue
 	}
 	applyStrictAssetURLs(plan, allAssets)
 	result.Assets = allAssets
@@ -347,7 +353,7 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outp
 		if note == nil {
 			continue
 		}
-		data, err := json.Marshal(strictPopoverPayload{Title: note.Frontmatter.Title, Tags: append([]string{}, note.Tags...)})
+		data, err := json.Marshal(strictPopoverPayload{Title: note.Frontmatter.Title, Summary: note.Frontmatter.Description, Tags: append([]string{}, note.Tags...)})
 		if err != nil {
 			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
 		}
@@ -442,7 +448,7 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 		for _, tag := range strictBuildTags(index.Tags) {
 			if tag != nil {
 				data, _ := json.Marshal(tag)
-				add("tag", tag.Name, "/"+tag.Slug+"/", data)
+				add("tag", tag.Name, "/"+slug.EncodePath(tag.Slug)+"/", data)
 			}
 		}
 	}
@@ -630,7 +636,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 	if index != nil {
 		for _, tag := range strictBuildTags(index.Tags) {
 			if tag != nil {
-				_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+tag.Slug+"/")))
+				_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+slug.EncodePath(tag.Slug)+"/")))
 			}
 		}
 	}

@@ -102,9 +102,9 @@ func (r *imageHTMLRenderer) renderImage(
 	rewritten := r.rewriteDestination(string(n.Destination))
 
 	_, _ = w.WriteString("<img src=\"")
-	escapedDestination := util.URLEscape([]byte(rewritten), true)
-	if r.Unsafe || !gmhtml.IsDangerousURL(escapedDestination) {
-		_, _ = w.Write(util.EscapeHTML(escapedDestination))
+	escapedDestination := escapeDestination(rewritten)
+	if r.Unsafe || !gmhtml.IsDangerousURL([]byte(escapedDestination)) {
+		_, _ = w.Write(util.EscapeHTML([]byte(escapedDestination)))
 	}
 	_, _ = w.WriteString(`" alt="`)
 	r.writeAltText(w, source, n)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
 	gmhashtag "go.abhg.dev/goldmark/hashtag"
 )
 
@@ -37,7 +38,7 @@ func (r renderHashtagResolver) ResolveHashtag(node *gmhashtag.Node) ([]byte, err
 		return nil, nil
 	}
 
-	href := relativeDirectoryURLToNoteOutput(r.outputNote, tag.Slug)
+	href := relativeDirectoryURLToNoteOutput(r.outputNote, slug.EncodePath(tag.Slug))
 	if href == "" {
 		return nil, nil
 	}
@@ -75,12 +76,15 @@ func hashtagNoteOutputDir(note *model.Note) string {
 		return "."
 	}
 
-	slug := strings.Trim(strings.ReplaceAll(note.Slug, "\\", "/"), "/")
-	if slug == "" {
+	route := strings.Trim(strings.ReplaceAll(note.Route, "\\", "/"), "/")
+	if route == "" {
+		route = strings.Trim(strings.ReplaceAll(note.Slug, "\\", "/"), "/")
+	}
+	if route == "" {
 		return "."
 	}
 
-	return path.Clean(slug)
+	return path.Clean(route)
 }
 
 func normalizeHashtagSitePath(value string) string {

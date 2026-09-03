@@ -9,6 +9,7 @@ import (
 	"github.com/simp-lee/obsite/internal/diag"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/renderer"
@@ -85,16 +86,17 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	if targetPath == "" && fragment == "" {
 		return raw
 	}
-	if targetPath != "" && strings.HasPrefix(targetPath, "/") {
-		return raw
-	}
+	rootRelative := targetPath != "" && strings.HasPrefix(targetPath, "/")
 	vaultPath := path.Clean(path.Join(path.Dir(r.sourceNote.RelPath), targetPath))
 	if targetPath == "" {
 		vaultPath = ""
 	}
-	lookup := internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
+	lookup := internalwikilink.LookupResult{}
+	if !rootRelative {
+		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
+	}
 	if lookup.Note == nil {
-		if resource := r.index.LookupResourcePath(vaultPath).Path; resource != "" {
+		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" {
 			destination := resource
 			if r.assetSink != nil {
 				if planned := r.assetSink.Register(resource); planned != "" {

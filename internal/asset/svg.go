@@ -36,7 +36,7 @@ func ValidateLocalSVG(data []byte) error {
 				if (name == "href" || name == "src") && text != "" && !strings.HasPrefix(text, "#") {
 					return fmt.Errorf("external SVG reference %q is not allowed", text)
 				}
-				if name == "style" {
+				if name == "style" || strings.Contains(strings.ToLower(text), "url(") {
 					if err := validateLocalSVGStyle(text); err != nil {
 						return err
 					}

@@ -16,6 +16,7 @@ func TestValidateLocalSVGAcceptsInternalReferences(t *testing.T) {
 func TestValidateLocalSVGRejectsMalformedAndExternalReferences(t *testing.T) {
 	for _, source := range []string{
 		`<svg><image href="https://example.test/image.png"/></svg>`,
+		`<svg><path fill="url(https://example.test/fill)"/></svg>`,
 		`<svg><style>@import url("https://example.test/style.css")</style></svg>`,
 		`<svg><text>unfinished</svg>`,
 		`<?xml-stylesheet href="style.css"?><svg/>`,

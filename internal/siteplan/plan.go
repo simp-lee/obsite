@@ -24,7 +24,6 @@ import (
 	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/render"
-	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/simp-lee/obsite/internal/vault"
 	_ "golang.org/x/image/webp"
@@ -163,7 +162,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		validateStrictMarkdown(plan, indexResult.Index, collector)
 		for _, tag := range sortedStrictTags(indexResult.Index.Tags) {
 			if tag != nil {
-				claimRoute(plan, "/"+tag.Slug+"/", "tag:"+tag.Name, collector)
+				claimRoute(plan, "/"+encodePath(tag.Slug)+"/", "tag:"+tag.Name, collector)
 			}
 		}
 		if cfg.Timeline.Enabled {
@@ -801,27 +800,6 @@ func validateStrictMarkdownNote(index *model.VaultIndex, note *model.Note, colle
 		collector.Errorf(diag.KindSchema, diag.Location{Path: note.RelPath}, "render Markdown: %v", err)
 		return
 	}
-	for _, ref := range note.ImageRefs {
-		if isExternalStrictAsset(ref.RawTarget) || resourcepath.ResolveIndexedAssetPath(note, index, ref.RawTarget) != "" {
-			continue
-		}
-		collector.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: note.RelPath, Line: ref.Line}, Target: ref.RawTarget, Message: fmt.Sprintf("image %q could not be resolved to a vault asset", ref.RawTarget)})
-	}
-	for _, ref := range note.Embeds {
-		if !ref.IsImage || isExternalStrictAsset(ref.Target) || resourcepath.ResolveIndexedAssetPath(note, index, ref.Target) != "" {
-			continue
-		}
-		collector.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: note.RelPath, Line: ref.Line}, Target: ref.Target, Message: fmt.Sprintf("image embed %q could not be resolved to a vault asset", ref.Target)})
-	}
-}
-
-func isExternalStrictAsset(raw string) bool {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || strings.HasPrefix(raw, "#") || strings.HasPrefix(raw, "//") {
-		return true
-	}
-	parsed, err := url.Parse(raw)
-	return err == nil && parsed.IsAbs()
 }
 
 func sortedStrictTags(tags map[string]*model.Tag) []*model.Tag {
@@ -1071,7 +1049,7 @@ func breadcrumbs(section *model.Section) []model.Breadcrumb {
 }
 
 func reservedRoutes() map[string]struct{} {
-	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output"}
+	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output", "/.obsite-cache/", "/_popover/"}
 	result := make(map[string]struct{}, len(values))
 	for _, v := range values {
 		result[v] = struct{}{}
@@ -1084,6 +1062,10 @@ func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Colle
 	destination := routeDestination(key)
 	if forbiddenPhysicalSegment(key) {
 		record(collector, diag.KindRoute, owner, "route %q contains a Windows-reserved path segment", route)
+		return
+	}
+	if !portableRoute(key) {
+		record(collector, diag.KindRoute, owner, "route %q contains a filesystem-invalid path segment", route)
 		return
 	}
 	for reserved := range plan.ReservedRoutes {
@@ -1134,6 +1116,19 @@ func outputPathsConflict(left, right string) bool {
 
 func physicalPathConflict(left, right string) bool {
 	return left == right || strings.HasPrefix(left, right+"/") || strings.HasPrefix(right, left+"/")
+}
+
+func portableRoute(route string) bool {
+	for _, segment := range strings.Split(strings.Trim(route, "/"), "/") {
+		if segment == "" {
+			continue
+		}
+		decoded, err := url.PathUnescape(segment)
+		if err != nil || !internalfsutil.IsPortableSitePath(decoded) {
+			return false
+		}
+	}
+	return true
 }
 
 func forbiddenPhysicalSegment(route string) bool {
