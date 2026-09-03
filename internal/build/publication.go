@@ -132,15 +132,6 @@ func (registry *strictOutputRegistry) claim(relPath, owner string) error {
 	return nil
 }
 
-func (registry *strictOutputRegistry) record(relPath, owner string, content []byte) {
-	if registry == nil {
-		return
-	}
-	cleaned := strings.Trim(strings.ReplaceAll(relPath, `\\`, "/"), "/")
-	hash := sha256.Sum256(content)
-	registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
-}
-
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
