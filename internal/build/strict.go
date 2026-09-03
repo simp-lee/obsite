@@ -76,7 +76,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	}()
 	staging := publisher.OutputPath()
 	outputs := newStrictOutputRegistry(boundary.OutputPath, previousCache)
-	if err := writeManagedOutputMarker(staging); err != nil {
+	if err := outputs.write(staging, managedOutputMarkerFilename, "output marker", []byte(managedOutputMarkerContents)); err != nil {
 		return result, err
 	}
 	if err := writeStrictConfiguredAssets(boundary.VaultPath, staging, plan, outputs); err != nil {
@@ -92,7 +92,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		return result, err
 	}
 	reservedAssetOutputs := strictReservedAssetOutputs(plan)
-	assetCollector, err := internalasset.NewCollectorWithResourceFiles(boundary.VaultPath, assets, reservedAssetOutputs, planned.Scan.ResourceFiles)
+	assetCollector, err := internalasset.NewCollectorWithResourceFiles(boundary.VaultPath, assets, reservedAssetOutputs, nil)
 	if err != nil {
 		return result, fmt.Errorf("plan strict assets: %w", err)
 	}
@@ -828,7 +828,7 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	if !internalasset.IsPublishableAssetPath(raw) || strings.Contains(raw, `\`) || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || path.Clean(raw) != raw || strings.HasPrefix(path.Clean(raw), "../") || !internalfsutil.IsPortableSitePath(raw) {
+	if !internalasset.IsPublishableAssetPath(raw) || strings.Contains(raw, `\`) || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || path.Clean(raw) != raw || strings.HasPrefix(path.Clean(raw), "../") || !internalfsutil.IsPortableSitePath(strings.ReplaceAll(raw, "%", "x")) {
 		return nil, fmt.Errorf("%s %q must be a normalized vault-relative local asset", kind, raw)
 	}
 	lower := strings.ToLower(raw)

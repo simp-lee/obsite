@@ -392,7 +392,7 @@ func extractStandardLinkRef(node *gast.Link, source []byte, lineStarts []int, li
 		target, fragment = before, after
 	}
 	offset, _ := nodeStartOffset(node)
-	return model.LinkRef{RawTarget: composeRawTarget(target, fragment), Display: normalizeInlineText(wikilinkNodeText(source, node)), Fragment: strings.TrimSpace(fragment), Line: lineNumberForNode(node, lineStarts, lineOffset), Offset: offset}
+	return model.LinkRef{RawTarget: composeRawTarget(target, fragment), Display: normalizeInlineText(wikilinkNodeText(source, node)), Fragment: strings.TrimSpace(fragment), Standard: true, Line: lineNumberForNode(node, lineStarts, lineOffset), Offset: offset}
 }
 
 func extractImageRef(node *gast.Image, lineStarts []int, lineOffset int) model.ImageRef {
