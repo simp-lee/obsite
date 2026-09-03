@@ -164,12 +164,19 @@ func sourceLinkTarget(rawTarget string, fragment string) (string, string) {
 	fragment = strings.TrimSpace(fragment)
 	if fragment != "" {
 		if target, ok := strings.CutSuffix(rawTarget, "#"+fragment); ok {
+			if decoded, err := url.PathUnescape(fragment); err == nil {
+				fragment = decoded
+			}
 			return strings.TrimSpace(target), fragment
 		}
 		return rawTarget, fragment
 	}
 	if target, parsedFragment, ok := strings.Cut(rawTarget, "#"); ok {
-		return strings.TrimSpace(target), strings.TrimSpace(parsedFragment)
+		parsedFragment = strings.TrimSpace(parsedFragment)
+		if decoded, err := url.PathUnescape(parsedFragment); err == nil {
+			parsedFragment = decoded
+		}
+		return strings.TrimSpace(target), parsedFragment
 	}
 	return rawTarget, ""
 }
