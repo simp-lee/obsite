@@ -115,7 +115,7 @@ func Generate(input Input) (Result, error) {
 	if cover != nil {
 		maxWidth = 624
 	}
-	if err := drawText(canvas, 72, 80, input.SiteTitle, 28, maxWidth); err != nil {
+	if err := drawTextColorLines(canvas, 72, 80, input.SiteTitle, 28, maxWidth, 1, primary); err != nil {
 		return Result{}, err
 	}
 	if err := drawText(canvas, 72, 160, input.Title, 64, maxWidth); err != nil {
