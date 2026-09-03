@@ -19,10 +19,7 @@ import (
 	internalslug "github.com/simp-lee/obsite/internal/slug"
 )
 
-const (
-	outputDirPrefix  = "assets"
-	minHashSuffixLen = 12
-)
+const outputDirPrefix = "assets"
 
 var errUnsupportedAssetSource = errors.New("asset source must be a regular non-symlink file inside the vault")
 
@@ -129,36 +126,6 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, res
 	return planned
 }
 
-func hasAssignedHashedDestination(dstPath string, groupKey string, reservedOutputKeys map[string]struct{}) bool {
-	dstKey := outputSiteKey(dstPath)
-	return dstKey != "" && !isReservedOutputKey(dstKey, reservedOutputKeys) && dstKey != groupKey
-}
-
-func uniqueAvailableSource(vaultRoot string, sources []string) string {
-	if len(sources) == 0 {
-		return ""
-	}
-	if strings.TrimSpace(vaultRoot) == "" {
-		if len(sources) == 1 {
-			return sources[0]
-		}
-		return ""
-	}
-
-	availableSource := ""
-	for _, srcPath := range sources {
-		if _, _, err := assetSourceInfo(vaultRoot, srcPath); err != nil {
-			continue
-		}
-		if availableSource != "" {
-			return ""
-		}
-		availableSource = srcPath
-	}
-
-	return availableSource
-}
-
 func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map[string]string {
 	hashes := make(map[string]string, len(sources))
 	for _, srcPath := range sources {
@@ -176,39 +143,6 @@ func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map
 	}
 
 	return planned
-}
-
-func minimumUniqueHashPrefix(hashes map[string]string) int {
-	distinct := make([]string, 0, len(hashes))
-	seenDistinct := make(map[string]struct{}, len(hashes))
-	for _, hashValue := range hashes {
-		if _, ok := seenDistinct[hashValue]; ok {
-			continue
-		}
-		seenDistinct[hashValue] = struct{}{}
-		distinct = append(distinct, hashValue)
-	}
-	if len(distinct) <= 1 {
-		return minHashSuffixLen
-	}
-
-	for length := minHashSuffixLen; length <= len(distinct[0]); length++ {
-		prefixes := make(map[string]struct{}, len(distinct))
-		unique := true
-		for _, hashValue := range distinct {
-			prefix := hashValue[:length]
-			if _, ok := prefixes[prefix]; ok {
-				unique = false
-				break
-			}
-			prefixes[prefix] = struct{}{}
-		}
-		if unique {
-			return length
-		}
-	}
-
-	return len(distinct[0])
 }
 
 func plainAssetPath(srcPath string) string {

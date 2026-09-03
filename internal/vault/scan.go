@@ -304,10 +304,6 @@ func shouldSkipPathSegment(name string) bool {
 	return name == obsidianConfigDir || name == nodeModulesDirName || name == obsiteDirName
 }
 
-func isHiddenName(name string) bool {
-	return strings.HasPrefix(name, ".")
-}
-
 func isMarkdownFile(name string) bool {
 	return strings.EqualFold(filepath.Ext(name), ".md")
 }

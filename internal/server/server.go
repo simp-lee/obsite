@@ -659,10 +659,6 @@ func isImplicitHeadElement(token xhtml.Token) bool {
 	}
 }
 
-func injectLiveReloadScript(body []byte) []byte {
-	return injectLiveReloadScriptAt(body, "/")
-}
-
 func injectLiveReloadScriptAt(body []byte, basePath string) []byte {
 	if len(body) == 0 {
 		return body
