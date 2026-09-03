@@ -305,10 +305,11 @@ func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[strin
 	if planned == nil || planned.Plan == nil || planned.Index == nil {
 		return &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}, related, nil
 	}
-	graph := link.BuildSourceGraph(planned.Index)
+	recommendationGraph := link.BuildSourceGraph(planned.Index)
 	if !planned.Plan.Config.Related.Enabled {
-		return graph, related, nil
+		return recommendationGraph, related, nil
 	}
+	graph := recommendationGraph
 	groups := make(map[string][]model.RelatedSemanticDocument)
 	for _, semantic := range planned.RelatedSemantic {
 		versionID := ""

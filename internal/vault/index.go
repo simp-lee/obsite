@@ -37,6 +37,7 @@ type IndexResult struct {
 type indexBuildOptions struct {
 	concurrency            int
 	collectRelatedSemantic bool
+	resourceVersions       map[string]string
 	onNoteStart            func(*model.Note)
 	onNoteDone             func(*model.Note)
 }
@@ -91,9 +92,12 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 		Unpublished:          unpublished,
 	}
 	parser := markdown.NewParser(diagCollector)
+	resourceVersions := resourceVersionMap(scanResult.ResourceFiles, publicSections)
+	idx.ResourceVersions = resourceVersions
 	indexedNotes := indexPublicNotes(public, scanResult, parser, diagCollector, indexBuildOptions{
 		concurrency:            options.Concurrency,
 		collectRelatedSemantic: options.CollectRelatedSemantic,
+		resourceVersions:       resourceVersions,
 	})
 	var relatedSemantic []model.RelatedSemanticDocument
 	if options.CollectRelatedSemantic && len(indexedNotes) > 0 {
@@ -122,7 +126,6 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	}
 	idx.SetAssets(idx.Assets)
 	idx.SetResources(scanResult.ResourceFiles)
-	idx.ResourceVersions = resourceVersionMap(scanResult.ResourceFiles, publicSections)
 	sectionNotes := make([]*model.Note, 0, len(publicSections))
 	for _, section := range publicSections {
 		if section != nil {
@@ -133,7 +136,7 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 			sectionNotes = append(sectionNotes, &model.Note{RelPath: section.SourcePath, RawContent: cloneBytes(section.RawContent), BodyStartLine: section.BodyStartLine, Route: section.Route, VersionID: section.VersionID, Slug: strings.Trim(section.Route, "/"), Frontmatter: model.Frontmatter{Title: section.Title}})
 		}
 	}
-	for _, indexed := range indexPublicNotes(sectionNotes, scanResult, parser, diagCollector, indexBuildOptions{concurrency: options.Concurrency}) {
+	for _, indexed := range indexPublicNotes(sectionNotes, scanResult, parser, diagCollector, indexBuildOptions{concurrency: options.Concurrency, resourceVersions: resourceVersions}) {
 		if indexed.note == nil {
 			continue
 		}
@@ -255,7 +258,7 @@ func buildIndexedNoteResult(
 	assets := make(map[string]*model.Asset)
 	root := parser.Parser().Parse(text.NewReader(note.RawContent))
 	lineStarts := lineStartOffsets(note.RawContent)
-	inlineTags := extractNoteMetadata(note, scanResult, assets, diagCollector, root, note.RawContent, lineStarts)
+	inlineTags := extractNoteMetadata(note, scanResult, assets, diagCollector, root, note.RawContent, lineStarts, options.resourceVersions)
 	note.Tags = mergeNoteTags(note.Tags, inlineTags)
 
 	var relatedSemantic *model.RelatedSemanticDocument
@@ -329,6 +332,7 @@ func extractNoteMetadata(
 	root gast.Node,
 	source []byte,
 	lineStarts []int,
+	resourceVersions map[string]string,
 ) []string {
 	inlineTags := make([]string, 0)
 	lineOffset := 0
@@ -361,7 +365,7 @@ func extractNoteMetadata(
 				embedRef := extractEmbedRef(note, scanResult, current, source, lineStarts, lineOffset)
 				note.Embeds = append(note.Embeds, embedRef)
 				if embedRef.IsImage {
-					if assetPath := resolveImageAssetPath(note, scanResult, embedRef.Target); assetPath != "" {
+					if assetPath := resolveImageAssetPath(note, scanResult, embedRef.Target); assetPath != "" && resourceVersionAllowed(note, resourceVersions, assetPath) {
 						registerAsset(assets, assetPath)
 					}
 				}
@@ -373,7 +377,7 @@ func extractNoteMetadata(
 			note.ImageRefs = append(note.ImageRefs, imageRef)
 			rawDestination := imageRef.RawTarget
 			lookup := lookupImageAssetPath(note, scanResult, rawDestination)
-			if lookup.Path != "" {
+			if lookup.Path != "" && resourceVersionAllowed(note, resourceVersions, lookup.Path) {
 				registerAsset(assets, lookup.Path)
 			} else if len(lookup.Ambiguous) > 0 {
 				recordAmbiguousMarkdownImage(diagCollector, note, rawDestination, lookup.Ambiguous, current, lineStarts, lineOffset)
@@ -454,6 +458,11 @@ func extractEmbedRef(note *model.Note, scanResult ScanResult, node *gmwikilink.N
 		Line:     lineNumberForNode(node, lineStarts, lineOffset),
 		Offset:   offset,
 	}
+}
+
+func resourceVersionAllowed(note *model.Note, resourceVersions map[string]string, resource string) bool {
+		versionID := resourceVersions[resource]
+		return versionID == "" || note == nil || note.VersionID == versionID
 }
 
 func registerAsset(assets map[string]*model.Asset, vaultRelPath string) {

@@ -131,7 +131,10 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 			return relativeToNoteOutput(r.outputNote, destination) + suffix
 		}
 		if rootRelative {
-			return basePathDestination(r.outputNote, raw)
+			if r.diagnostics != nil {
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
+			}
+			return raw
 		}
 		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
 			if r.diagnostics != nil {

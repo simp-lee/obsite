@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -196,8 +197,55 @@ func RenderStrictTimeline(plan *model.SitePlan, route string, notes []*model.Not
 			_, _ = fmt.Fprintf(&body, `<li><a href="%s">%s</a></li>`, esc(strictSitePath(plan, note.Route)), esc(note.Frontmatter.Title))
 		}
 	}
-	body.WriteString(`</ul></section>`)
-	return strictDocument(plan, "/"+strings.Trim(route, "/")+"/", "Recent articles", "", nil, "", nil, "", nil, "", body.String())
+	body.WriteString(`</ul>`)
+	if page, total := timelinePageInfo(plan, route); total > 1 {
+		body.WriteString(`<nav class="pagination-nav" aria-label="Timeline pages">`)
+		if page > 1 {
+			_, _ = fmt.Fprintf(&body, `<a class="pagination-link pagination-link-prev" href="%s">Previous</a>`, esc(strictSitePath(plan, timelinePageRoute(plan.Config.Timeline.Path, page-1))))
+		}
+		if page < total {
+			_, _ = fmt.Fprintf(&body, `<a class="pagination-link pagination-link-next" href="%s">Next</a>`, esc(strictSitePath(plan, timelinePageRoute(plan.Config.Timeline.Path, page+1))))
+		}
+		body.WriteString(`</nav>`)
+	}
+	body.WriteString(`</section>`)
+	return strictDocument(plan, route, "Recent articles", "", nil, "", nil, "", nil, "", body.String())
+}
+
+func timelinePageInfo(plan *model.SitePlan, route string) (page, total int) {
+	if plan == nil {
+		return 1, 1
+	}
+	pageSize := plan.Config.Pagination.PageSize
+	if pageSize <= 0 || pageSize >= len(plan.Posts) {
+		pageSize = len(plan.Posts)
+	}
+	if pageSize == 0 {
+		pageSize = 1
+	}
+	total = (len(plan.Posts) + pageSize - 1) / pageSize
+	if total == 0 {
+		total = 1
+	}
+	base := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
+	if route != base {
+		parts := strings.Split(strings.Trim(route, "/"), "/")
+		if len(parts) >= 2 && parts[len(parts)-2] == "page" {
+			page, _ = strconv.Atoi(parts[len(parts)-1])
+		}
+	}
+	if page < 1 || page > total {
+		page = 1
+	}
+	return page, total
+}
+
+func timelinePageRoute(rawPath string, page int) string {
+	base := "/" + slug.EncodePath(strings.Trim(rawPath, "/")) + "/"
+	if page <= 1 {
+		return base
+	}
+	return strings.TrimSuffix(base, "/") + "/page/" + strconv.Itoa(page) + "/"
 }
 
 func annotateStrictPopovers(content string, article *model.Note, index *model.VaultIndex) (string, error) {

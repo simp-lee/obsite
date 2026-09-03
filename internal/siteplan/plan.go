@@ -943,10 +943,14 @@ func buildVersionCorrespondence(versions []*model.Version) {
 			for _, article := range section.Articles {
 				rel := strings.TrimPrefix(article.RelPath, version.Source)
 				rel = strings.TrimPrefix(rel, "/")
-				segment, err := slug.GenerateArticleSegment(nil, rel)
-				if err != nil {
-					items[fold(rel)] = article
-					continue
+				segment := article.Slug
+				if segment == "" {
+					var err error
+					segment, err = slug.GenerateArticleSegment(nil, rel)
+					if err != nil {
+						items[fold(rel)] = article
+						continue
+					}
 				}
 				items[fold(path.Join(path.Dir(rel), segment))] = article
 			}
@@ -1263,9 +1267,11 @@ func portableRoute(route string) bool {
 		if segment == "" {
 			continue
 		}
-		decoded, err := url.PathUnescape(segment)
-		portableValue := strings.ReplaceAll(decoded, "%", "x")
-		if err != nil || !internalfsutil.IsPortableSitePath(portableValue) {
+		if _, err := url.PathUnescape(segment); err != nil {
+			return false
+		}
+		portableValue := strings.ReplaceAll(segment, "%", "x")
+		if !internalfsutil.IsPortableSitePath(portableValue) {
 			return false
 		}
 	}
