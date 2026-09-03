@@ -151,7 +151,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 			if r.diagnostics != nil {
 				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
 			}
-			return raw
+			return prefixRootRelativeDestination(r.outputNote, raw)
 		}
 		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
 			if r.diagnostics != nil {
@@ -225,6 +225,17 @@ func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target strin
 
 func inLinkVersionScope(note *model.Note, section *model.Section) bool {
 	return note == nil || section == nil || section.VersionID == "" || note.VersionID == section.VersionID
+}
+
+func prefixRootRelativeDestination(note *model.Note, raw string) string {
+	if note == nil || note.BasePath == "" || raw == "" || !strings.HasPrefix(raw, "/") {
+		return raw
+	}
+	cut := strings.IndexAny(raw, "?#")
+	if cut < 0 {
+		cut = len(raw)
+	}
+	return strings.TrimSuffix(note.BasePath, "/") + raw[:cut] + raw[cut:]
 }
 
 func escapeDestination(value string) string {

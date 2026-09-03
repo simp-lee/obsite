@@ -154,7 +154,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
 	validateNavigation(sections, cfg.Navigation, collector)
-	validatePlannedAssets(resolvedVault, outputPath, plan, sources, collector)
+	validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
@@ -825,9 +825,24 @@ func assetRecord(collector *diag.Collector, owner, field, target, format string,
 	})
 }
 
-func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, sources vault.StrictFrontmatterResult, collector *diag.Collector) {
+func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, resourceFiles []string, collector *diag.Collector) {
 	seen := make(map[string]struct{})
-	check := func(source, kind, owner string) {
+	resourceVersions := make(map[string]string, len(resourceFiles))
+	for _, resource := range resourceFiles {
+		physical := path.Dir(resource)
+		bestDepth := -1
+		for sectionPath, section := range sections {
+			if section == nil || section.VersionID == "" || physical != sectionPath && !strings.HasPrefix(physical, sectionPath+"/") {
+				continue
+			}
+			depth := len(strings.Split(sectionPath, "/"))
+			if depth > bestDepth {
+				resourceVersions[resource] = section.VersionID
+				bestDepth = depth
+			}
+		}
+	}
+	check := func(source, kind, owner, ownerVersion string) {
 		if source == "" {
 			return
 		}
@@ -839,6 +854,10 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		candidate := filepath.Join(vaultRoot, filepath.FromSlash(source))
 		if outputPath != "" && internalfsutil.PathWithinRoot(outputPath, candidate) {
 			assetRecord(collector, owner, kind, source, "%s must not be inside the generated output", kind)
+			return
+		}
+		if resourceVersion := resourceVersions[source]; resourceVersion != "" && resourceVersion != ownerVersion {
+			assetRecord(collector, owner, kind, source, "%s belongs to version %q and cannot be used from version %q", kind, resourceVersion, ownerVersion)
 			return
 		}
 		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !portableVaultAssetPath(source) {
@@ -872,15 +891,23 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		}
 	}
 	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
-		check(plan.Config.DefaultImg, "defaultImg", internalconfig.Filename)
+		check(plan.Config.DefaultImg, "defaultImg", internalconfig.Filename, "")
 	}
 	for _, source := range sources.Sources {
 		if source.Section != nil {
-			check(source.Section.Frontmatter.Banner, "banner", source.Section.RelPath)
+			sectionVersion := ""
+			if section := sections[source.Section.SectionPath]; section != nil {
+				sectionVersion = section.VersionID
+			}
+			check(source.Section.Frontmatter.Banner, "banner", source.Section.RelPath, sectionVersion)
 		}
 		if source.Article != nil {
-			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath)
-			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath)
+			articleVersion := ""
+			if section := sections[path.Dir(source.Article.RelPath)]; section != nil {
+				articleVersion = section.VersionID
+			}
+			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath, articleVersion)
+			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath, articleVersion)
 		}
 	}
 }
