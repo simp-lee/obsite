@@ -728,8 +728,12 @@ func (loop *serveWatchLoop) pathIsOutputTransaction(candidate string) bool {
 	base := filepath.Base(filepath.Clean(loop.outputPath))
 	prefix := "." + base + "-obsite-"
 	for current := candidate; current != "" && pathWithinRoot(loop.vaultPath, current); current = filepath.Dir(current) {
-		if strings.HasPrefix(filepath.Base(current), prefix) {
-			return true
+		name := filepath.Base(current)
+		if strings.HasPrefix(name, prefix) {
+			remainder := strings.TrimPrefix(name, prefix)
+			if strings.HasPrefix(remainder, "stage-") || strings.HasPrefix(remainder, "backup-") || strings.HasPrefix(remainder, "failed-") {
+				return true
+			}
 		}
 		if filepath.Clean(current) == filepath.Clean(loop.vaultPath) {
 			break
