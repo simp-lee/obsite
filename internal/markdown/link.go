@@ -194,7 +194,7 @@ func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target strin
 }
 
 func inLinkVersionScope(note *model.Note, section *model.Section) bool {
-	return note == nil || section == nil || note.VersionID == section.VersionID
+	return note == nil || section == nil || section.VersionID == "" || note.VersionID == section.VersionID
 }
 
 func basePathDestination(note *model.Note, raw string) string {

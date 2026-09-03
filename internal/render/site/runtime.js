@@ -523,6 +523,9 @@
     }
 
     function encodeRFC3986Segment(value) {
+      if (typeof value.normalize === "function") {
+        value = value.normalize("NFKC");
+      }
       return encodeURIComponent(value).replace(/[!'()*]/g, function (character) {
         return "%" + character.charCodeAt(0).toString(16).toUpperCase();
       });

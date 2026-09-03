@@ -671,7 +671,7 @@ func strictChildVersions(plan *model.SitePlan, section *model.Section) []*model.
 	}
 	result := make([]*model.Version, 0)
 	for _, version := range strictPublicVersions(plan) {
-		if path.Dir(version.Root.RelPath) == section.RelPath {
+		if path.Dir(version.Root.RelPath) == section.RelPath || strings.HasPrefix(version.Root.RelPath, section.RelPath+"/") {
 			result = append(result, version)
 		}
 	}
@@ -695,7 +695,11 @@ func strictNavigationMatch(raw string) string {
 	if parsed.Path == "/" || parsed.Path == "" {
 		return "/"
 	}
-	return "/" + slug.EncodePath(strings.Trim(parsed.Path, "/")) + "/"
+	match := "/" + slug.EncodePath(strings.Trim(parsed.Path, "/"))
+	if path.Ext(parsed.Path) == "" {
+		match += "/"
+	}
+	return match
 }
 
 func strictSitePath(plan *model.SitePlan, route string) string {

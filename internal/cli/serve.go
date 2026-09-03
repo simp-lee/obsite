@@ -725,13 +725,17 @@ func (loop *serveWatchLoop) pathIsOutputTransaction(candidate string) bool {
 		return false
 	}
 	candidate = filepath.Clean(candidate)
-	if filepath.Dir(candidate) != filepath.Dir(filepath.Clean(loop.outputPath)) {
-		return false
-	}
 	base := filepath.Base(filepath.Clean(loop.outputPath))
-	name := filepath.Base(candidate)
 	prefix := "." + base + "-obsite-"
-	return strings.HasPrefix(name, prefix)
+	for current := candidate; current != "" && pathWithinRoot(loop.vaultPath, current); current = filepath.Dir(current) {
+		if strings.HasPrefix(filepath.Base(current), prefix) {
+			return true
+		}
+		if filepath.Clean(current) == filepath.Clean(loop.vaultPath) {
+			break
+		}
+	}
+	return false
 }
 
 func (loop *serveWatchLoop) pathWithinVault(path string) bool {
