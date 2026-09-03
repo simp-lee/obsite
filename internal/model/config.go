@@ -84,7 +84,6 @@ type RSSConfig struct {
 
 // TimelineConfig controls the recent-notes timeline page.
 type TimelineConfig struct {
-	Enabled    bool
-	AsHomepage bool
-	Path       string
+	Enabled bool
+	Path    string
 }

@@ -85,9 +85,8 @@ type relatedFileConfig struct {
 }
 
 type timelineFileConfig struct {
-	Enabled    *bool  `yaml:"enabled"`
-	AsHomepage *bool  `yaml:"asHomepage"`
-	Path       string `yaml:"path"`
+	Enabled *bool  `yaml:"enabled"`
+	Path    string `yaml:"path"`
 }
 
 // Defaults returns the single canonical product default set.
@@ -267,9 +266,6 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	}
 	if parsed.Timeline.Enabled != nil {
 		cfg.Timeline.Enabled = *parsed.Timeline.Enabled
-	}
-	if parsed.Timeline.AsHomepage != nil {
-		cfg.Timeline.AsHomepage = *parsed.Timeline.AsHomepage
 	}
 	if value := strings.TrimSpace(parsed.Timeline.Path); value != "" {
 		cfg.Timeline.Path = value

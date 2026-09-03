@@ -480,11 +480,11 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		strictWriteSidebarHTML(&output, plan, strictSidebarRoot(plan, versionID), currentRoute)
 		output.WriteString(`</ul></nav></aside><button type="button" class="sidebar-overlay" data-sidebar-overlay hidden aria-label="Close navigation"></button>`)
 	}
-	output.WriteString(`<div class="site-content"><nav class="breadcrumbs" aria-label="Breadcrumb">`)
+	output.WriteString(`<div class="site-content"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol>`)
 	for _, crumb := range breadcrumbs {
-		_, _ = fmt.Fprintf(&output, `<a href="%s">%s</a>`, esc(strictSitePath(plan, crumb.URL)), esc(crumb.Name))
+		_, _ = fmt.Fprintf(&output, `<li><a href="%s">%s</a></li>`, esc(strictSitePath(plan, crumb.URL)), esc(crumb.Name))
 	}
-	_, _ = fmt.Fprintf(&output, `</nav>%s`, body)
+	_, _ = fmt.Fprintf(&output, `</ol></nav>%s`, body)
 	if versionID != "" {
 		output.WriteString(`<nav class="version-selector" aria-label="Versions">`)
 		for _, version := range strictPublicVersions(plan) {

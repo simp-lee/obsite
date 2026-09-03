@@ -731,9 +731,20 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 	})
 }
 
+func assetRecord(collector *diag.Collector, owner, field, target, format string, args ...any) {
+	if collector == nil {
+		return
+	}
+	collector.Add(diag.Diagnostic{
+		Severity: diag.SeverityError, Kind: diag.KindMetadata,
+		Location: diag.Location{Path: owner}, Field: field, Target: target,
+		Message: fmt.Sprintf(format, args...),
+	})
+}
+
 func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault.StrictFrontmatterResult, collector *diag.Collector) {
 	seen := make(map[string]struct{})
-	check := func(source, kind string) {
+	check := func(source, kind, owner string) {
 		if source == "" {
 			return
 		}
@@ -743,7 +754,7 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 		}
 		seen[seenKey] = struct{}{}
 		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !internalfsutil.IsPortableSitePath(source) {
-			record(collector, diag.KindMetadata, source, "%s must be a normalized vault-relative local asset", kind)
+			assetRecord(collector, owner, kind, source, "%s must be a normalized vault-relative local asset", kind)
 			return
 		}
 		lower := strings.ToLower(source)
@@ -752,36 +763,36 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 			supported = supported || strings.HasSuffix(lower, ".svg")
 		}
 		if !supported {
-			record(collector, diag.KindMetadata, source, "%s has an unsupported format", kind)
+			assetRecord(collector, owner, kind, source, "%s has an unsupported format", kind)
 			return
 		}
 		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, source)
 		if err != nil {
-			record(collector, diag.KindMetadata, source, "%s cannot be read: %v", kind, err)
+			assetRecord(collector, owner, kind, source, "%s cannot be read: %v", kind, err)
 			return
 		}
 		if strings.HasSuffix(lower, ".svg") {
 			if err := internalasset.ValidateLocalSVG(data); err != nil {
-				record(collector, diag.KindMetadata, source, "banner SVG: %v", err)
+				assetRecord(collector, owner, kind, source, "banner SVG: %v", err)
 			}
 			return
 		}
 		if _, format, err := image.Decode(bytes.NewReader(data)); err != nil {
-			record(collector, diag.KindMetadata, source, "%s cannot be decoded: %v", kind, err)
+			assetRecord(collector, owner, kind, source, "%s cannot be decoded: %v", kind, err)
 		} else if format != "png" && format != "jpeg" && format != "webp" {
-			record(collector, diag.KindMetadata, source, "%s decoded as unsupported format %q", kind, format)
+			assetRecord(collector, owner, kind, source, "%s decoded as unsupported format %q", kind, format)
 		}
 	}
 	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
-		check(plan.Config.DefaultImg, "defaultImg")
+		check(plan.Config.DefaultImg, "defaultImg", internalconfig.Filename)
 	}
 	for _, source := range sources.Sources {
 		if source.Section != nil {
-			check(source.Section.Frontmatter.Banner, "banner")
+			check(source.Section.Frontmatter.Banner, "banner", source.Section.RelPath)
 		}
 		if source.Article != nil {
-			check(source.Article.Frontmatter.Banner, "banner")
-			check(source.Article.Frontmatter.Cover, "cover")
+			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath)
+			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath)
 		}
 	}
 }

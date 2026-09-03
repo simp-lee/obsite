@@ -92,7 +92,6 @@ rss:
   enabled: true
 timeline:
   enabled: false
-  asHomepage: false
   path: timeline
 defaultImg: ""
 ```

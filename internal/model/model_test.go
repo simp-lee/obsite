@@ -118,9 +118,8 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 		Related:    RelatedConfig{Enabled: true, Count: 6},
 		RSS:        RSSConfig{Enabled: true},
 		Timeline: TimelineConfig{
-			Enabled:    true,
-			AsHomepage: true,
-			Path:       "notes",
+			Enabled: true,
+			Path:    "notes",
 		},
 	}
 	frontmatter := Frontmatter{Updated: updated}
@@ -131,8 +130,8 @@ func TestSiteConfigAndFrontmatterSupportExtendedFeatureFields(t *testing.T) {
 	if !cfg.Related.Enabled || cfg.Related.Count != 6 {
 		t.Fatalf("Related = %#v, want enabled count=6", cfg.Related)
 	}
-	if !cfg.Timeline.Enabled || !cfg.Timeline.AsHomepage || cfg.Timeline.Path != "notes" {
-		t.Fatalf("Timeline = %#v, want enabled homepage path", cfg.Timeline)
+	if !cfg.Timeline.Enabled || cfg.Timeline.Path != "notes" {
+		t.Fatalf("Timeline = %#v, want enabled path", cfg.Timeline)
 	}
 	if !frontmatter.Updated.Equal(updated) {
 		t.Fatalf("Frontmatter.Updated = %v, want %v", frontmatter.Updated, updated)
