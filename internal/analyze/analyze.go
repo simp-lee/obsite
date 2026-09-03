@@ -56,7 +56,7 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 var (
 	analyzeErrorPathPattern   = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
 	analyzeErrorLinePattern   = regexp.MustCompile(`\bline ([0-9]+)\b`)
-	analyzeErrorFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"`)
+	analyzeErrorFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|\b([A-Za-z][A-Za-z0-9_.\[\]]*) (?:is|required|must)`)
 	analyzeErrorTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset) "([^"]+)"`)
 )
 
@@ -66,8 +66,13 @@ func analyzeErrorDiagnostic(vaultPath string, err error) diagnostic.Diagnostic {
 		return item
 	}
 	message := err.Error()
-	if match := analyzeErrorFieldPattern.FindStringSubmatch(message); len(match) == 2 {
-		item.Field = match[1]
+	if match := analyzeErrorFieldPattern.FindStringSubmatch(message); len(match) > 1 {
+		for _, value := range match[1:] {
+			if value != "" {
+				item.Field = value
+				break
+			}
+		}
 	}
 	if match := analyzeErrorTargetPattern.FindStringSubmatch(message); len(match) == 2 {
 		item.Target = match[1]

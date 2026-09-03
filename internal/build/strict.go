@@ -843,8 +843,10 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 		}
 		return data, nil
 	}
-	if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+	if _, format, err := image.Decode(bytes.NewReader(data)); err != nil {
 		return nil, fmt.Errorf("%s %q cannot be decoded: %w", kind, raw, err)
+	} else if format != "png" && format != "jpeg" && format != "webp" {
+		return nil, fmt.Errorf("%s %q decoded as unsupported format %q", kind, raw, format)
 	}
 	return data, nil
 }

@@ -210,18 +210,21 @@ func TestBuildGraphDoesNotDuplicateResolutionDiagnostics(t *testing.T) {
 			Severity: diag.SeverityWarning,
 			Kind:     diag.KindDeadLink,
 			Location: diag.Location{Path: current.RelPath, Line: 1},
+			Target:   "Missing",
 			Message:  `wikilink "Missing" could not be resolved`,
 		},
 		{
 			Severity: diag.SeverityWarning,
 			Kind:     diag.Kind("ambiguous_wikilink"),
 			Location: diag.Location{Path: current.RelPath, Line: 2},
+			Target:   "Docs",
 			Message:  `wikilink "Docs" matched multiple notes at the same path distance (alpha/docs.md, beta/docs.md); choosing "alpha/docs.md"`,
 		},
 		{
 			Severity: diag.SeverityWarning,
 			Kind:     diag.Kind("unpublished_wikilink"),
 			Location: diag.Location{Path: current.RelPath, Line: 3},
+			Target:   "Private",
 			Message:  `wikilink "Private" points to unpublished note "private/secret.md"; rendering as plain text`,
 		},
 	}

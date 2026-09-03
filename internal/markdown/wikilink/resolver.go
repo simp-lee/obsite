@@ -1,6 +1,7 @@
 package wikilink
 
 import (
+	"fmt"
 	"path"
 	"path/filepath"
 	"sort"
@@ -673,7 +674,7 @@ func (r *VaultResolver) recordDeadLink(rawTarget string, ref *model.LinkRef) {
 		return
 	}
 
-	r.Diag.Warningf(diag.KindDeadLink, r.location(ref), "wikilink %q could not be resolved", rawTarget)
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q could not be resolved", rawTarget)})
 }
 
 func (r *VaultResolver) recordUnsupportedCanvas(rawTarget string, ref *model.LinkRef) {
@@ -681,7 +682,7 @@ func (r *VaultResolver) recordUnsupportedCanvas(rawTarget string, ref *model.Lin
 		return
 	}
 
-	r.Diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "wikilink %q targets unsupported canvas content; rendering as plain text", rawTarget)
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnsupportedSyntax, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q targets unsupported canvas content; rendering as plain text", rawTarget)})
 }
 
 func (r *VaultResolver) recordAmbiguousCanvas(rawTarget string, ref *model.LinkRef, candidates []string) {
@@ -689,7 +690,7 @@ func (r *VaultResolver) recordAmbiguousCanvas(rawTarget string, ref *model.LinkR
 		return
 	}
 
-	r.Diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "wikilink %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnsupportedSyntax, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))})
 }
 
 func (r *VaultResolver) recordUnpublished(rawTarget string, ref *model.LinkRef, note *model.Note) {
@@ -697,7 +698,7 @@ func (r *VaultResolver) recordUnpublished(rawTarget string, ref *model.LinkRef, 
 		return
 	}
 
-	r.Diag.Warningf(kindUnpublishedWikilink, r.location(ref), "wikilink %q points to unpublished note %q; rendering as plain text", rawTarget, note.RelPath)
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kindUnpublishedWikilink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q points to unpublished note %q; rendering as plain text", rawTarget, note.RelPath)})
 }
 
 func (r *VaultResolver) recordMissingFragment(rawTarget string, ref *model.LinkRef, note *model.Note, fragment string) {
@@ -711,7 +712,7 @@ func (r *VaultResolver) recordMissingFragment(rawTarget string, ref *model.LinkR
 		return
 	}
 
-	r.Diag.Warningf(diag.KindDeadLink, r.location(ref), "wikilink %q points to missing heading %q in %q", rawTarget, missing, note.RelPath)
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q points to missing heading %q in %q", rawTarget, missing, note.RelPath)})
 }
 
 func (r *VaultResolver) recordAmbiguous(rawTarget string, ref *model.LinkRef, chosen *model.Note, candidates []string) {
@@ -719,7 +720,7 @@ func (r *VaultResolver) recordAmbiguous(rawTarget string, ref *model.LinkRef, ch
 		return
 	}
 
-	r.Diag.Warningf(kindAmbiguousWikilink, r.location(ref), "wikilink %q matched multiple notes at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.RelPath)
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kindAmbiguousWikilink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q matched multiple notes at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.RelPath)})
 }
 
 func (r *VaultResolver) location(ref *model.LinkRef) diag.Location {

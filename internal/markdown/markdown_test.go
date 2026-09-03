@@ -1604,6 +1604,7 @@ func TestNewMarkdownLeavesMissingHeadingWikilinksAsPlainText(t *testing.T) {
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindDeadLink,
 		Location: diag.Location{Path: current.RelPath, Line: 1},
+		Target:   "Guide#Missing Heading",
 		Message:  `wikilink "Guide#Missing Heading" points to missing heading "Missing Heading" in "guides/guide.md"`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -2559,6 +2560,7 @@ func TestNewMarkdownSectionEmbedsScopeRenderedMetadata(t *testing.T) {
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindDeadLink,
 		Location: diag.Location{Path: guide.RelPath, Line: 11},
+		Target:   "#Excluded",
 		Message:  `wikilink "#Excluded" points to missing heading "Excluded" in "guides/guide.md"`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, wantDiagnostics) {

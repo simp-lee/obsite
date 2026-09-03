@@ -181,8 +181,8 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 var (
 	strictParsePathPattern   = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
 	strictParseLinePattern   = regexp.MustCompile(`\bline ([0-9]+)\b`)
-	strictParseFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|(?:^| )([A-Za-z][A-Za-z0-9]*) at line`)
-	strictParseTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset) "([^"]+)"`)
+	strictParseFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|(?:^| )([A-Za-z][A-Za-z0-9]*) at line|\b([A-Za-z][A-Za-z0-9_.\[\]]*) (?:is|required|must)`)
+	strictParseTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset|route) "([^"]+)"`)
 )
 
 func strictParseDiagnostic(vaultRoot string, err error) diag.Diagnostic {
@@ -220,7 +220,31 @@ func diagnosticsWithError(collector *diag.Collector, location diag.Location, kin
 }
 
 func record(collector *diag.Collector, kind diag.Kind, source string, format string, args ...any) {
-	collector.Errorf(kind, diag.Location{Path: source}, format, args...)
+	if collector == nil {
+		return
+	}
+	item := diag.Diagnostic{Severity: diag.SeverityError, Kind: kind, Location: diag.Location{Path: source}, Message: fmt.Sprintf(format, args...)}
+	switch kind {
+	case diag.KindSection:
+		item.Field = "_index.md"
+	case diag.KindNavigation:
+		item.Field = "navigation"
+	case diag.KindVersion:
+		item.Field = "versions"
+	case diag.KindOrder:
+		item.Field = "order"
+	case diag.KindMetadata:
+		item.Field = "metadata"
+	case diag.KindSchema:
+		item.Field = "frontmatter"
+	case diag.KindRoute:
+		if match := strictParseTargetPattern.FindStringSubmatch(item.Message); len(match) == 2 {
+			item.Target = match[1]
+		} else {
+			item.Field = "route"
+		}
+	}
+	collector.Add(item)
 }
 
 func requiredSectionPaths(sources vault.StrictFrontmatterResult) map[string]struct{} {
@@ -716,8 +740,10 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 			}
 			return
 		}
-		if _, _, err := image.Decode(bytes.NewReader(data)); err != nil {
+		if _, format, err := image.Decode(bytes.NewReader(data)); err != nil {
 			record(collector, diag.KindMetadata, source, "%s cannot be decoded: %v", kind, err)
+		} else if format != "png" && format != "jpeg" && format != "webp" {
+			record(collector, diag.KindMetadata, source, "%s decoded as unsupported format %q", kind, format)
 		}
 	}
 	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
@@ -779,13 +805,13 @@ func validateStrictMarkdownNote(index *model.VaultIndex, note *model.Note, colle
 		if isExternalStrictAsset(ref.RawTarget) || resourcepath.ResolveIndexedAssetPath(note, index, ref.RawTarget) != "" {
 			continue
 		}
-		collector.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: note.RelPath, Line: ref.Line}, "image %q could not be resolved to a vault asset", ref.RawTarget)
+		collector.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: note.RelPath, Line: ref.Line}, Target: ref.RawTarget, Message: fmt.Sprintf("image %q could not be resolved to a vault asset", ref.RawTarget)})
 	}
 	for _, ref := range note.Embeds {
 		if !ref.IsImage || isExternalStrictAsset(ref.Target) || resourcepath.ResolveIndexedAssetPath(note, index, ref.Target) != "" {
 			continue
 		}
-		collector.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: note.RelPath, Line: ref.Line}, "image embed %q could not be resolved to a vault asset", ref.Target)
+		collector.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: note.RelPath, Line: ref.Line}, Target: ref.Target, Message: fmt.Sprintf("image embed %q could not be resolved to a vault asset", ref.Target)})
 	}
 }
 

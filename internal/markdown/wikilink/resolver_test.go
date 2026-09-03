@@ -113,6 +113,7 @@ func TestVaultResolverResolveWikilink_UnpublishedDowngradesToPlainText(t *testin
 		Severity: diag.SeverityWarning,
 		Kind:     kindUnpublishedWikilink,
 		Location: diag.Location{Path: current.RelPath, Line: 12},
+		Target:   "Private",
 		Message:  `wikilink "Private" points to unpublished note "private/secret.md"; rendering as plain text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -150,6 +151,7 @@ func TestVaultResolverResolveWikilink_ExplicitPathDoesNotFallbackToBasename(t *t
 		Severity: diag.SeverityWarning,
 		Kind:     kindUnpublishedWikilink,
 		Location: diag.Location{Path: current.RelPath, Line: 14},
+		Target:   "private/secret",
 		Message:  `wikilink "private/secret" points to unpublished note "private/secret.md"; rendering as plain text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -178,6 +180,7 @@ func TestVaultResolverResolveWikilink_DeadLinkWarns(t *testing.T) {
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindDeadLink,
 		Location: diag.Location{Path: current.RelPath, Line: 18},
+		Target:   "Missing",
 		Message:  `wikilink "Missing" could not be resolved`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -216,6 +219,7 @@ func TestVaultResolverResolveWikilink_AmbiguityWarnsAndChoosesLexicographicFirst
 		Severity: diag.SeverityWarning,
 		Kind:     kindAmbiguousWikilink,
 		Location: diag.Location{Path: current.RelPath, Line: 9},
+		Target:   "Docs",
 		Message:  `wikilink "Docs" matched multiple notes at the same path distance (alpha/docs.md, beta/docs.md); choosing "alpha/docs.md"`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -410,6 +414,7 @@ func TestVaultResolverResolveWikilink_ExplicitPathCanonicalizesUnicodeUnpublishe
 		Severity: diag.SeverityWarning,
 		Kind:     kindUnpublishedWikilink,
 		Location: diag.Location{Path: current.RelPath, Line: 29},
+		Target:   "private/Café Guide",
 		Message:  `wikilink "private/Café Guide" points to unpublished note "` + unpublished.RelPath + `"; rendering as plain text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -457,6 +462,7 @@ func TestVaultResolverResolveWikilink_CanvasLookupCanonicalizesUnicodeResourceNa
 				Severity: diag.SeverityWarning,
 				Kind:     diag.KindUnsupportedSyntax,
 				Location: diag.Location{Path: current.RelPath, Line: 15},
+				Target:   tt.target,
 				Message:  `wikilink "` + tt.target + `" targets unsupported canvas content; rendering as plain text`,
 			}}
 			if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -495,6 +501,7 @@ func TestVaultResolverResolveWikilink_RefusesAmbiguousCanvasBasenameFallback(t *
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindUnsupportedSyntax,
 		Location: diag.Location{Path: current.RelPath, Line: 15},
+		Target:   "plan.canvas",
 		Message:  `wikilink "plan.canvas" matched multiple canvas resources after canonical lookup (archive/plan.canvas, boards/plan.canvas); refusing canonical fallback and rendering as plain text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -584,6 +591,7 @@ func TestVaultResolverResolveWikilink_MissingFragmentWarnsAndDoesNotResolve(t *t
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindDeadLink,
 		Location: diag.Location{Path: current.RelPath, Line: 21},
+		Target:   "Guide#Missing Heading",
 		Message:  `wikilink "Guide#Missing Heading" points to missing heading "Missing Heading" in "guides/guide.md"`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {

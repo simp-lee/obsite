@@ -115,7 +115,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
 			}
 		} else if targetPath != "" && r.diagnostics != nil {
-			r.diagnostics.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown attachment %q could not be resolved", raw)
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
 		}
 		return raw
 	}
