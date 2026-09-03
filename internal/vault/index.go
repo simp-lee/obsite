@@ -461,8 +461,8 @@ func extractEmbedRef(note *model.Note, scanResult ScanResult, node *gmwikilink.N
 }
 
 func resourceVersionAllowed(note *model.Note, resourceVersions map[string]string, resource string) bool {
-		versionID := resourceVersions[resource]
-		return versionID == "" || note == nil || note.VersionID == versionID
+	versionID := resourceVersions[resource]
+	return versionID == "" || note == nil || note.VersionID == versionID
 }
 
 func registerAsset(assets map[string]*model.Asset, vaultRelPath string) {
