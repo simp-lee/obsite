@@ -170,7 +170,9 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 			}
 		}
 		if cfg.Timeline.Enabled {
-			claimRoute(plan, "/"+encodePath(strings.Trim(cfg.Timeline.Path, "/"))+"/", "timeline", collector)
+			for _, route := range timelineRoutes(cfg.Timeline.Path, cfg.Pagination.PageSize, len(plan.Posts)) {
+				claimRoute(plan, route, "timeline", collector)
+			}
 		}
 	}
 
@@ -560,7 +562,13 @@ func computeEffectivePublish(sections map[string]*model.Section, versions []*mod
 }
 
 func assignSectionRoutes(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version, versionConfig *model.VersionsConfig, collector *diag.Collector) {
-	for _, section := range sections {
+	sectionPaths := make([]string, 0, len(sections))
+	for sectionPath := range sections {
+		sectionPaths = append(sectionPaths, sectionPath)
+	}
+	sort.Strings(sectionPaths)
+	for _, sectionPath := range sectionPaths {
+		section := sections[sectionPath]
 		if section == nil || !section.EffectivePublish {
 			continue
 		}
@@ -1151,6 +1159,29 @@ func breadcrumbs(section *model.Section) []model.Breadcrumb {
 	return reversed
 }
 
+func timelineRoutes(rawPath string, pageSize, total int) []string {
+	base := "/" + encodePath(strings.Trim(rawPath, "/")) + "/"
+	if pageSize <= 0 || pageSize >= total {
+		pageSize = total
+	}
+	if pageSize == 0 {
+		pageSize = 1
+	}
+	pageCount := (total + pageSize - 1) / pageSize
+	if pageCount == 0 {
+		pageCount = 1
+	}
+	routes := make([]string, 0, pageCount)
+	for page := 1; page <= pageCount; page++ {
+		route := base
+		if page > 1 {
+			route = strings.TrimSuffix(base, "/") + "/page/" + strconv.Itoa(page) + "/"
+		}
+		routes = append(routes, route)
+	}
+	return routes
+}
+
 func reservedRoutes() map[string]struct{} {
 	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output", "/.obsite-cache/", "/_popover/"}
 	result := make(map[string]struct{}, len(values))
@@ -1177,7 +1208,13 @@ func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Colle
 			return
 		}
 	}
-	for existing, existingOwner := range plan.Routes {
+	existingRoutes := make([]string, 0, len(plan.Routes))
+	for existing := range plan.Routes {
+		existingRoutes = append(existingRoutes, existing)
+	}
+	sort.Strings(existingRoutes)
+	for _, existing := range existingRoutes {
+		existingOwner := plan.Routes[existing]
 		if outputPathsConflict(destination, routeDestination(existing)) {
 			record(collector, diag.KindRoute, owner, "route %q conflicts with %q", route, existingOwner)
 			return

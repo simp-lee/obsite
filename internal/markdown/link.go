@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/markdown/headingid"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
@@ -104,11 +105,16 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		if section := lookupSectionTarget(r.index, r.sourceNote, targetPath); section != nil && inLinkVersionScope(r.sourceNote, section) {
 			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
 			if fragment != "" {
+				if id, ok := sectionFragmentID(section, fragment); ok {
+					fragment = id
+				} else if r.diagnostics != nil {
+					r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets a missing section heading", raw)})
+				}
 				href += "#" + fragment
 			}
 			return basePathDestination(r.outputNote, href)
 		}
-		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" {
+		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" && resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
 			destination := resource
 			if r.assetSink != nil {
 				if planned := r.assetSink.Register(resource); planned != "" {
@@ -149,6 +155,19 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		return raw
 	}
 	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
+}
+
+func sectionFragmentID(section *model.Section, fragment string) (string, bool) {
+	if section == nil {
+		return "", false
+	}
+	canonical := headingid.CanonicalText(fragment)
+	for _, heading := range section.Headings {
+		if headingid.CanonicalText(heading.ID) == canonical || headingid.CanonicalText(heading.Text) == canonical {
+			return heading.ID, heading.ID != ""
+		}
+	}
+	return "", false
 }
 
 func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target string) *model.Section {

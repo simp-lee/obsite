@@ -87,6 +87,16 @@ func CandidatePathsWithAttachmentFolder(note *model.Note, attachmentFolderPath s
 	return internalasset.CandidatePaths(note, attachmentFolderPath, rawTarget)
 }
 
+// IsResourceAllowedForNote reports whether a resource belongs to the note's
+// version scope. Empty scope means the resource is shared site content.
+func IsResourceAllowedForNote(idx *model.VaultIndex, note *model.Note, resource string) bool {
+	if idx == nil {
+		return false
+	}
+	versionID := idx.ResourceVersions[resource]
+	return versionID == "" || note == nil || note.VersionID == versionID
+}
+
 // LooksLikeImage reports whether a target resolves to a supported image type.
 func LooksLikeImage(rawTarget string) bool {
 	return internalasset.HasImageExtension(rawTarget)

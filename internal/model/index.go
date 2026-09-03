@@ -29,6 +29,7 @@ type VaultIndex struct {
 	AssetLookup          map[string]string
 	Resources            map[string]string
 	ResourceBaseNames    map[string]string
+	ResourceVersions     map[string]string
 	Unpublished          UnpublishedLookup
 
 	lookupMu                  sync.RWMutex

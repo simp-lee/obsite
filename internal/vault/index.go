@@ -2,6 +2,7 @@ package vault
 
 import (
 	"fmt"
+	"path"
 	"runtime"
 	"sort"
 	"strconv"
@@ -121,6 +122,7 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	}
 	idx.SetAssets(idx.Assets)
 	idx.SetResources(scanResult.ResourceFiles)
+	idx.ResourceVersions = resourceVersionMap(scanResult.ResourceFiles, publicSections)
 	sectionNotes := make([]*model.Note, 0, len(publicSections))
 	for _, section := range publicSections {
 		if section != nil {
@@ -159,6 +161,25 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	idx.SetAssets(idx.Assets)
 	idx.Tags = buildTagIndex(public)
 	return IndexResult{Index: idx, RelatedSemantic: relatedSemantic}, nil
+}
+
+func resourceVersionMap(resourceFiles []string, sections []*model.Section) map[string]string {
+	result := make(map[string]string)
+	for _, resource := range resourceFiles {
+		physical := path.Dir(resource)
+		bestDepth := -1
+		for _, section := range sections {
+			if section == nil || section.VersionID == "" || physical != section.RelPath && !strings.HasPrefix(physical, section.RelPath+"/") {
+				continue
+			}
+			depth := len(strings.Split(section.RelPath, "/"))
+			if depth > bestDepth {
+				result[resource] = section.VersionID
+				bestDepth = depth
+			}
+		}
+	}
+	return result
 }
 
 func indexPublicNotes(

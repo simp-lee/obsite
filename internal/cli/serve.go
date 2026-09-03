@@ -304,7 +304,7 @@ func (loop *serveWatchLoop) addVaultTree(root string) error {
 		}
 
 		cleanPath := filepath.Clean(current)
-		if loop.pathIsOutput(cleanPath) {
+		if loop.pathIsOutput(cleanPath) || loop.pathIsOutputTransaction(cleanPath) {
 			return filepath.SkipDir
 		}
 		if !loop.shouldWatchVaultDirectory(cleanPath) {
@@ -404,7 +404,7 @@ func (loop *serveWatchLoop) shouldRetainBaseWatchDir(path string) bool {
 
 func (loop *serveWatchLoop) addNewDirectoryWatch(path string) error {
 	cleanPath := filepath.Clean(path)
-	if cleanPath == "" || loop.pathIsOutput(cleanPath) {
+	if cleanPath == "" || loop.pathIsOutput(cleanPath) || loop.pathIsOutputTransaction(cleanPath) {
 		return nil
 	}
 
@@ -567,7 +567,7 @@ func (loop *serveWatchLoop) shouldTrigger(path string, op fsnotify.Op, wasWatche
 	if !hasRelevantWatchOp(op) {
 		return false
 	}
-	if path == "" || loop.pathIsOutput(path) {
+	if path == "" || loop.pathIsOutput(path) || loop.pathIsOutputTransaction(path) {
 		return false
 	}
 	cleanPath := filepath.Clean(path)
@@ -699,6 +699,9 @@ func (loop *serveWatchLoop) shouldWatchVaultDirectory(path string) bool {
 	if relPath == "." || relPath == ".obsidian" {
 		return true
 	}
+	if loop.pathIsOutputTransaction(path) {
+		return false
+	}
 
 	parts := splitWatchPath(relPath)
 	for _, part := range parts {
@@ -715,6 +718,20 @@ func (loop *serveWatchLoop) pathIsOutput(path string) bool {
 		return false
 	}
 	return pathWithinRoot(loop.outputPath, path)
+}
+
+func (loop *serveWatchLoop) pathIsOutputTransaction(candidate string) bool {
+	if loop == nil || strings.TrimSpace(loop.outputPath) == "" {
+		return false
+	}
+	candidate = filepath.Clean(candidate)
+	if filepath.Dir(candidate) != filepath.Dir(filepath.Clean(loop.outputPath)) {
+		return false
+	}
+	base := filepath.Base(filepath.Clean(loop.outputPath))
+	name := filepath.Base(candidate)
+	prefix := "." + base + "-obsite-"
+	return strings.HasPrefix(name, prefix)
 }
 
 func (loop *serveWatchLoop) pathWithinVault(path string) bool {

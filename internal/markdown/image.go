@@ -237,7 +237,11 @@ func (r *imageHTMLRenderer) resolveIndexedAssetPath(rawDestination string) strin
 		return ""
 	}
 
-	return resourcepath.ResolveIndexedAssetPath(r.sourceNote, r.index, rawDestination)
+	resource := resourcepath.ResolveIndexedAssetPath(r.sourceNote, r.index, rawDestination)
+	if !resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
+		return ""
+	}
+	return resource
 }
 
 type codeBlockExtender struct {

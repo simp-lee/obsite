@@ -168,7 +168,7 @@ func hashedAssetPathForBase(baseName string, suffix string) string {
 		stem = baseName
 	}
 
-	return path.Join(outputDirPrefix, encodeAssetSegment(stem)+"."+suffix+ext)
+	return path.Join(outputDirPrefix, encodeAssetSegment(stem)+"."+suffix+encodeAssetSegment(ext))
 }
 
 func encodeAssetSegment(value string) string {

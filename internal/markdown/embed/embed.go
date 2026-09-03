@@ -421,7 +421,11 @@ func resolveImageAssetPath(note *model.Note, idx *model.VaultIndex, target strin
 }
 
 func lookupImageAssetPath(note *model.Note, idx *model.VaultIndex, target string) model.PathLookupResult {
-	return resourcepath.LookupIndexedImageEmbedAssetPath(note, idx, target)
+	result := resourcepath.LookupIndexedImageEmbedAssetPath(note, idx, target)
+	if !resourcepath.IsResourceAllowedForNote(idx, note, result.Path) {
+		return model.PathLookupResult{Ambiguous: result.Ambiguous}
+	}
+	return result
 }
 
 func (r *wikilinkHTMLRenderer) isVisited(note *model.Note, fragmentID string) bool {
