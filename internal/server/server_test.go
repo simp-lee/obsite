@@ -1112,6 +1112,33 @@ func TestServerLiveReloadEndpointStreamsReloadEvent(t *testing.T) {
 	}
 }
 
+func TestServerServesGeneratedBasePath(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "index.html", `<html data-obsite-base-path="/docs/"><body>home</body></html>`)
+	writeServerTestFile(t, outputPath, "style.css", "body{}")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+
+	for _, target := range []string{"/docs/", "/docs/style.css"} {
+		resp, err := ts.Client().Get(ts.URL + target)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", target, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			closeServerResponseBody(t, resp)
+			t.Fatalf("GET %s status = %d, want 200", target, resp.StatusCode)
+		}
+		closeServerResponseBody(t, resp)
+	}
+}
+
 func writeServerTestFile(t *testing.T, root string, relPath string, contents string) {
 	t.Helper()
 

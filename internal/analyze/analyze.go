@@ -46,7 +46,7 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 	if planned == nil {
 		collector := diagnostic.NewCollector()
 		if err != nil {
-			collector.Errorf(diagnostic.KindSchema, analyzeErrorLocation(vaultPath, err), "%v", err)
+			collector.Add(analyzeErrorDiagnostic(vaultPath, err))
 		}
 		return Result{Diagnostics: collector.Diagnostics()}, err
 	}
@@ -54,9 +54,27 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 }
 
 var (
-	analyzeErrorPathPattern = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
-	analyzeErrorLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
+	analyzeErrorPathPattern   = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
+	analyzeErrorLinePattern   = regexp.MustCompile(`\bline ([0-9]+)\b`)
+	analyzeErrorFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"`)
+	analyzeErrorTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset) "([^"]+)"`)
 )
+
+func analyzeErrorDiagnostic(vaultPath string, err error) diagnostic.Diagnostic {
+	item := diagnostic.Diagnostic{Severity: diagnostic.SeverityError, Kind: diagnostic.KindSchema, Location: analyzeErrorLocation(vaultPath, err)}
+	if err == nil {
+		return item
+	}
+	message := err.Error()
+	if match := analyzeErrorFieldPattern.FindStringSubmatch(message); len(match) == 2 {
+		item.Field = match[1]
+	}
+	if match := analyzeErrorTargetPattern.FindStringSubmatch(message); len(match) == 2 {
+		item.Target = match[1]
+	}
+	item.Message = message
+	return item
+}
 
 func analyzeErrorLocation(vaultPath string, err error) diagnostic.Location {
 	location := diagnostic.Location{Path: filepath.Join(vaultPath, "obsite.yaml")}

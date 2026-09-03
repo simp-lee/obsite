@@ -66,8 +66,9 @@ func TestStrictBuildPublishesBannersAndIndependentSocialCards(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("social outputs = %v, err=%v", entries, err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "assets", "banner.png")); err != nil {
-		t.Fatal(err)
+	bannerEntries, err := filepath.Glob(filepath.Join(output, "assets", "banner.*.png"))
+	if err != nil || len(bannerEntries) != 1 {
+		t.Fatalf("content-addressed banner outputs = %v, err=%v", bannerEntries, err)
 	}
 }
 

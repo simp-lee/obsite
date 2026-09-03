@@ -19,11 +19,11 @@ func TestStrictBuildUsesCanonicalRoutesForNestedMarkdownLinks(t *testing.T) {
 	if !bytes.Contains(page, []byte(`href=../../reference/`)) {
 		t.Fatalf("nested link did not use canonical target route:\n%s", page)
 	}
-	if !bytes.Contains(page, []byte(`href=../../assets/manual%20file.pdf`)) {
+	if !bytes.Contains(page, []byte(`href=../../assets/manual%20file.`)) {
 		t.Fatalf("nested attachment link did not use the asset planner:\n%s", page)
 	}
-	if _, err := os.Stat(filepath.Join(output, "assets", "manual%20file.pdf")); err != nil {
-		t.Fatalf("missing published attachment: %v", err)
+	if entries, err := filepath.Glob(filepath.Join(output, "assets", "manual%20file.*.pdf")); err != nil || len(entries) != 1 {
+		t.Fatalf("missing published content-addressed attachment: %v, err=%v", entries, err)
 	}
 	if !bytes.Contains(page, []byte(`data-popover-path=reference.md`)) {
 		t.Fatalf("nested link did not receive its popover target:\n%s", page)

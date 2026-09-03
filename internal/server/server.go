@@ -7,6 +7,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +34,7 @@ type Server struct {
 	realOutputPath string
 	port           int
 	notFoundPath   string
+	basePath       string
 	liveReload     *liveReloadHub
 }
 
@@ -67,6 +69,7 @@ func New(outputPath string, port int) (*Server, error) {
 		fileServer:     http.FileServer(http.Dir(normalizedOutputPath)),
 		realOutputPath: realOutputPath,
 		port:           normalizedPort,
+		basePath:       detectOutputBasePath(normalizedOutputPath),
 	}
 
 	notFoundPath := filepath.Join(normalizedOutputPath, "404.html")
@@ -124,7 +127,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if requestPath == "" {
 		requestPath = r.URL.Path
 	}
-	if cleanPath, _ := cleanRequestPath(requestPath); cleanPath == liveReloadEndpoint && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
+	if cleanPath, _ := cleanRequestPath(requestPath); cleanPath == s.externalOutputPath(liveReloadEndpoint) && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
 		s.serveLiveReload(w, r)
 		return
 	}
@@ -157,8 +160,12 @@ func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath
 	}
 
 	cleanPath, _ := cleanRequestPath(requestPath)
-	resolvedPath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(cleanPath, "/")))
-	if cleanPath == "/" {
+	outputPath, ok := s.outputPathForRequest(cleanPath)
+	if !ok {
+		return "", ""
+	}
+	resolvedPath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(outputPath, "/")))
+	if outputPath == "/" {
 		resolvedPath = s.outputPath
 	}
 	realPath, info, err := s.resolveExistingOutputPath(resolvedPath)
@@ -171,19 +178,20 @@ func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath
 			return "", ""
 		}
 
-		canonicalPath := ensureDirectoryPath(cleanPath)
+		canonicalPath := s.externalOutputPath(ensureDirectoryPath(outputPath))
 		if requestPath != canonicalPath {
 			return "", canonicalPath
 		}
 
-		return canonicalPath, ""
+		return ensureDirectoryPath(outputPath), ""
 	}
 
-	if requestPath != cleanPath {
-		return "", cleanPath
+	canonicalPath := s.externalOutputPath(outputPath)
+	if requestPath != canonicalPath {
+		return "", canonicalPath
 	}
 
-	return cleanPath, ""
+	return outputPath, ""
 }
 
 func (s *Server) serveNotFound(w http.ResponseWriter, r *http.Request) {
@@ -192,9 +200,9 @@ func (s *Server) serveNotFound(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body = injectPreviewBaseHref(body)
+	body = injectPreviewBaseHrefAt(body, s.basePath)
 	if s.liveReload != nil {
-		body = injectLiveReloadScript(body)
+		body = injectLiveReloadScriptAt(body, s.basePath)
 	}
 	if len(body) == 0 {
 		http.NotFound(w, r)
@@ -296,7 +304,7 @@ func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, s
 	headers := cloneHeaders(recorder.Header())
 	headers.Set("Cache-Control", "no-store")
 	if statusCode != http.StatusPartialContent && !requestHasRange(r) && shouldInjectLiveReload(headers, body) {
-		body = injectLiveReloadScript(body)
+		body = injectLiveReloadScriptAt(body, s.basePath)
 		headers.Set("Content-Length", strconv.Itoa(len(body)))
 		clearRangeHeaders(headers)
 	}
@@ -349,6 +357,63 @@ func clearRangeHeaders(headers http.Header) {
 
 	headers.Del("Accept-Ranges")
 	headers.Del("Content-Range")
+}
+
+var outputBasePathPattern = regexp.MustCompile(`data-obsite-base-path=(?:"([^"]*)"|'([^']*)'|([^\s>]+))`)
+
+func detectOutputBasePath(outputPath string) string {
+	data, err := os.ReadFile(filepath.Join(outputPath, "index.html"))
+	if err != nil {
+		return "/"
+	}
+	match := outputBasePathPattern.FindSubmatch(data)
+	if len(match) != 4 {
+		return "/"
+	}
+	candidate := ""
+	for _, value := range match[1:] {
+		if len(value) > 0 {
+			candidate = strings.TrimSpace(string(value))
+			break
+		}
+	}
+	if candidate == "" || !strings.HasPrefix(candidate, "/") || strings.ContainsAny(candidate, "\\\"<>") {
+		return "/"
+	}
+	cleaned, _ := cleanRequestPath(candidate)
+	return ensureDirectoryPath(cleaned)
+}
+
+func (s *Server) outputPathForRequest(cleanPath string) (string, bool) {
+	if s == nil {
+		return "", false
+	}
+	base := s.basePath
+	if base == "" || base == "/" {
+		return cleanPath, true
+	}
+	baseRoot := strings.TrimSuffix(base, "/")
+	if cleanPath == baseRoot {
+		return "/", true
+	}
+	if !strings.HasPrefix(cleanPath, base) {
+		return "", false
+	}
+	relative := strings.TrimPrefix(cleanPath, baseRoot)
+	if relative == "" {
+		return "/", true
+	}
+	if !strings.HasPrefix(relative, "/") {
+		return "", false
+	}
+	return relative, true
+}
+
+func (s *Server) externalOutputPath(outputPath string) string {
+	if s == nil || s.basePath == "" || s.basePath == "/" {
+		return outputPath
+	}
+	return strings.TrimSuffix(s.basePath, "/") + outputPath
 }
 
 func normalizeOutputPath(outputPath string) (string, error) {
@@ -470,9 +535,15 @@ func normalizePort(port int) int {
 }
 
 func injectPreviewBaseHref(body []byte) []byte {
+	return injectPreviewBaseHrefAt(body, "/")
+}
+
+func injectPreviewBaseHrefAt(body []byte, basePath string) []byte {
 	if len(body) == 0 {
 		return body
 	}
+	basePath = ensureDirectoryPath(basePath)
+	baseTag := []byte(`<base href="` + basePath + `">`)
 
 	insertAt, baseStart, baseEnd, hasBase, ok := previewBaseRewriteRange(body)
 	if !ok {
@@ -480,17 +551,18 @@ func injectPreviewBaseHref(body []byte) []byte {
 	}
 
 	if hasBase {
-		withBase := make([]byte, 0, len(body)-(baseEnd-baseStart)+len(`<base href="/">`))
+		withBase := make([]byte, 0, len(body)-(baseEnd-baseStart)+len(baseTag))
 		withBase = append(withBase, body[:baseStart]...)
-		withBase = append(withBase, []byte(`<base href="/">`)...)
+		withBase = append(withBase, baseTag...)
 		withBase = append(withBase, body[baseEnd:]...)
 
 		return withBase
 	}
 
-	withBase := make([]byte, 0, len(body)+len("\n  <base href=\"/\">"))
+	withBase := make([]byte, 0, len(body)+len(baseTag)+1)
 	withBase = append(withBase, body[:insertAt]...)
-	withBase = append(withBase, []byte("\n  <base href=\"/\">")...)
+	withBase = append(withBase, '\n')
+	withBase = append(withBase, baseTag...)
 	withBase = append(withBase, body[insertAt:]...)
 
 	return withBase
@@ -588,6 +660,10 @@ func isImplicitHeadElement(token xhtml.Token) bool {
 }
 
 func injectLiveReloadScript(body []byte) []byte {
+	return injectLiveReloadScriptAt(body, "/")
+}
+
+func injectLiveReloadScriptAt(body []byte, basePath string) []byte {
 	if len(body) == 0 {
 		return body
 	}
@@ -610,12 +686,18 @@ func injectLiveReloadScript(body []byte) []byte {
 	if insertAt > 0 && body[insertAt-1] != '\n' {
 		withScript = append(withScript, '\n')
 	}
-	withScript = append(withScript, liveReloadScript...)
+	withScript = append(withScript, liveReloadScriptAt(basePath)...)
 	if insertAt < len(body) {
 		withScript = append(withScript, body[insertAt:]...)
 	}
 
 	return withScript
+}
+
+func liveReloadScriptAt(basePath string) []byte {
+	basePath = ensureDirectoryPath(basePath)
+	endpoint := basePath + strings.TrimPrefix(liveReloadEndpoint, "/")
+	return []byte(`<script data-obsite-livereload>(function(){if(!window.EventSource){return;}var source=new EventSource("` + endpoint + `?obsite-live-reload=1");source.onmessage=function(event){if(event.data==="reload"){source.close();window.location.reload();}};})();</script>`)
 }
 
 func containsLiveReloadScriptTag(lowerBody []byte) bool {

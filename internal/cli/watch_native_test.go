@@ -139,7 +139,6 @@ func TestFSNotifyWatchLoopRebuildsFixedInputsAndExcludesOutput(t *testing.T) {
 	for filePath := range map[string]struct{}{
 		filepath.Join(output, "index.html"):                 {},
 		filepath.Join(vault, "node_modules", "ignored.md"):  {},
-		filepath.Join(vault, ".hidden", "ignored.md"):       {},
 		filepath.Join(vault, ".obsite", "ignored.txt"):      {},
 		filepath.Join(vault, ".obsidian", "workspace.json"): {},
 	} {

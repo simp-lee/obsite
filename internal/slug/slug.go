@@ -47,6 +47,32 @@ func Canonicalize(input string) string {
 	return canonicalize(input)
 }
 
+// EncodePath applies the shared RFC 3986 segment encoding used by generated
+// routes and output filenames while retaining slash separators.
+func EncodePath(value string) string {
+	parts := strings.Split(value, "/")
+	for index, part := range parts {
+		parts[index] = EncodeSegment(norm.NFKC.String(part))
+	}
+	return strings.Join(parts, "/")
+}
+
+// EncodeSegment percent-encodes one UTF-8 URL path segment.
+func EncodeSegment(value string) string {
+	const hex = "0123456789ABCDEF"
+	var builder strings.Builder
+	for _, b := range []byte(value) {
+		if b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~' {
+			builder.WriteByte(b)
+			continue
+		}
+		builder.WriteByte('%')
+		builder.WriteByte(hex[b>>4])
+		builder.WriteByte(hex[b&0x0f])
+	}
+	return builder.String()
+}
+
 // Generate returns the normalized slug for a note.
 //
 // If frontmatterSlug is provided, it is authoritative. Otherwise the file stem
@@ -151,7 +177,6 @@ func GenerateArticleSegment(explicit *string, relPath string) (string, error) {
 		return "", err
 	} else if separator {
 		base = base[len(prefix):]
-		base = strings.TrimLeft(base, "-_ .")
 	}
 	base = norm.NFKC.String(base)
 	if strings.TrimSpace(base) == "" {

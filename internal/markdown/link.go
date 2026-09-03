@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"fmt"
 	"net/url"
 	"path"
 	"strings"
@@ -45,11 +46,15 @@ func (r *strictLinkRenderer) RegisterFuncs(register renderer.NodeRendererFuncReg
 func (r *strictLinkRenderer) renderLink(w util.BufWriter, source []byte, node gast.Node, entering bool) (gast.WalkStatus, error) {
 	link := node.(*gast.Link)
 	if entering {
-		destination := r.rewriteDestination(strings.TrimSpace(string(link.Destination)), lineForLink(source, link))
+		line := lineForLink(source, link)
+		if r.sourceNote != nil && r.sourceNote.BodyStartLine > 1 {
+			line += r.sourceNote.BodyStartLine - 1
+		}
+		destination := r.rewriteDestination(strings.TrimSpace(string(link.Destination)), line)
 		_, _ = w.WriteString(`<a href="`)
-		escaped := util.URLEscape([]byte(destination), true)
-		if r.Unsafe || !gmhtml.IsDangerousURL(escaped) {
-			_, _ = w.Write(util.EscapeHTML(escaped))
+		escaped := escapeDestination(destination)
+		if r.Unsafe || !gmhtml.IsDangerousURL([]byte(escaped)) {
+			_, _ = w.Write(util.EscapeHTML([]byte(escaped)))
 		}
 		_ = w.WriteByte('"')
 		if len(link.Title) > 0 {
@@ -83,9 +88,6 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	if targetPath != "" && strings.HasPrefix(targetPath, "/") {
 		return raw
 	}
-	if targetPath != "" && !strings.HasSuffix(strings.ToLower(targetPath), ".md") && !strings.Contains(targetPath, "/") && fragment == "" {
-		return raw
-	}
 	vaultPath := path.Clean(path.Join(path.Dir(r.sourceNote.RelPath), targetPath))
 	if targetPath == "" {
 		vaultPath = ""
@@ -110,7 +112,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
 			if r.diagnostics != nil {
-				r.diagnostics.Warningf(diag.KindDeadLink, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown link %q could not be resolved", raw)
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
 			}
 		} else if targetPath != "" && r.diagnostics != nil {
 			r.diagnostics.Warningf(diag.KindUnresolvedAsset, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown attachment %q could not be resolved", raw)
@@ -119,17 +121,44 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	}
 	if lookup.Unpublished {
 		if r.diagnostics != nil {
-			r.diagnostics.Warningf(diag.KindDeadLink, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown link %q targets unpublished content", raw)
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets unpublished content", raw)})
 		}
 		return raw
 	}
 	if lookup.MissingFragment {
 		if r.diagnostics != nil {
-			r.diagnostics.Warningf(diag.KindDeadLink, diag.Location{Path: r.sourceNote.RelPath, Line: line}, "markdown link %q targets a missing fragment", raw)
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets a missing fragment", raw)})
 		}
 		return raw
 	}
 	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
+}
+
+func escapeDestination(value string) string {
+	const hex = "0123456789ABCDEF"
+	var builder strings.Builder
+	for index := 0; index < len(value); index++ {
+		current := value[index]
+		if current == '%' && index+2 < len(value) && isHex(value[index+1]) && isHex(value[index+2]) {
+			builder.WriteByte('%')
+			builder.WriteByte(value[index+1])
+			builder.WriteByte(value[index+2])
+			index += 2
+			continue
+		}
+		if current >= 'A' && current <= 'Z' || current >= 'a' && current <= 'z' || current >= '0' && current <= '9' || strings.ContainsRune("-._~:/?#[]@!$&'()*+,;=", rune(current)) {
+			builder.WriteByte(current)
+			continue
+		}
+		builder.WriteByte('%')
+		builder.WriteByte(hex[current>>4])
+		builder.WriteByte(hex[current&0x0f])
+	}
+	return builder.String()
+}
+
+func isHex(value byte) bool {
+	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
 }
 
 func lineForLink(source []byte, link *gast.Link) int {

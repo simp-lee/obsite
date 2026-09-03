@@ -137,7 +137,7 @@ func Generate(input Input) (Result, error) {
 		metadata = append(metadata, input.Status)
 	}
 	for index, value := range metadata {
-		if err := drawTextColor(canvas, 72, 540+index*24, value, 24, maxWidth, secondary); err != nil {
+		if err := drawTextColor(canvas, 72, 478+index*24, value, 24, maxWidth, secondary); err != nil {
 			return Result{}, err
 		}
 	}

@@ -1492,3 +1492,101 @@ samp {
   max-height: 280px;
   object-fit: cover;
 }
+
+/* Strict section pages use the same fixed shell with a small, server-rendered
+   layout. Keep the authored navigation usable before the runtime is ready. */
+.site-body {
+  display: block;
+}
+
+.site-frame {
+  width: min(100% - 2.5rem, 78rem);
+  margin: 0 auto;
+  padding: 2.5rem 0 3rem;
+}
+
+.site-masthead {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(16rem, 0.75fr);
+  gap: 1.5rem 2rem;
+  align-items: end;
+  padding-bottom: 1.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.site-header .site-title {
+  display: inline-block;
+  color: var(--ink-strong);
+  text-decoration: none;
+}
+
+.site-header nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.7rem 1rem;
+  justify-content: flex-end;
+}
+
+.site-header .theme-toggle {
+  margin-left: auto;
+}
+
+.site-main {
+  min-width: 0;
+}
+
+.site-content {
+  min-width: 0;
+}
+
+.site-body[data-sidebar-ready="true"] .site-main {
+  display: grid;
+  grid-template-columns: minmax(15rem, var(--sidebar-width)) minmax(0, 1fr);
+  gap: 1.5rem 2rem;
+  align-items: start;
+}
+
+.site-body[data-sidebar-ready="true"] .site-content {
+  min-width: 0;
+}
+
+@media (max-width: 56rem) {
+  .site-frame {
+    width: min(100% - 1.6rem, 78rem);
+    padding-top: 1.4rem;
+  }
+
+  .site-masthead {
+    grid-template-columns: 1fr;
+  }
+
+  .site-header nav {
+    justify-content: flex-start;
+  }
+
+  .site-body:not([data-sidebar-ready="true"]) .sidebar-shell {
+    position: static;
+    inset: auto;
+    width: auto;
+    max-width: none;
+    max-height: none;
+    transform: none;
+    overflow: visible;
+    margin-bottom: 1rem;
+  }
+
+  .site-body:not([data-sidebar-ready="true"]) .sidebar-toggle-mobile,
+  .site-body:not([data-sidebar-ready="true"]) .sidebar-overlay,
+  .site-body:not([data-sidebar-ready="true"]) .sidebar-close {
+    display: none !important;
+  }
+
+  .site-body[data-sidebar-ready="true"] .site-main {
+    display: block;
+  }
+
+  .site-body[data-sidebar-ready="true"] .sidebar-toggle-mobile {
+    display: inline-flex;
+    margin-bottom: 0.8rem;
+  }
+}

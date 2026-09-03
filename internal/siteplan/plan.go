@@ -167,7 +167,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 			}
 		}
 		if cfg.Timeline.Enabled {
-			claimRoute(plan, "/"+strings.Trim(cfg.Timeline.Path, "/")+"/", "timeline", collector)
+			claimRoute(plan, "/"+encodePath(strings.Trim(cfg.Timeline.Path, "/"))+"/", "timeline", collector)
 		}
 	}
 
@@ -179,9 +179,10 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 }
 
 var (
-	strictParsePathPattern  = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
-	strictParseLinePattern  = regexp.MustCompile(`\bline ([0-9]+)\b`)
-	strictParseFieldPattern = regexp.MustCompile(`(?:field|key) "([^"]+)"`)
+	strictParsePathPattern   = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
+	strictParseLinePattern   = regexp.MustCompile(`\bline ([0-9]+)\b`)
+	strictParseFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|(?:^| )([A-Za-z][A-Za-z0-9]*) at line`)
+	strictParseTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset) "([^"]+)"`)
 )
 
 func strictParseDiagnostic(vaultRoot string, err error) diag.Diagnostic {
@@ -196,8 +197,16 @@ func strictParseDiagnostic(vaultRoot string, err error) diag.Diagnostic {
 	if match := strictParseLinePattern.FindStringSubmatch(message); len(match) == 2 {
 		diagnostic.Location.Line, _ = strconv.Atoi(match[1])
 	}
-	if match := strictParseFieldPattern.FindStringSubmatch(message); len(match) == 2 {
-		diagnostic.Field = match[1]
+	if match := strictParseFieldPattern.FindStringSubmatch(message); len(match) > 1 {
+		for _, value := range match[1:] {
+			if value != "" {
+				diagnostic.Field = value
+				break
+			}
+		}
+	}
+	if match := strictParseTargetPattern.FindStringSubmatch(message); len(match) == 2 {
+		diagnostic.Target = match[1]
 	}
 	diagnostic.Message = message
 	return diagnostic
@@ -683,7 +692,7 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 			return
 		}
 		seen[seenKey] = struct{}{}
-		if strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !internalfsutil.IsPortableSitePath(source) {
+		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !internalfsutil.IsPortableSitePath(source) {
 			record(collector, diag.KindMetadata, source, "%s must be a normalized vault-relative local asset", kind)
 			return
 		}
@@ -749,7 +758,12 @@ func validateStrictMarkdown(plan *model.SitePlan, index *model.VaultIndex, colle
 		if section == nil {
 			continue
 		}
-		note := &model.Note{RelPath: section.SourcePath, BodyStartLine: section.BodyStartLine, RawContent: section.RawContent, Route: section.Route, Slug: strings.Trim(section.Route, "/")}
+		note := &model.Note{
+			RelPath: section.SourcePath, BodyStartLine: section.BodyStartLine, RawContent: section.RawContent,
+			Route: section.Route, Slug: strings.Trim(section.Route, "/"), Headings: section.Headings,
+			HeadingSections: section.HeadingSections, OutLinks: section.OutLinks, Embeds: section.Embeds,
+			ImageRefs: section.ImageRefs, HasMath: section.HasMath, HasMermaid: section.HasMermaid,
+		}
 		validateStrictMarkdownNote(index, note, collector)
 	}
 }
@@ -814,8 +828,12 @@ func buildVersionCorrespondence(versions []*model.Version) {
 			for _, article := range section.Articles {
 				rel := strings.TrimPrefix(article.RelPath, version.Source)
 				rel = strings.TrimPrefix(rel, "/")
-				key := fold(path.Join(path.Dir(rel), article.Slug))
-				items[key] = article
+				segment, err := slug.GenerateArticleSegment(nil, rel)
+				if err != nil {
+					items[fold(rel)] = article
+					continue
+				}
+				items[fold(path.Join(path.Dir(rel), segment))] = article
 			}
 		}
 		byVersionPath[version.ID] = items
@@ -900,6 +918,10 @@ func articleLess(left, right *model.Note) bool {
 	if left == nil || right == nil {
 		return left != nil
 	}
+	leftType, rightType := articleTypeRank(left.Frontmatter.Type), articleTypeRank(right.Frontmatter.Type)
+	if leftType != rightType {
+		return leftType < rightType
+	}
 	if left.Frontmatter.Type == "doc" && right.Frontmatter.Type == "doc" {
 		lo, ro := left.Frontmatter.Order, right.Frontmatter.Order
 		if (lo != nil) != (ro != nil) {
@@ -923,11 +945,24 @@ func articleLess(left, right *model.Note) bool {
 	if lt != rt {
 		return lt < rt
 	}
-	leftPath, rightPath := norm.NFKC.String(left.RelPath), norm.NFKC.String(right.RelPath)
+	leftPath, rightPath := fold(left.RelPath), fold(right.RelPath)
 	if leftPath != rightPath {
 		return leftPath < rightPath
 	}
 	return left.RelPath < right.RelPath
+}
+
+func articleTypeRank(typeName string) int {
+	switch typeName {
+	case "doc":
+		return 0
+	case "post":
+		return 1
+	case "page":
+		return 2
+	default:
+		return 3
+	}
 }
 
 func numericPrefixValue(prefix string) int64 {

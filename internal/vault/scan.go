@@ -19,6 +19,7 @@ const (
 	obsidianConfigDir  = ".obsidian"
 	obsidianAppJSON    = ".obsidian/app.json"
 	nodeModulesDirName = "node_modules"
+	obsiteDirName      = ".obsite"
 )
 
 // ScanResult is the Step 11 handoff for later frontmatter parsing and index building.
@@ -300,10 +301,7 @@ func hasSkippedPathSegment(relPath string) bool {
 }
 
 func shouldSkipPathSegment(name string) bool {
-	if name == obsidianConfigDir || name == nodeModulesDirName {
-		return true
-	}
-	return isHiddenName(name)
+	return name == obsidianConfigDir || name == nodeModulesDirName || name == obsiteDirName
 }
 
 func isHiddenName(name string) bool {

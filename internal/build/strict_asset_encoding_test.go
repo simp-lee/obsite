@@ -1,9 +1,9 @@
 package build
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,11 +25,12 @@ func TestStrictBuildPublishesEncodedAssetPathsForPreviewServing(t *testing.T) {
 	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(output, "assets", "My%20Banner.png")); err != nil {
-		t.Fatalf("encoded asset missing: %v", err)
+	entries, err := filepath.Glob(filepath.Join(output, "assets", "my%20banner.*.png"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("encoded content-addressed asset missing: %v, err=%v", entries, err)
 	}
 	page := readBuildOutputFile(t, output, "index.html")
-	if !bytes.Contains(page, []byte("/assets/My%20Banner.png")) {
+	if !strings.Contains(string(page), "/assets/my%20banner.") {
 		t.Fatalf("page did not link encoded asset:\n%s", page)
 	}
 }

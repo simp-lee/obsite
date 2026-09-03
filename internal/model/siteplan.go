@@ -29,6 +29,13 @@ type Section struct {
 	Posts            []*Note
 	Pages            []*Note
 	Breadcrumbs      []Breadcrumb
+	Headings         []Heading
+	HeadingSections  map[string]SectionRange
+	OutLinks         []LinkRef
+	Embeds           []EmbedRef
+	ImageRefs        []ImageRef
+	HasMath          bool
+	HasMermaid       bool
 }
 
 // Version is one independently planned version tree.

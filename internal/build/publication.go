@@ -78,7 +78,12 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	writeContent := content
 	hash := sha256.Sum256(content)
 	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.Signature == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
-		if previousContent, err := os.ReadFile(filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))); err == nil {
+		previousPath := filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))
+		if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
+			registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+			return nil
+		}
+		if previousContent, err := os.ReadFile(previousPath); err == nil {
 			writeContent = previousContent
 		}
 	}
@@ -86,6 +91,26 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 		return err
 	}
 	registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+	return nil
+}
+
+func linkCachedOutput(previousPath, outputRoot, relPath string) error {
+	if strings.TrimSpace(previousPath) == "" || strings.TrimSpace(outputRoot) == "" {
+		return os.ErrNotExist
+	}
+	if _, err := os.Stat(previousPath); err != nil {
+		return err
+	}
+	cleanRelPath, destination, err := resolveOutputWritePath(outputRoot, relPath)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+		return err
+	}
+	if err := os.Link(previousPath, destination); err != nil {
+		return fmt.Errorf("link cached output %q: %w", cleanRelPath, err)
+	}
 	return nil
 }
 

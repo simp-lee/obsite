@@ -43,6 +43,12 @@ type sharedRuntimeFile struct {
 	data       []byte
 }
 
+// RuntimeAsset is one fixed offline runtime file ready for owner-registry publication.
+type RuntimeAsset struct {
+	OutputPath string
+	Data       []byte
+}
+
 var loadSharedRuntimeFile = sync.OnceValues(func() (sharedRuntimeFile, error) {
 	data, err := readEmbeddedAsset("runtime.js")
 	if err != nil {
@@ -52,14 +58,23 @@ var loadSharedRuntimeFile = sync.OnceValues(func() (sharedRuntimeFile, error) {
 	return sharedRuntimeFile{outputPath: fmt.Sprintf("assets/obsite/runtime.%x.js", hash), data: data}, nil
 })
 
+// StyleCSSData returns the fixed built-in stylesheet for owner-registry publication.
+func StyleCSSData() ([]byte, error) {
+	data, err := readEmbeddedAsset("style.css")
+	if err != nil {
+		return nil, fmt.Errorf("read style.css: %w", err)
+	}
+	return append([]byte(nil), data...), nil
+}
+
 // EmitStyleCSS writes the fixed built-in stylesheet into the output root.
 func EmitStyleCSS(outputRoot string) (bool, error) {
 	if strings.TrimSpace(outputRoot) == "" {
 		return false, errors.New("emit style.css: output root is required")
 	}
-	data, err := readEmbeddedAsset("style.css")
+	data, err := StyleCSSData()
 	if err != nil {
-		return false, fmt.Errorf("emit style.css: %w", err)
+		return false, err
 	}
 	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
 		return false, fmt.Errorf("emit style.css: mkdir %q: %w", outputRoot, err)
@@ -70,25 +85,39 @@ func EmitStyleCSS(outputRoot string) (bool, error) {
 	return true, nil
 }
 
+// RuntimeAssetData returns all fixed offline runtime files for owner-registry publication.
+func RuntimeAssetData() ([]RuntimeAsset, error) {
+	result := make([]RuntimeAsset, 0, len(runtimeTemplateAssets)+1)
+	for _, asset := range runtimeTemplateAssets {
+		data, err := readEmbeddedAsset(asset.name)
+		if err != nil {
+			return nil, fmt.Errorf("read runtime asset %s: %w", asset.name, err)
+		}
+		result = append(result, RuntimeAsset{OutputPath: asset.outputPath, Data: append([]byte(nil), data...)})
+	}
+	runtimeFile, err := loadSharedRuntimeFile()
+	if err != nil {
+		return nil, fmt.Errorf("read shared runtime: %w", err)
+	}
+	result = append(result, RuntimeAsset{OutputPath: runtimeFile.outputPath, Data: append([]byte(nil), runtimeFile.data...)})
+	return result, nil
+}
+
 // EmitRuntimeAssets writes all fixed offline runtime and vendor assets once.
 func EmitRuntimeAssets(outputRoot string) error {
 	if strings.TrimSpace(outputRoot) == "" {
 		return errors.New("emit runtime assets: output root is required")
 	}
-	for _, asset := range runtimeTemplateAssets {
-		data, err := readEmbeddedAsset(asset.name)
-		if err != nil {
-			return fmt.Errorf("emit runtime assets: %w", err)
-		}
-		if err := writeRuntimeAsset(outputRoot, asset.outputPath, data); err != nil {
+	assets, err := RuntimeAssetData()
+	if err != nil {
+		return err
+	}
+	for _, asset := range assets {
+		if err := writeRuntimeAsset(outputRoot, asset.OutputPath, asset.Data); err != nil {
 			return err
 		}
 	}
-	runtimeFile, err := loadSharedRuntimeFile()
-	if err != nil {
-		return fmt.Errorf("emit shared runtime: %w", err)
-	}
-	return writeRuntimeAsset(outputRoot, runtimeFile.outputPath, runtimeFile.data)
+	return nil
 }
 
 func writeRuntimeAsset(outputRoot, outputPath string, data []byte) error {

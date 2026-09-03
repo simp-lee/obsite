@@ -126,8 +126,28 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 		}
 	}
 	for _, indexed := range indexPublicNotes(sectionNotes, scanResult, parser, diagCollector, indexBuildOptions{concurrency: options.Concurrency}) {
-		if indexed.note != nil {
-			mergeIndexedAssets(idx.Assets, indexed.assets)
+		if indexed.note == nil {
+			continue
+		}
+		mergeIndexedAssets(idx.Assets, indexed.assets)
+		for _, section := range publicSections {
+			if section == nil || section.SourcePath != indexed.note.RelPath {
+				continue
+			}
+			section.RawContent = cloneBytes(indexed.note.RawContent)
+			section.Headings = append([]model.Heading(nil), indexed.note.Headings...)
+			if indexed.note.HeadingSections != nil {
+				section.HeadingSections = make(map[string]model.SectionRange, len(indexed.note.HeadingSections))
+				for key, value := range indexed.note.HeadingSections {
+					section.HeadingSections[key] = value
+				}
+			}
+			section.OutLinks = append([]model.LinkRef(nil), indexed.note.OutLinks...)
+			section.Embeds = append([]model.EmbedRef(nil), indexed.note.Embeds...)
+			section.ImageRefs = append([]model.ImageRef(nil), indexed.note.ImageRefs...)
+			section.HasMath = indexed.note.HasMath
+			section.HasMermaid = indexed.note.HasMermaid
+			break
 		}
 	}
 	idx.SetAssets(idx.Assets)
@@ -590,12 +610,12 @@ func recordUnresolvedMarkdownImage(
 		return
 	}
 
-	diagCollector.Warningf(
-		diag.KindUnresolvedAsset,
-		diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
-		"markdown image %q could not be resolved to a publishable vault asset",
-		strings.TrimSpace(rawTarget),
-	)
+	diagCollector.Add(diag.Diagnostic{
+		Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset,
+		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
+		Target:   rawTarget,
+		Message:  fmt.Sprintf("markdown image %q could not be resolved to a publishable vault asset", strings.TrimSpace(rawTarget)),
+	})
 }
 
 func recordAmbiguousMarkdownImage(
@@ -611,13 +631,12 @@ func recordAmbiguousMarkdownImage(
 		return
 	}
 
-	diagCollector.Warningf(
-		diag.KindUnresolvedAsset,
-		diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
-		"markdown image %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback",
-		strings.TrimSpace(rawTarget),
-		strings.Join(ambiguous, ", "),
-	)
+	diagCollector.Add(diag.Diagnostic{
+		Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset,
+		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
+		Target:   rawTarget,
+		Message:  fmt.Sprintf("markdown image %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", strings.TrimSpace(rawTarget), strings.Join(ambiguous, ", ")),
+	})
 }
 
 func shouldDiagnoseMarkdownImageTarget(note *model.Note, scanResult ScanResult, rawTarget string) bool {

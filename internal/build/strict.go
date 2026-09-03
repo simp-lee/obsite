@@ -101,7 +101,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	if plan.Config.Sidebar.Enabled {
 		payload := strictSidebarPayload{Default: strictSidebar(plan, ""), Versions: make(map[string][]model.SidebarNode)}
 		for _, version := range plan.Versions {
-			if version != nil {
+			if version != nil && version.Root != nil && version.Root.EffectivePublish && version.Root.Route != "" {
 				payload.Versions[version.ID] = strictSidebar(plan, version.ID)
 			}
 		}
@@ -188,11 +188,12 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		result.TagPages++
 	}
 	if plan.Config.Timeline.Enabled {
-		data, renderErr := render.RenderStrictTimeline(plan, plan.Config.Timeline.Path, plan.Posts)
+		timelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
+		data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, plan.Posts)
 		if renderErr != nil {
 			return result, fmt.Errorf("render timeline: %w", renderErr)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/"), "timeline", data); writeErr != nil {
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(timelineRoute), "timeline", data); writeErr != nil {
 			return result, writeErr
 		}
 	}
@@ -230,31 +231,21 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	}
 	applyStrictAssetURLs(plan, allAssets)
 	result.Assets = allAssets
-	if err := outputs.claim("style.css", "built-in CSS"); err != nil {
+	styleData, err := render.StyleCSSData()
+	if err != nil {
+		return result, fmt.Errorf("read style.css: %w", err)
+	}
+	if err := outputs.write(staging, "style.css", "built-in CSS", styleData); err != nil {
 		return result, err
 	}
-	for _, runtimePath := range render.RuntimeAssetOutputPaths() {
-		if err := outputs.claim(runtimePath, "runtime"); err != nil {
+	runtimeAssets, err := render.RuntimeAssetData()
+	if err != nil {
+		return result, fmt.Errorf("read runtime assets: %w", err)
+	}
+	for _, runtimeAsset := range runtimeAssets {
+		if err := outputs.write(staging, runtimeAsset.OutputPath, "runtime", runtimeAsset.Data); err != nil {
 			return result, err
 		}
-	}
-	if _, err := render.EmitStyleCSS(staging); err != nil {
-		return result, fmt.Errorf("emit style.css: %w", err)
-	}
-	if data, err := os.ReadFile(filepath.Join(staging, "style.css")); err == nil {
-		outputs.record("style.css", "built-in CSS", data)
-	} else {
-		return result, err
-	}
-	if err := render.EmitRuntimeAssets(staging); err != nil {
-		return result, fmt.Errorf("emit runtime assets: %w", err)
-	}
-	for _, runtimePath := range render.RuntimeAssetOutputPaths() {
-		data, err := os.ReadFile(filepath.Join(staging, filepath.FromSlash(runtimePath)))
-		if err != nil {
-			return result, err
-		}
-		outputs.record(runtimePath, "runtime", data)
 	}
 	if err := writeStrictMetadataOutputs(staging, plan, planned.Index, outputs); err != nil {
 		return result, err
@@ -360,7 +351,7 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outp
 		if err != nil {
 			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
 		}
-		if err := outputs.write(outputRoot, path.Join("_popover", relPath+".json"), "popover:"+relPath, data); err != nil {
+		if err := outputs.write(outputRoot, path.Join("_popover", slug.EncodePath(relPath)+".json"), "popover:"+relPath, data); err != nil {
 			return err
 		}
 	}
@@ -467,7 +458,7 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 		}
 	}
 	if plan != nil && plan.Config.Timeline.Enabled {
-		add("timeline", "obsite.yaml", "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/", []byte(plan.Config.Timeline.Path))
+		add("timeline", "obsite.yaml", "/"+slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/"))+"/", []byte(plan.Config.Timeline.Path))
 	}
 	if outputs != nil {
 		manifest.Entries = append(manifest.Entries, outputs.records...)
@@ -566,7 +557,7 @@ func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan, 
 		if err != nil {
 			return fmt.Errorf("read theme asset %q: %w", rel, err)
 		}
-		return outputs.write(outputRoot, path.Join("assets/theme", strings.TrimPrefix(rel, "assets/")), "theme:"+rel, data)
+		return outputs.write(outputRoot, path.Join("assets/theme", slug.EncodePath(strings.TrimPrefix(rel, "assets/"))), "theme:"+rel, data)
 	})
 }
 
@@ -644,7 +635,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 		}
 	}
 	if plan.Config.Timeline.Enabled {
-		_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+strings.Trim(plan.Config.Timeline.Path, "/")+"/")))
+		_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, "/"+slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/"))+"/")))
 	}
 	sitemap.WriteString(`</urlset>`)
 	if err := outputs.write(outputRoot, "sitemap.xml", "sitemap", []byte(sitemap.String())); err != nil {
@@ -831,7 +822,7 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 	if raw == "" {
 		return nil, nil
 	}
-	if strings.Contains(raw, `\`) || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || path.Clean(raw) != raw || strings.HasPrefix(path.Clean(raw), "../") || !internalfsutil.IsPortableSitePath(raw) {
+	if !internalasset.IsPublishableAssetPath(raw) || strings.Contains(raw, `\`) || strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || path.Clean(raw) != raw || strings.HasPrefix(path.Clean(raw), "../") || !internalfsutil.IsPortableSitePath(raw) {
 		return nil, fmt.Errorf("%s %q must be a normalized vault-relative local asset", kind, raw)
 	}
 	lower := strings.ToLower(raw)

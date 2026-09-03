@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -52,12 +53,14 @@ func CopyAssetsWithReservedPaths(vaultRoot string, outputRoot string, assets map
 			continue
 		}
 
-		dstPath := outputSitePath(asset.DstPath)
-		if isReservedOutputKey(outputSiteKey(dstPath), reservedOutputKeys) {
-			dstPath = ""
-		}
+		dstPath := assigned[srcPath]
 		if dstPath == "" {
-			dstPath = assigned[srcPath]
+			dstPath = outputSitePath(asset.DstPath)
+			if isReservedOutputKey(outputSiteKey(dstPath), reservedOutputKeys) {
+				dstPath = ""
+			}
+		}
+		if dstPath != "" {
 			asset.DstPath = dstPath
 		}
 		if dstPath == "" {
@@ -90,7 +93,6 @@ func CopyAssetsWithReservedPaths(vaultRoot string, outputRoot string, assets map
 }
 
 func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, reservedOutputKeys map[string]struct{}) map[string]string {
-	assigned := make(map[string]string, len(assets))
 	grouped := make(map[string][]string)
 
 	for key, asset := range assets {
@@ -100,11 +102,6 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, res
 		}
 		groupKey := plainAssetKey(srcPath)
 		grouped[groupKey] = append(grouped[groupKey], srcPath)
-		if asset != nil {
-			if dstPath := outputSitePath(asset.DstPath); dstPath != "" {
-				assigned[srcPath] = dstPath
-			}
-		}
 	}
 
 	planned := make(map[string]string, len(assets))
@@ -117,32 +114,14 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, res
 	for _, groupKey := range groupKeys {
 		sources := grouped[groupKey]
 		sort.Strings(sources)
-		reservedPlainPath := isReservedOutputKey(groupKey, reservedOutputKeys)
-		plainPreferredSrc := ""
-		if !reservedPlainPath {
-			plainPreferredSrc = uniqueAvailableSource(vaultRoot, sources)
-		}
 		hashed := hashCollisionPaths(vaultRoot, groupKey, sources)
 
 		if len(sources) == 1 {
-			srcPath := sources[0]
-			if srcPath == plainPreferredSrc {
-				planned[srcPath] = plainAssetPath(srcPath)
-			} else if hasAssignedHashedDestination(assigned[srcPath], groupKey, reservedOutputKeys) {
-				planned[srcPath] = hashed[srcPath]
-			} else if reservedPlainPath {
-				planned[srcPath] = hashed[srcPath]
-			} else {
-				planned[srcPath] = plainAssetPath(srcPath)
-			}
+			planned[sources[0]] = hashed[sources[0]]
 			continue
 		}
 
 		for _, srcPath := range sources {
-			if srcPath == plainPreferredSrc {
-				planned[srcPath] = plainAssetPath(srcPath)
-				continue
-			}
 			planned[srcPath] = hashed[srcPath]
 		}
 	}
@@ -190,11 +169,10 @@ func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map
 		hashes[srcPath] = hashValue
 	}
 
-	prefixLen := minimumUniqueHashPrefix(hashes)
 	planned := make(map[string]string, len(sources))
 	baseName := path.Base(groupKey)
 	for _, srcPath := range sources {
-		planned[srcPath] = hashedAssetPathForBase(baseName, hashes[srcPath][:prefixLen])
+		planned[srcPath] = hashedAssetPathForBase(baseName, hashes[srcPath])
 	}
 
 	return planned
@@ -242,7 +220,11 @@ func hashedAssetPath(srcPath string, suffix string) string {
 }
 
 func hashedAssetPathForBase(baseName string, suffix string) string {
-	baseName = strings.ToLower(path.Base(strings.TrimSpace(strings.ReplaceAll(baseName, "\\", "/"))))
+	baseName = path.Base(strings.TrimSpace(strings.ReplaceAll(baseName, "\\", "/")))
+	if decoded, err := url.PathUnescape(baseName); err == nil {
+		baseName = decoded
+	}
+	baseName = strings.ToLower(baseName)
 	if baseName == "" || baseName == "." || baseName == "/" {
 		baseName = "asset"
 	}
@@ -404,12 +386,10 @@ func shouldSkipPublishableAssetPath(relPath string) bool {
 	}
 
 	for _, segment := range strings.Split(normalized, "/") {
-		switch {
-		case segment == "":
+		switch segment {
+		case "":
 			continue
-		case segment == ".obsidian", segment == "node_modules":
-			return true
-		case strings.HasPrefix(segment, "."):
+		case ".obsidian", ".obsite", "node_modules":
 			return true
 		}
 	}

@@ -13,9 +13,9 @@ import (
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
+	"github.com/simp-lee/obsite/internal/slug"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
-	"golang.org/x/text/unicode/norm"
 )
 
 // RenderStrictSection renders the fixed shell for a normalized section page.
@@ -24,7 +24,13 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 	if plan == nil || section == nil {
 		return nil, fmt.Errorf("section page requires a plan and section")
 	}
-	content, err := strictMarkdown(index, &model.Note{RelPath: section.SourcePath, Route: section.Route, Slug: strings.Trim(section.Route, "/"), RawContent: section.RawContent}, assets)
+	sectionNote := &model.Note{
+		RelPath: section.SourcePath, Route: section.Route, Slug: strings.Trim(section.Route, "/"),
+		RawContent: section.RawContent, Headings: section.Headings, HeadingSections: section.HeadingSections,
+		OutLinks: section.OutLinks, Embeds: section.Embeds, ImageRefs: section.ImageRefs,
+		HasMath: section.HasMath, HasMermaid: section.HasMermaid,
+	}
+	content, err := strictMarkdown(index, sectionNote, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -240,7 +246,7 @@ func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex) *m
 		return nil
 	}
 	resolved := base.ResolveReference(targetURL)
-	cleaned := strings.TrimSuffix(resolved.Path, "/index.html")
+	cleaned := strings.TrimSuffix(resolved.EscapedPath(), "/index.html")
 	if cleaned == "" {
 		cleaned = "/"
 	}
@@ -427,7 +433,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/assets/theme/theme.css")))
 	}
 	output.WriteString(slots["obsite-head-end"])
-	output.WriteString(`</head><body class="site-body" data-site-body><header class="site-header"><a class="site-title" href="` + esc(strictSitePath(plan, "/")) + `">` + esc(plan.Config.Title) + `</a><button type="button" data-theme-toggle hidden aria-pressed="false"><span data-theme-toggle-value></span><span data-theme-toggle-state class="sr-only"></span><span data-theme-toggle-source class="sr-only"></span></button><nav aria-label="Global navigation">`)
+	output.WriteString(`</head><body class="site-body" data-site-body><div class="site-frame"><header class="site-masthead site-header"><div class="masthead-band"><a class="site-mark site-title" href="` + esc(strictSitePath(plan, "/")) + `">` + esc(plan.Config.Title) + `</a></div><div class="masthead-copy"><div class="masthead-actions"><button type="button" class="theme-toggle" data-theme-toggle hidden aria-pressed="false"><span class="theme-toggle-caption">Theme</span><span class="theme-toggle-value" data-theme-toggle-value></span><span data-theme-toggle-state class="sr-only"></span><span data-theme-toggle-source class="sr-only"></span></button></div><nav aria-label="Global navigation">`)
 	for _, item := range plan.Config.Navigation {
 		href, active := item.URL, false
 		ariaValue := ""
@@ -447,7 +453,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 			if strings.HasPrefix(href, "/") {
 				href = strictSitePath(plan, href)
 			}
-			active = currentRoute == item.URL
+			active = currentRoute == strictNavigationMatch(item.URL)
 			if active {
 				ariaValue = "page"
 			}
@@ -458,23 +464,23 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		}
 		_, _ = fmt.Fprintf(&output, `<a href="%s"%s>%s</a>`, esc(href), aria, esc(item.Name))
 	}
-	output.WriteString(`</nav>`)
+	output.WriteString(`</nav></div>`)
 	output.WriteString(slots["obsite-header-end"])
 	output.WriteString(`</header><main class="site-main" data-obsite-main>`)
 	if plan.Config.Sidebar.Enabled {
-		output.WriteString(`<button type="button" class="sidebar-toggle-mobile" data-sidebar-toggle hidden aria-expanded="false">Open navigation</button><aside class="sidebar-shell" data-sidebar-shell><div class="sidebar-panel-head"><strong>Navigation</strong><button type="button" class="sidebar-close" data-sidebar-close>Close navigation</button></div><nav class="sidebar" aria-label="Sidebar" data-sidebar-root>`)
+		output.WriteString(`<button type="button" class="sidebar-toggle-mobile sidebar-launch" data-sidebar-toggle hidden aria-expanded="false"><span class="sidebar-launch-icon" aria-hidden="true"></span>Open navigation</button><aside class="sidebar-shell" data-sidebar-shell><div class="sidebar-panel-head"><strong>Navigation</strong><button type="button" class="sidebar-close" data-sidebar-close>Close navigation</button></div><nav class="sidebar" aria-label="Sidebar" data-sidebar-root>`)
 		output.WriteString(`<ul class="sidebar-list sidebar-list-root">`)
 		strictWriteSidebarHTML(&output, plan, strictSidebarRoot(plan, versionID), currentRoute)
 		output.WriteString(`</ul></nav></aside><button type="button" class="sidebar-overlay" data-sidebar-overlay hidden aria-label="Close navigation"></button>`)
 	}
-	output.WriteString(`<nav class="breadcrumbs" aria-label="Breadcrumb">`)
+	output.WriteString(`<div class="site-content"><nav class="breadcrumbs" aria-label="Breadcrumb">`)
 	for _, crumb := range breadcrumbs {
 		_, _ = fmt.Fprintf(&output, `<a href="%s">%s</a>`, esc(strictSitePath(plan, crumb.URL)), esc(crumb.Name))
 	}
 	_, _ = fmt.Fprintf(&output, `</nav>%s`, body)
 	if versionID != "" {
 		output.WriteString(`<nav class="version-selector" aria-label="Versions">`)
-		for _, version := range plan.Versions {
+		for _, version := range strictPublicVersions(plan) {
 			if version == nil {
 				continue
 			}
@@ -505,9 +511,9 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		output.WriteString(`<div id="obsite-popover-card" data-popover-card hidden aria-hidden="true"></div>`)
 	}
 	output.WriteString(slots["obsite-main-end"])
-	output.WriteString(`</main><footer><small>Generated by Obsite</small>`)
+	output.WriteString(`</div></main><footer class="site-footer"><small>Generated by Obsite</small>`)
 	output.WriteString(slots["obsite-footer-end"])
-	output.WriteString(`</footer>`)
+	output.WriteString(`</footer></div>`)
 	_, _ = fmt.Fprintf(&output, `<script defer src="%s"></script>`, esc(strictSitePath(plan, "/"+runtimePath)))
 	output.WriteString(`</body></html>`)
 	return []byte(output.String()), nil
@@ -607,13 +613,26 @@ func strictMarkdown(index *model.VaultIndex, note *model.Note, assets markdown.A
 	return output.String(), nil
 }
 
+func strictPublicVersions(plan *model.SitePlan) []*model.Version {
+	if plan == nil {
+		return nil
+	}
+	result := make([]*model.Version, 0, len(plan.Versions))
+	for _, version := range plan.Versions {
+		if version != nil && version.Root != nil && version.Root.EffectivePublish && version.Root.Route != "" {
+			result = append(result, version)
+		}
+	}
+	return result
+}
+
 func strictChildVersions(plan *model.SitePlan, section *model.Section) []*model.Version {
 	if plan == nil || section == nil {
 		return nil
 	}
 	result := make([]*model.Version, 0)
-	for _, version := range plan.Versions {
-		if version != nil && version.Root != nil && path.Dir(version.Root.RelPath) == section.RelPath {
+	for _, version := range strictPublicVersions(plan) {
+		if path.Dir(version.Root.RelPath) == section.RelPath {
 			result = append(result, version)
 		}
 	}
@@ -627,6 +646,17 @@ func findStrictSection(plan *model.SitePlan, relPath, versionID string) *model.S
 		}
 	}
 	return nil
+}
+
+func strictNavigationMatch(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(raw, "/") {
+		return raw
+	}
+	if parsed.Path == "/" || parsed.Path == "" {
+		return "/"
+	}
+	return "/" + slug.EncodePath(strings.Trim(parsed.Path, "/")) + "/"
 }
 
 func strictSitePath(plan *model.SitePlan, route string) string {
@@ -653,26 +683,7 @@ func strictSourceURL(templateURL, sourcePath string) string {
 }
 
 func strictEncodePath(value string) string {
-	parts := strings.Split(value, "/")
-	for i, part := range parts {
-		parts[i] = strictEncodeSegment(norm.NFKC.String(part))
-	}
-	return strings.Join(parts, "/")
-}
-
-func strictEncodeSegment(value string) string {
-	const hex = "0123456789ABCDEF"
-	var builder strings.Builder
-	for _, b := range []byte(value) {
-		if b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '.' || b == '_' || b == '~' {
-			builder.WriteByte(b)
-		} else {
-			builder.WriteByte('%')
-			builder.WriteByte(hex[b>>4])
-			builder.WriteByte(hex[b&15])
-		}
-	}
-	return builder.String()
+	return slug.EncodePath(value)
 }
 func esc(value string) string { return template.HTMLEscapeString(value) }
 func StrictRouteOutputPath(route string) string {

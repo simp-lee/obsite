@@ -675,10 +675,7 @@ func obsidianAppInputMayHaveChanged(vaultPath string, op fsnotify.Op, wasWatched
 func isWatchableVaultPath(relPath string) bool {
 	parts := splitWatchPath(relPath)
 	for _, part := range parts {
-		if part == "node_modules" {
-			return false
-		}
-		if strings.HasPrefix(part, ".") {
+		if part == "node_modules" || part == ".obsidian" || part == ".obsite" {
 			return false
 		}
 	}
@@ -696,19 +693,13 @@ func (loop *serveWatchLoop) shouldWatchVaultDirectory(path string) bool {
 		return false
 	}
 	relPath = filepath.Clean(relPath)
-	if relPath == "." {
-		return true
-	}
-	if relPath == ".obsidian" {
+	if relPath == "." || relPath == ".obsidian" {
 		return true
 	}
 
 	parts := splitWatchPath(relPath)
 	for _, part := range parts {
-		if part == "node_modules" {
-			return false
-		}
-		if strings.HasPrefix(part, ".") {
+		if part == "node_modules" || part == ".obsite" {
 			return false
 		}
 	}

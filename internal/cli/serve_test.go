@@ -589,7 +589,7 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 	notePath := filepath.Join(vaultPath, "notes", "guide.md")
 	yamlPath := filepath.Join(vaultPath, "notes", "frontmatter.yaml")
 	imagePath := filepath.Join(vaultPath, "attachments", "hero.png")
-	hiddenPath := filepath.Join(vaultPath, ".hidden", "scratch.txt")
+	hiddenPath := filepath.Join(vaultPath, ".obsite", "scratch.txt")
 	configPath := filepath.Join(vaultPath, defaultConfigFilename)
 	outputPath := filepath.Join(vaultPath, "public")
 	for _, filePath := range []string{notePath, yamlPath, imagePath, hiddenPath, configPath} {

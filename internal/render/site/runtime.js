@@ -511,8 +511,14 @@
       if (!notePath || notePath.indexOf("\\") !== -1 || notePath.split("/").some(function (segment) { return !segment || segment === "." || segment === ".."; })) {
         return "";
       }
-      var encoded = notePath.split("/").map(encodeURIComponent).join("/");
+      var encoded = notePath.split("/").map(encodeRFC3986Segment).join("/");
       return new URL("_popover/" + encoded + ".json", servedSiteRootURL).href;
+    }
+
+    function encodeRFC3986Segment(value) {
+      return encodeURIComponent(value).replace(/[!'()*]/g, function (character) {
+        return "%" + character.charCodeAt(0).toString(16).toUpperCase();
+      });
     }
 
     function loadPopover(popoverURL) {

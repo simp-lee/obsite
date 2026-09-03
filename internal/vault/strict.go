@@ -26,10 +26,29 @@ var (
 )
 
 var (
-	strictDatePattern  = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
-	strictSlugPattern  = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
-	strictOrderPattern = regexp.MustCompile(`^[0-9]+$`)
+	strictDatePattern      = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
+	strictSlugPattern      = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
+	strictOrderPattern     = regexp.MustCompile(`^[0-9]+$`)
+	frontmatterLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
 )
+
+func frontmatterSourceError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := frontmatterLinePattern.ReplaceAllStringFunc(err.Error(), func(value string) string {
+		match := frontmatterLinePattern.FindStringSubmatch(value)
+		if len(match) != 2 {
+			return value
+		}
+		line, parseErr := strconv.Atoi(match[1])
+		if parseErr != nil {
+			return value
+		}
+		return fmt.Sprintf("line %d", line+1)
+	})
+	return errors.New(message)
+}
 
 // StrictFrontmatterResult is the schema-safe source handoff used by the
 // section planner. It keeps _index.md out of the article list and rejects
@@ -64,7 +83,7 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 		}
 		mapping, err := strictMapping(frontmatterData, present)
 		if err != nil {
-			return StrictFrontmatterResult{}, fmt.Errorf("parse frontmatter %q: %w", relPath, err)
+			return StrictFrontmatterResult{}, fmt.Errorf("parse frontmatter %q: %w", relPath, frontmatterSourceError(err))
 		}
 		if strings.EqualFold(path.Base(relPath), "_index.md") && path.Base(relPath) != "_index.md" {
 			return StrictFrontmatterResult{}, fmt.Errorf("section source %q must use the exact filename _index.md", relPath)
@@ -72,7 +91,7 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 		if path.Base(relPath) == "_index.md" {
 			section, err := decodeSectionSource(relPath, body, bodyStartLine, info, mapping)
 			if err != nil {
-				return StrictFrontmatterResult{}, fmt.Errorf("parse section %q: %w", relPath, err)
+				return StrictFrontmatterResult{}, fmt.Errorf("parse section %q: %w", relPath, frontmatterSourceError(err))
 			}
 			result.Sections = append(result.Sections, section)
 			result.Sources = append(result.Sources, model.PlannedSource{RelPath: relPath, Section: section, Publish: section.Frontmatter.Publish != nil && *section.Frontmatter.Publish})
@@ -81,7 +100,7 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 
 		note, err := decodeStrictArticle(relPath, body, bodyStartLine, info, mapping)
 		if err != nil {
-			return StrictFrontmatterResult{}, fmt.Errorf("parse article %q: %w", relPath, err)
+			return StrictFrontmatterResult{}, fmt.Errorf("parse article %q: %w", relPath, frontmatterSourceError(err))
 		}
 		result.AllArticles = append(result.AllArticles, note)
 		published := note.Frontmatter.Publish != nil && *note.Frontmatter.Publish

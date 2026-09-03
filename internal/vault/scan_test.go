@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,8 @@ func TestScanCollectsMarkdownAndResourceCandidates(t *testing.T) {
 	}
 
 	wantMarkdown := []string{
+		".hidden/private.md",
+		"notes/.draft.md",
 		"notes/Guide.MD",
 		"notes/alpha.md",
 	}
@@ -89,8 +92,8 @@ func TestScanExcludesResolvedOutputAndInternalInputDirectories(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ScanWithOptions() error = %v", err)
 	}
-	if !reflect.DeepEqual(got.MarkdownFiles, []string{"notes/kept.md"}) {
-		t.Fatalf("MarkdownFiles = %#v, want only notes/kept.md", got.MarkdownFiles)
+	if !reflect.DeepEqual(got.MarkdownFiles, []string{".hidden/private.md", "notes/kept.md"}) {
+		t.Fatalf("MarkdownFiles = %#v, want hidden and visible source files", got.MarkdownFiles)
 	}
 	if !reflect.DeepEqual(got.ResourceFiles, []string{"assets/kept.png"}) {
 		t.Fatalf("ResourceFiles = %#v, want only assets/kept.png", got.ResourceFiles)
@@ -303,26 +306,49 @@ func TestScanKeepsConfiguredAttachmentFolderInsideSkippedSubtreeExcluded(t *test
 			}
 
 			wantMarkdown := []string{"notes/post.md"}
+			if tt.name == "hidden directory" {
+				wantMarkdown = []string{".hidden/private.md", "notes/post.md"}
+			}
 			if !reflect.DeepEqual(got.MarkdownFiles, wantMarkdown) {
 				t.Fatalf("MarkdownFiles = %#v, want %#v", got.MarkdownFiles, wantMarkdown)
 			}
 
 			wantResources := []string{"assets/public/logo.png"}
+			if tt.name == "hidden directory" {
+				wantResources = append(wantResources, tt.attachmentResources...)
+				wantResources = append(wantResources, tt.skippedResources...)
+				sort.Strings(wantResources)
+			}
 			if !reflect.DeepEqual(got.ResourceFiles, wantResources) {
 				t.Fatalf("ResourceFiles = %#v, want %#v", got.ResourceFiles, wantResources)
 			}
 
 			for _, relPath := range tt.attachmentResources {
-				if got.LookupResourcePath(relPath).Path != "" {
+				if tt.name != "hidden directory" && got.LookupResourcePath(relPath).Path != "" {
 					t.Fatalf("HasResource(%q) = true, want false", relPath)
+				}
+				if tt.name == "hidden directory" && got.LookupResourcePath(relPath).Path == "" {
+					t.Fatalf("HasResource(%q) = false, want true", relPath)
 				}
 			}
 			for _, relPath := range tt.skippedMarkdown {
+				if tt.name == "hidden directory" {
+					if !scanContainsMarkdown(got, relPath) {
+						t.Fatalf("HasMarkdown(%q) = false, want true", relPath)
+					}
+					continue
+				}
 				if scanContainsMarkdown(got, relPath) {
 					t.Fatalf("HasMarkdown(%q) = true, want false", relPath)
 				}
 			}
 			for _, relPath := range tt.skippedResources {
+				if tt.name == "hidden directory" {
+					if got.LookupResourcePath(relPath).Path == "" {
+						t.Fatalf("HasResource(%q) = false, want true", relPath)
+					}
+					continue
+				}
 				if got.LookupResourcePath(relPath).Path != "" {
 					t.Fatalf("HasResource(%q) = true, want false", relPath)
 				}
@@ -363,18 +389,19 @@ func TestScanTreatsConfiguredAttachmentFolderPathAsMetadataInsideSkippedSubtree(
 		t.Fatalf("MarkdownFiles = %#v, want %#v", got.MarkdownFiles, wantMarkdown)
 	}
 
-	if len(got.ResourceFiles) != 0 {
-		t.Fatalf("ResourceFiles = %#v, want empty", got.ResourceFiles)
+	wantResources := []string{".hidden/attachments/.hidden/secret.png", ".hidden/attachments/nested/diagram.svg", ".hidden/attachments/photo.png"}
+	if !reflect.DeepEqual(got.ResourceFiles, wantResources) {
+		t.Fatalf("ResourceFiles = %#v, want hidden attachment resources", got.ResourceFiles)
 	}
 
 	if !scanContainsMarkdown(got, "notes/post.md") {
 		t.Fatal("HasMarkdown(notes/post.md) = false, want true")
 	}
-	if got.LookupResourcePath(".hidden/attachments/photo.png").Path != "" {
-		t.Fatal("HasResource(.hidden/attachments/photo.png) = true, want false")
+	if got.LookupResourcePath(".hidden/attachments/photo.png").Path == "" {
+		t.Fatal("HasResource(.hidden/attachments/photo.png) = false, want true")
 	}
-	if got.LookupResourcePath(".hidden/attachments/.hidden/secret.png").Path != "" {
-		t.Fatal("HasResource(.hidden/attachments/.hidden/secret.png) = true, want false")
+	if got.LookupResourcePath(".hidden/attachments/.hidden/secret.png").Path == "" {
+		t.Fatal("HasResource(.hidden/attachments/.hidden/secret.png) = false, want true")
 	}
 	if got.LookupResourcePath(".hidden/attachments/.obsidian/workspace.json").Path != "" {
 		t.Fatal("HasResource(.hidden/attachments/.obsidian/workspace.json) = true, want false")
