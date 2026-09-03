@@ -149,6 +149,18 @@ func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex,
 	lookup := internalwikilink.LookupTarget(idx, source, target, strings.TrimSpace(fragment))
 	if pathTarget {
 		lookup = internalwikilink.LookupPathTarget(idx, source, target, strings.TrimSpace(fragment))
+		if lookup.Note == nil && standard && parseErr == nil && source.Route != "" {
+			if base, err := url.Parse(source.Route); err == nil {
+				resolved := base.ResolveReference(parsed)
+				routeLookup := internalwikilink.LookupRouteTarget(idx, source, resolved.EscapedPath(), strings.TrimSpace(fragment))
+				if routeLookup.Note != nil || routeLookup.Section != nil {
+					if routeLookup.Note != nil && !routeLookup.MissingFragment {
+						targets[routeLookup.Note.RelPath] = struct{}{}
+					}
+					return
+				}
+			}
+		}
 	}
 	if lookup.Note == nil || lookup.Unpublished || lookup.MissingFragment {
 		return
