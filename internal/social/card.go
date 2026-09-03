@@ -30,13 +30,20 @@ const (
 	GeneratorVersion = "obsite-social-card-v1"
 )
 
-// cardFontData is the pinned KaTeX Main font used for every card. It is
-// embedded so generation never consults a machine font installation.
+// cardFontData and cardFallbackFontData are pinned embedded fonts used for
+// deterministic Latin and CJK card text; generation never consults a machine
+// font installation.
 //
 //go:embed assets/KaTeX_Main-Regular.ttf
 var cardFontData []byte
 
-var parsedCardFont = sync.OnceValues(func() (*opentype.Font, error) { return opentype.Parse(cardFontData) })
+//go:embed assets/DroidSansFallbackFull.ttf
+var cardFallbackFontData []byte
+
+var (
+	parsedCardFont         = sync.OnceValues(func() (*opentype.Font, error) { return opentype.Parse(cardFontData) })
+	parsedCardFallbackFont = sync.OnceValues(func() (*opentype.Font, error) { return opentype.Parse(cardFallbackFontData) })
+)
 
 var (
 	background = color.RGBA{R: 0x0f, G: 0x17, B: 0x2a, A: 0xff}
@@ -207,10 +214,21 @@ func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, 
 	if err != nil {
 		return fmt.Errorf("parse social-card font: %w", err)
 	}
-	face, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
+	fallbackValue, err := parsedCardFallbackFont()
+	if err != nil {
+		return fmt.Errorf("parse social-card fallback font: %w", err)
+	}
+	primaryFace, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
 	if err != nil {
 		return fmt.Errorf("create social-card font face: %w", err)
 	}
+	fallbackFace, err := opentype.NewFace(fallbackValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
+	if err != nil {
+		_ = primaryFace.Close()
+		return fmt.Errorf("create social-card fallback font face: %w", err)
+	}
+	face := &fallbackFontFace{primary: primaryFace, fallback: fallbackFace}
+	defer func() { _ = face.Close() }()
 	lines := wrapMeasured(text, maxWidth, maxLines, face)
 	for lineIndex, line := range lines {
 		if err := drawLineColor(dst, x, y+lineIndex*76, line, face, foreground); err != nil {
@@ -266,6 +284,78 @@ func truncateMeasured(value string, maxWidth int, face font.Face) string {
 		result = candidate
 	}
 	return result + ellipsis
+}
+
+type fallbackFontFace struct {
+	primary  font.Face
+	fallback font.Face
+}
+
+func (f *fallbackFontFace) faceFor(value rune) font.Face {
+	if f == nil {
+		return nil
+	}
+	if f.primary != nil {
+		if _, ok := f.primary.GlyphAdvance(value); ok {
+			return f.primary
+		}
+	}
+	return f.fallback
+}
+
+func (f *fallbackFontFace) Glyph(dot fixed.Point26_6, value rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
+	face := f.faceFor(value)
+	if face == nil {
+		return image.Rectangle{}, nil, image.Point{}, 0, false
+	}
+	return face.Glyph(dot, value)
+}
+
+func (f *fallbackFontFace) GlyphBounds(value rune) (fixed.Rectangle26_6, fixed.Int26_6, bool) {
+	face := f.faceFor(value)
+	if face == nil {
+		return fixed.Rectangle26_6{}, 0, false
+	}
+	return face.GlyphBounds(value)
+}
+
+func (f *fallbackFontFace) GlyphAdvance(value rune) (fixed.Int26_6, bool) {
+	face := f.faceFor(value)
+	if face == nil {
+		return 0, false
+	}
+	return face.GlyphAdvance(value)
+}
+
+func (f *fallbackFontFace) Kern(left, right rune) fixed.Int26_6 {
+	leftFace, rightFace := f.faceFor(left), f.faceFor(right)
+	if leftFace == nil || leftFace != rightFace {
+		return 0
+	}
+	return leftFace.Kern(left, right)
+}
+
+func (f *fallbackFontFace) Metrics() font.Metrics {
+	if f == nil || f.primary == nil {
+		return font.Metrics{}
+	}
+	return f.primary.Metrics()
+}
+
+func (f *fallbackFontFace) Close() error {
+	if f == nil {
+		return nil
+	}
+	var first error
+	if f.primary != nil {
+		first = f.primary.Close()
+	}
+	if f.fallback != nil {
+		if err := f.fallback.Close(); first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func drawLineColor(dst *image.RGBA, x, y int, text string, face font.Face, foreground color.Color) error {

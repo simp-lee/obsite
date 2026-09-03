@@ -622,7 +622,14 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 }
 
 func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, collector *diag.Collector) {
+	seen := make(map[string]int, len(navigation))
 	for index, item := range navigation {
+		targetKey := navigationTargetKey(item, sections)
+		if previous, exists := seen[targetKey]; exists {
+			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] duplicates navigation[%d] target", index, previous)
+		} else {
+			seen[targetKey] = index
+		}
 		if item.Section == "" {
 			continue
 		}
@@ -638,6 +645,26 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] cannot target version entry section %q", index, item.Section)
 		}
 	}
+}
+
+func navigationTargetKey(item model.NavigationItem, sections map[string]*model.Section) string {
+	if item.Section != "" {
+		if section := sections[item.Section]; section != nil && section.Route != "" {
+			return "route:" + section.Route
+		}
+		return "section:" + item.Section
+	}
+	parsed, err := url.Parse(item.URL)
+	if err != nil || !strings.HasPrefix(item.URL, "/") || strings.HasPrefix(item.URL, "//") {
+		return "url:" + item.URL
+	}
+	pathValue := parsed.Path
+	if pathValue == "" || pathValue == "/" {
+		pathValue = "/"
+	} else {
+		pathValue = "/" + encodePath(strings.Trim(pathValue, "/")) + "/"
+	}
+	return "route:" + pathValue + "?" + parsed.RawQuery + "#" + parsed.Fragment
 }
 
 func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {

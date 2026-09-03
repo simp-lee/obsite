@@ -3,6 +3,11 @@
 ## KaTeX
 Version: 0.18.4. License: MIT (`internal/render/vendor/katex/LICENSE`). The same pinned `KaTeX_Main-Regular.ttf` is embedded by the deterministic social-card generator.
 
+## Droid Sans Fallback Full
+Pinned deterministic CJK fallback font from the Android Droid font family. License:
+Apache-2.0 (`internal/social/assets/DroidSansFallbackFull.LICENSE`). The font is
+embedded for social-card rendering and is never loaded from the host system.
+
 ## Mermaid
 Version: 11.17.2. License: MIT (`internal/render/vendor/mermaid/LICENSE`).
 
@@ -17,6 +22,9 @@ BSD-2-Clause terms are retained beside that inventory. Release archives preserve
 all paths referenced by this notice.
 
 ## Vendored file SHA-256
+
+- `acb6440a713d880a13a21b468ba7cd43f5a2b2934972e51be791c880730777b8  internal/social/assets/DroidSansFallbackFull.ttf`
+- `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  internal/social/assets/DroidSansFallbackFull.LICENSE`
 
 - `e5372d199bcdae8b4de71d0f7ceba72a4ba12774a27c60a6f1f77d03b3228ee4  internal/render/vendor/katex/contrib/auto-render.min.js`
 - `68534840bcfdd2bffb6f0e8deb48684dd01e7f04ea2813267577afb906de1d13  internal/render/vendor/katex/fonts/KaTeX_AMS-Regular.ttf`

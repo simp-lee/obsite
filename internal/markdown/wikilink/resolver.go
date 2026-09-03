@@ -2,6 +2,7 @@ package wikilink
 
 import (
 	"fmt"
+	"net/url"
 	"path"
 	"path/filepath"
 	"sort"
@@ -112,6 +113,26 @@ func LookupTarget(idx *model.VaultIndex, current *model.Note, target string, fra
 	return resolver.lookup(strings.TrimSpace(target), strings.TrimSpace(fragment))
 }
 
+// LookupPathTarget resolves a normalized source path without falling back to a
+// basename or alias. It is used for ordinary relative Markdown links.
+func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string, fragment string) LookupResult {
+	resolver := &VaultResolver{Index: idx, CurrentNote: current}
+	target = strings.TrimSpace(target)
+	fragment = strings.TrimSpace(fragment)
+	if decoded, err := url.PathUnescape(target); err == nil {
+		target = decoded
+	}
+	if note := resolver.exactPublicPathMatch(target); note != nil {
+		return finalizeLookup(resolutionResult{note: note}, fragment)
+	}
+	if note := resolver.exactUnpublishedPathMatch(target); note != nil {
+		result := finalizeLookup(resolutionResult{note: note}, fragment)
+		result.Unpublished = true
+		return result
+	}
+	return LookupResult{}
+}
+
 type resolutionResult struct {
 	note      *model.Note
 	ambiguous []string
@@ -128,12 +149,12 @@ func (r *VaultResolver) resolvePublic(target string) resolutionResult {
 		return resolutionResult{}
 	}
 
-	filenameCandidates := uniqueNotes(r.Index.NoteByName[noteLookupKey(target)])
+	filenameCandidates := scopedNotes(r.CurrentNote, r.Index.NoteByName[noteLookupKey(target)])
 	if len(filenameCandidates) == 1 {
 		return resolutionResult{note: filenameCandidates[0]}
 	}
 
-	aliasCandidates := uniqueNotes(r.Index.AliasByName[aliasLookupKey(target)])
+	aliasCandidates := scopedNotes(r.CurrentNote, r.Index.AliasByName[aliasLookupKey(target)])
 	if len(aliasCandidates) == 1 {
 		return resolutionResult{note: aliasCandidates[0]}
 	}
@@ -150,12 +171,12 @@ func (r *VaultResolver) resolveUnpublished(target string) resolutionResult {
 		return resolutionResult{}
 	}
 
-	filenameCandidates := uniqueNotes(r.Index.Unpublished.NoteByName[noteLookupKey(target)])
+	filenameCandidates := scopedNotes(r.CurrentNote, r.Index.Unpublished.NoteByName[noteLookupKey(target)])
 	if len(filenameCandidates) == 1 {
 		return resolutionResult{note: filenameCandidates[0]}
 	}
 
-	aliasCandidates := uniqueNotes(r.Index.Unpublished.AliasByName[aliasLookupKey(target)])
+	aliasCandidates := scopedNotes(r.CurrentNote, r.Index.Unpublished.AliasByName[aliasLookupKey(target)])
 	if len(aliasCandidates) == 1 {
 		return resolutionResult{note: aliasCandidates[0]}
 	}
@@ -272,6 +293,20 @@ func resolveCandidateSet(current *model.Note, candidates []*model.Note) resoluti
 		result.ambiguous = nil
 	}
 
+	return result
+}
+
+func scopedNotes(current *model.Note, candidates []*model.Note) []*model.Note {
+	filtered := uniqueNotes(candidates)
+	if current == nil || len(filtered) == 0 {
+		return filtered
+	}
+	result := make([]*model.Note, 0, len(filtered))
+	for _, candidate := range filtered {
+		if candidate != nil && candidate.VersionID == current.VersionID {
+			result = append(result, candidate)
+		}
+	}
 	return result
 }
 

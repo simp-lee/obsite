@@ -25,7 +25,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		return nil, fmt.Errorf("section page requires a plan and section")
 	}
 	sectionNote := &model.Note{
-		RelPath: section.SourcePath, Route: section.Route, Slug: strings.Trim(section.Route, "/"),
+		RelPath: section.SourcePath, Route: section.Route, VersionID: section.VersionID, Slug: strings.Trim(section.Route, "/"),
 		RawContent: section.RawContent, Headings: section.Headings, HeadingSections: section.HeadingSections,
 		OutLinks: section.OutLinks, Embeds: section.Embeds, ImageRefs: section.ImageRefs,
 		HasMath: section.HasMath, HasMermaid: section.HasMermaid,
@@ -48,12 +48,11 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 	body.WriteString(`</header><div class="entry-content section-content" data-page-content>`)
 	body.WriteString(content)
 	body.WriteString(`</div>`)
-	if len(section.Children) > 0 {
+	visibleChildren := publishedSectionChildren(section)
+	if len(visibleChildren) > 0 {
 		body.WriteString(`<h2>Sections</h2><ul class="section-children">`)
-		for _, child := range section.Children {
-			if child != nil && child.EffectivePublish {
-				_, _ = fmt.Fprintf(&body, `<li><a href="%s">%s</a></li>`, esc(strictSitePath(plan, child.Route)), esc(child.Title))
-			}
+		for _, child := range visibleChildren {
+			_, _ = fmt.Fprintf(&body, `<li><a href="%s">%s</a></li>`, esc(strictSitePath(plan, child.Route)), esc(child.Title))
 		}
 		body.WriteString(`</ul>`)
 	}
@@ -336,7 +335,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	}
 	var output strings.Builder
 	rootAttrs := `data-obsite-base-path="` + esc(strictBasePath(plan)) + `" data-obsite-kind="strict"`
-	if plan.Config.Sidebar.Enabled {
+	if plan.Config.Sidebar.Enabled && hasPublishedSidebarEntries(strictSidebarRoot(plan, versionID)) {
 		rootAttrs += ` data-obsite-sidebar`
 	}
 	if versionID != "" {
@@ -437,6 +436,9 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	if plan.Config.ThemeCSS != "" {
 		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/assets/theme/theme.css")))
 	}
+	if strings.Contains(body, "data-obsite-math-source") {
+		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/"+katexCSSOutputPath)))
+	}
 	output.WriteString(slots["obsite-head-end"])
 	output.WriteString(`</head><body class="site-body" data-site-body><div class="site-frame"><header class="site-masthead site-header"><div class="masthead-band"><a class="site-mark site-title" href="` + esc(strictSitePath(plan, "/")) + `">` + esc(plan.Config.Title) + `</a></div><div class="masthead-copy"><div class="masthead-actions"><button type="button" class="theme-toggle" data-theme-toggle hidden aria-pressed="false"><span class="theme-toggle-caption">Theme</span><span class="theme-toggle-value" data-theme-toggle-value></span><span data-theme-toggle-state class="sr-only"></span><span data-theme-toggle-source class="sr-only"></span></button></div><nav aria-label="Global navigation">`)
 	for _, item := range plan.Config.Navigation {
@@ -472,7 +474,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	output.WriteString(`</nav></div>`)
 	output.WriteString(slots["obsite-header-end"])
 	output.WriteString(`</header><main class="site-main" data-obsite-main>`)
-	if plan.Config.Sidebar.Enabled {
+	if plan.Config.Sidebar.Enabled && hasPublishedSidebarEntries(strictSidebarRoot(plan, versionID)) {
 		output.WriteString(`<button type="button" class="sidebar-toggle-mobile sidebar-launch" data-sidebar-toggle hidden aria-expanded="false"><span class="sidebar-launch-icon" aria-hidden="true"></span>Open navigation</button><aside class="sidebar-shell" data-sidebar-shell><div class="sidebar-panel-head"><strong>Navigation</strong><button type="button" class="sidebar-close" data-sidebar-close>Close navigation</button></div><nav class="sidebar" aria-label="Sidebar" data-sidebar-root>`)
 		output.WriteString(`<ul class="sidebar-list sidebar-list-root">`)
 		strictWriteSidebarHTML(&output, plan, strictSidebarRoot(plan, versionID), currentRoute)
@@ -531,6 +533,23 @@ func strictBasePath(plan *model.SitePlan) string {
 		return "/"
 	}
 	return parsed.EscapedPath()
+}
+
+func hasPublishedSidebarEntries(section *model.Section) bool {
+	if section == nil {
+		return false
+	}
+	for _, child := range section.Children {
+		if child != nil && child.EffectivePublish && child.Route != "" {
+			return true
+		}
+	}
+	for _, article := range section.Articles {
+		if article != nil && article.Route != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func strictSidebarRoot(plan *model.SitePlan, versionID string) *model.Section {
@@ -624,6 +643,19 @@ func strictPublicVersions(plan *model.SitePlan) []*model.Version {
 	for _, version := range plan.Versions {
 		if version != nil && version.Root != nil && version.Root.EffectivePublish && version.Root.Route != "" {
 			result = append(result, version)
+		}
+	}
+	return result
+}
+
+func publishedSectionChildren(section *model.Section) []*model.Section {
+	if section == nil {
+		return nil
+	}
+	result := make([]*model.Section, 0, len(section.Children))
+	for _, child := range section.Children {
+		if child != nil && child.EffectivePublish && child.Route != "" {
+			result = append(result, child)
 		}
 	}
 	return result

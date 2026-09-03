@@ -548,6 +548,13 @@ func validateNavigationURL(raw string) error {
 		if strings.ContainsAny(raw, "\\\x00\r\n") {
 			return fmt.Errorf("site-relative URL contains an invalid character")
 		}
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("site-relative URL is invalid: %w", err)
+		}
+		if _, err := url.PathUnescape(parsed.EscapedPath()); err != nil {
+			return fmt.Errorf("site-relative URL has an invalid escape: %w", err)
+		}
 		return nil
 	}
 	parsed, err := url.Parse(raw)

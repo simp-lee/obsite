@@ -33,6 +33,29 @@ func TestGenerateIsDeterministicAndContentAddressed(t *testing.T) {
 	}
 }
 
+func TestGenerateSupportsEmbeddedCJKFallbackText(t *testing.T) {
+	result, err := Generate(Input{CanonicalURL: "https://example.test/cjk/", SiteTitle: "Obsite 站点", Title: "中文文档", Context: "指南"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := png.Decode(bytes.NewReader(result.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backgroundPixel := decoded.At(100, 200)
+	drawn := 0
+	for y := 160; y < 390; y++ {
+		for x := 72; x < 696; x++ {
+			if decoded.At(x, y) != backgroundPixel {
+				drawn++
+			}
+		}
+	}
+	if drawn == 0 {
+		t.Fatal("CJK title produced no visible pixels")
+	}
+}
+
 func TestGenerateUsesCoverAndRejectsInvalidCover(t *testing.T) {
 	cover := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	for y := 0; y < 10; y++ {

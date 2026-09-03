@@ -51,6 +51,7 @@ notice_paths = {
     'internal/recommend/chinese/THIRD_PARTY.md',
     'internal/render/vendor/katex/LICENSE',
     'internal/render/vendor/mermaid/LICENSE',
+    'internal/social/assets/DroidSansFallbackFull.LICENSE',
 }
 expected_matrix = {(os_name, arch) for os_name in ('linux', 'darwin', 'windows') for arch in ('amd64', 'arm64')}
 

@@ -56,6 +56,8 @@ archives:
         info: *notice_info
       - src: internal/render/vendor/mermaid/LICENSE
         info: *notice_info
+      - src: internal/social/assets/DroidSansFallbackFull.LICENSE
+        info: *notice_info
       - src: internal/markdown/PASSTHROUGH_LICENSE
         info: *notice_info
       - src: internal/recommend/chinese/THIRD_PARTY.md

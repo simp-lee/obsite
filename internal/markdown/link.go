@@ -92,7 +92,9 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		vaultPath = ""
 	}
 	lookup := internalwikilink.LookupResult{}
-	if !rootRelative {
+	if !rootRelative && (strings.HasSuffix(strings.ToLower(targetPath), ".md") || strings.Contains(targetPath, "/")) {
+		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
+	} else if !rootRelative {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
 	}
 	if lookup.Note == nil {
