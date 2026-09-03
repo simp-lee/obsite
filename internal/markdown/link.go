@@ -92,7 +92,9 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		vaultPath = ""
 	}
 	lookup := internalwikilink.LookupResult{}
-	if !rootRelative && (strings.HasSuffix(strings.ToLower(targetPath), ".md") || strings.Contains(targetPath, "/")) {
+	if rootRelative && strings.HasSuffix(strings.ToLower(targetPath), ".md") {
+		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
+	} else if !rootRelative && (strings.HasSuffix(strings.ToLower(targetPath), ".md") || strings.Contains(targetPath, "/")) {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
 	} else if !rootRelative {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
@@ -113,6 +115,9 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 				suffix += "#" + fragment
 			}
 			return relativeToNoteOutput(r.outputNote, destination) + suffix
+		}
+		if rootRelative {
+			return basePathDestination(r.outputNote, raw)
 		}
 		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
 			if r.diagnostics != nil {
@@ -136,6 +141,13 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		return raw
 	}
 	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
+}
+
+func basePathDestination(note *model.Note, raw string) string {
+	if note == nil || note.BasePath == "" || raw == "" || !strings.HasPrefix(raw, "/") {
+		return raw
+	}
+	return strings.TrimSuffix(note.BasePath, "/") + raw
 }
 
 func escapeDestination(value string) string {

@@ -25,9 +25,11 @@ import (
 )
 
 const (
-	Width            = 1200
-	Height           = 630
-	GeneratorVersion = "obsite-social-card-v1"
+	Width                = 1200
+	Height               = 630
+	GeneratorVersion     = "obsite-social-card-v1"
+	cardPrimaryFontName  = "KaTeX_Main-Regular.ttf"
+	cardFallbackFontName = "DroidSansFallbackFull.ttf"
 )
 
 // cardFontData and cardFallbackFontData are pinned embedded fonts used for
@@ -212,11 +214,11 @@ func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, 
 	}
 	fontValue, err := parsedCardFont()
 	if err != nil {
-		return fmt.Errorf("parse social-card font: %w", err)
+		return fmt.Errorf("parse social-card font %s: %w", cardPrimaryFontName, err)
 	}
 	fallbackValue, err := parsedCardFallbackFont()
 	if err != nil {
-		return fmt.Errorf("parse social-card fallback font: %w", err)
+		return fmt.Errorf("parse social-card fallback font %s: %w", cardFallbackFontName, err)
 	}
 	primaryFace, err := opentype.NewFace(fontValue, &opentype.FaceOptions{Size: float64(size), DPI: 72, Hinting: font.HintingNone})
 	if err != nil {

@@ -25,7 +25,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		return nil, fmt.Errorf("section page requires a plan and section")
 	}
 	sectionNote := &model.Note{
-		RelPath: section.SourcePath, Route: section.Route, VersionID: section.VersionID, Slug: strings.Trim(section.Route, "/"),
+		RelPath: section.SourcePath, Route: section.Route, VersionID: section.VersionID, BasePath: strictBasePath(plan), Slug: strings.Trim(section.Route, "/"),
 		RawContent: section.RawContent, Headings: section.Headings, HeadingSections: section.HeadingSections,
 		OutLinks: section.OutLinks, Embeds: section.Embeds, ImageRefs: section.ImageRefs,
 		HasMath: section.HasMath, HasMermaid: section.HasMermaid,
@@ -83,7 +83,9 @@ func RenderStrictArticle(plan *model.SitePlan, article *model.Note, previous, ne
 	if plan == nil || article == nil {
 		return nil, fmt.Errorf("article page requires a plan and article")
 	}
-	content, err := strictMarkdown(index, article, assets)
+	renderArticle := *article
+	renderArticle.BasePath = strictBasePath(plan)
+	content, err := strictMarkdown(index, &renderArticle, assets)
 	if err != nil {
 		return nil, err
 	}

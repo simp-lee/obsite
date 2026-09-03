@@ -10,6 +10,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/tdewolff/minify/v2"
+	mincss "github.com/tdewolff/minify/v2/css"
 )
 
 const (
@@ -64,7 +67,13 @@ func StyleCSSData() ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read style.css: %w", err)
 	}
-	return append([]byte(nil), data...), nil
+	minifier := minify.New()
+	minifier.AddFunc("text/css", mincss.Minify)
+	compact, err := minifier.Bytes("text/css", data)
+	if err != nil {
+		return nil, fmt.Errorf("minify style.css: %w", err)
+	}
+	return compact, nil
 }
 
 // EmitStyleCSS writes the fixed built-in stylesheet into the output root.

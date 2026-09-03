@@ -130,19 +130,23 @@ for key, binary in sorted(raw_binaries.items()):
         window = (root / 'internal/recommend/chinese/data' / name).read_bytes()[:64]
         if data.count(window) != 1:
             raise SystemExit(f'{binary}: {name} resource count != 1')
-    for marker in (b'globalThis["mermaid"]', b'renderMathInElement', b'obsite.theme.v1:'):
+    for marker in (b'globalThis["mermaid"]', b'renderMathInElement', b'obsite.theme.v1:', b'KaTeX_Main-Regular.ttf', b'DroidSansFallbackFull.ttf'):
         if marker not in data:
-            raise SystemExit(f'{binary}: embedded runtime marker missing: {marker!r}')
+            raise SystemExit(f'{binary}: embedded runtime/font marker missing: {marker!r}')
     print(f'{binary.relative_to(dist)} {len(data)} bytes')
 PY
 
 linux_amd64=$(find "$DIST" -type f -path '*linux*amd64*/obsite' | head -n 1)
+linux_arm64=$(find "$DIST" -type f -path '*linux*arm64*/obsite' | head -n 1)
 [ -n "$linux_amd64" ] || { echo "linux amd64 binary missing" >&2; exit 1; }
-file "$linux_amd64" | grep -E 'statically linked|not a dynamic executable' >/dev/null || {
+[ -n "$linux_arm64" ] || { echo "linux arm64 binary missing" >&2; exit 1; }
+for linux_binary in "$linux_amd64" "$linux_arm64"; do
+file "$linux_binary" | grep -E 'statically linked|not a dynamic executable' >/dev/null || {
   echo "linux amd64 binary is not statically linked" >&2
-  file "$linux_amd64" >&2
+  file "$linux_binary" >&2
   exit 1
 }
+done
 VERSION_OUTPUT=$($linux_amd64 version)
 VERSION_FLAG_OUTPUT=$($linux_amd64 --version)
 [ "$VERSION_OUTPUT" = "$EXPECTED_OUTPUT" ] || { echo "version metadata mismatch: $VERSION_OUTPUT" >&2; exit 1; }

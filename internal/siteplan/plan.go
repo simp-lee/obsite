@@ -119,7 +119,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 			Title: source.Frontmatter.Title, Description: source.Frontmatter.Description,
 			Publish: source.Frontmatter.Publish != nil && *source.Frontmatter.Publish,
 			Order:   source.Frontmatter.Order, Banner: source.Frontmatter.Banner, BannerAlt: source.Frontmatter.BannerAlt,
-			RawContent: append([]byte(nil), source.RawContent...), BodyStartLine: source.BodyStartLine, LastModified: source.LastModified,
+			RawContent: append([]byte(nil), source.RawContent...), BodyStartLine: source.BodyStartLine,
 		}
 	}
 
@@ -729,6 +729,14 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 		}
 		return nil
 	})
+	if strings.TrimSpace(plan.Config.ThemeSlots) != "" {
+		if _, err := render.RenderThemeSlots(plan.Config.ThemeSlots, render.SlotData{
+			Kind: "section", Title: plan.Config.Title, Canonical: plan.Config.BaseURL, RelPath: "/", SiteRootRel: "./",
+			Site: render.SlotSiteData{Title: plan.Config.Title, BaseURL: plan.Config.BaseURL, Author: plan.Config.Author, Description: plan.Config.Description, Language: plan.Config.Language},
+		}); err != nil {
+			record(collector, diag.KindMetadata, filepath.Join(plan.Config.ThemeDir, "slots.html"), "theme slots: %v", err)
+		}
+	}
 }
 
 func assetRecord(collector *diag.Collector, owner, field, target, format string, args ...any) {

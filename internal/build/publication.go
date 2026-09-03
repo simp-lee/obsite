@@ -79,12 +79,15 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	hash := sha256.Sum256(content)
 	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.Signature == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
 		previousPath := filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))
-		if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
-			registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
-			return nil
-		}
 		if previousContent, err := os.ReadFile(previousPath); err == nil {
-			writeContent = previousContent
+			previousHash := sha256.Sum256(previousContent)
+			if fmt.Sprintf("%x", previousHash) == previous.Signature {
+				if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
+					registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+					return nil
+				}
+				writeContent = previousContent
+			}
 		}
 	}
 	if err := writeOutputFile(outputRoot, cleaned, writeContent); err != nil {
