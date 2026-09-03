@@ -270,7 +270,7 @@ func annotateStrictPopovers(content string, article *model.Note, index *model.Va
 		if node.Type == xhtml.ElementNode && node.Data == "a" {
 			for _, attribute := range node.Attr {
 				if strings.EqualFold(attribute.Key, "href") && attribute.Val != "" && !strings.HasPrefix(attribute.Val, "#") {
-					if target := strictPopoverTarget(base, attribute.Val, index, basePath); target != nil {
+					if target := strictPopoverTarget(base, attribute.Val, index, basePath, article.VersionID); target != nil {
 						node.Attr = append(node.Attr, xhtml.Attribute{Key: "data-popover-path", Val: target.RelPath})
 					}
 					break
@@ -293,7 +293,7 @@ func annotateStrictPopovers(content string, article *model.Note, index *model.Va
 	return output.String(), nil
 }
 
-func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex, basePath string) *model.Note {
+func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex, basePath, versionID string) *model.Note {
 	if base == nil || index == nil {
 		return nil
 	}
@@ -314,7 +314,7 @@ func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex, ba
 		cleaned += "/"
 	}
 	for _, note := range index.Notes {
-		if note != nil && note.Route == cleaned {
+		if note != nil && note.Route == cleaned && (note.VersionID == "" || note.VersionID == versionID) {
 			return note
 		}
 	}

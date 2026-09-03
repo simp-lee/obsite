@@ -20,26 +20,28 @@ import (
 )
 
 type strictLinkExtender struct {
-	index       *model.VaultIndex
-	sourceNote  *model.Note
-	outputNote  *model.Note
-	assetSink   AssetSink
-	diagnostics *diag.Collector
+	index           *model.VaultIndex
+	sourceNote      *model.Note
+	outputNote      *model.Note
+	headingIDPrefix string
+	assetSink       AssetSink
+	diagnostics     *diag.Collector
 }
 
 func (e strictLinkExtender) Extend(markdown goldmark.Markdown) {
 	markdown.Renderer().AddOptions(renderer.WithNodeRenderers(util.Prioritized(&strictLinkRenderer{
-		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, assetSink: e.assetSink, diagnostics: e.diagnostics,
+		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, headingIDPrefix: e.headingIDPrefix, assetSink: e.assetSink, diagnostics: e.diagnostics,
 	}, 499)))
 }
 
 type strictLinkRenderer struct {
 	gmhtml.Config
-	index       *model.VaultIndex
-	sourceNote  *model.Note
-	outputNote  *model.Note
-	assetSink   AssetSink
-	diagnostics *diag.Collector
+	index           *model.VaultIndex
+	sourceNote      *model.Note
+	outputNote      *model.Note
+	headingIDPrefix string
+	assetSink       AssetSink
+	diagnostics     *diag.Collector
 }
 
 func (r *strictLinkRenderer) RegisterFuncs(register renderer.NodeRendererFuncRegisterer) {
@@ -166,23 +168,27 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		if r.diagnostics != nil {
 			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets unpublished content", raw)})
 		}
-		return raw
+		return prefixRootRelativeDestination(r.outputNote, raw)
 	}
 	if lookup.MissingFragment {
 		if r.diagnostics != nil {
 			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets a missing fragment", raw)})
 		}
-		return raw
+		return prefixRootRelativeDestination(r.outputNote, raw)
 	}
-	href := internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, "", "")
+	href := internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, r.headingIDPrefix)
 	if rootRelative {
 		href = strings.TrimSuffix(r.outputNote.BasePath, "/") + lookup.Note.Route
+		if lookup.FragmentID != "" {
+			href += "#" + lookup.FragmentID
+		}
 	}
 	if parsed.RawQuery != "" || parsed.ForceQuery {
-		href += "?" + parsed.RawQuery
-	}
-	if lookup.FragmentID != "" {
-		href += "#" + lookup.FragmentID
+		if fragmentIndex := strings.IndexByte(href, '#'); fragmentIndex >= 0 {
+			href = href[:fragmentIndex] + "?" + parsed.RawQuery + href[fragmentIndex:]
+		} else {
+			href += "?" + parsed.RawQuery
+		}
 	}
 	return href
 }

@@ -136,7 +136,7 @@ func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex,
 		if standard && parseErr == nil && strings.HasPrefix(target, "/") {
 			routeLookup := internalwikilink.LookupRouteTarget(idx, source, parsed.EscapedPath(), strings.TrimSpace(fragment))
 			if routeLookup.Note != nil || routeLookup.Section != nil {
-				if routeLookup.Note != nil {
+				if routeLookup.Note != nil && !routeLookup.MissingFragment {
 					targets[routeLookup.Note.RelPath] = struct{}{}
 				}
 				return

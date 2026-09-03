@@ -846,7 +846,7 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		if source == "" {
 			return
 		}
-		seenKey := kind + "\x00" + source
+		seenKey := kind + "\x00" + ownerVersion + "\x00" + owner + "\x00" + source
 		if _, exists := seen[seenKey]; exists {
 			return
 		}
