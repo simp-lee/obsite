@@ -92,7 +92,7 @@ func RenderStrictArticle(plan *model.SitePlan, article *model.Note, previous, ne
 		return nil, err
 	}
 	if plan.Config.Popover.Enabled {
-		content, err = annotateStrictPopovers(content, article, index)
+		content, err = annotateStrictPopovers(content, article, index, plan)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +248,7 @@ func timelinePageRoute(rawPath string, page int) string {
 	return strings.TrimSuffix(base, "/") + "/page/" + strconv.Itoa(page) + "/"
 }
 
-func annotateStrictPopovers(content string, article *model.Note, index *model.VaultIndex) (string, error) {
+func annotateStrictPopovers(content string, article *model.Note, index *model.VaultIndex, plan *model.SitePlan) (string, error) {
 	if strings.TrimSpace(content) == "" || article == nil || index == nil {
 		return content, nil
 	}
@@ -257,7 +257,11 @@ func annotateStrictPopovers(content string, article *model.Note, index *model.Va
 	if err != nil {
 		return "", fmt.Errorf("parse article HTML for popovers: %w", err)
 	}
-	base, _ := url.Parse("https://obsite.invalid" + article.Route)
+	basePath := "/"
+	if plan != nil {
+		basePath = strictBasePath(plan)
+	}
+	base, _ := url.Parse("https://obsite.invalid" + strings.TrimSuffix(basePath, "/") + article.Route)
 	var visit func(*xhtml.Node)
 	visit = func(node *xhtml.Node) {
 		if node == nil {
@@ -266,7 +270,7 @@ func annotateStrictPopovers(content string, article *model.Note, index *model.Va
 		if node.Type == xhtml.ElementNode && node.Data == "a" {
 			for _, attribute := range node.Attr {
 				if strings.EqualFold(attribute.Key, "href") && attribute.Val != "" && !strings.HasPrefix(attribute.Val, "#") {
-					if target := strictPopoverTarget(base, attribute.Val, index); target != nil {
+					if target := strictPopoverTarget(base, attribute.Val, index, basePath); target != nil {
 						node.Attr = append(node.Attr, xhtml.Attribute{Key: "data-popover-path", Val: target.RelPath})
 					}
 					break
@@ -289,7 +293,7 @@ func annotateStrictPopovers(content string, article *model.Note, index *model.Va
 	return output.String(), nil
 }
 
-func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex) *model.Note {
+func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex, basePath string) *model.Note {
 	if base == nil || index == nil {
 		return nil
 	}
@@ -299,6 +303,10 @@ func strictPopoverTarget(base *url.URL, href string, index *model.VaultIndex) *m
 	}
 	resolved := base.ResolveReference(targetURL)
 	cleaned := strings.TrimSuffix(resolved.EscapedPath(), "/index.html")
+	prefix := strings.TrimSuffix(basePath, "/")
+	if prefix != "" && strings.HasPrefix(cleaned, prefix) {
+		cleaned = strings.TrimPrefix(cleaned, prefix)
+	}
 	if cleaned == "" {
 		cleaned = "/"
 	}

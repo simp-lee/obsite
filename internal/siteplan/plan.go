@@ -158,7 +158,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
-	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{CollectRelatedSemantic: cfg.Related.Enabled})
+	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
 	if indexErr != nil {
 		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
 	}
@@ -268,6 +268,21 @@ func isIntermediateVersionContainer(sectionPath string, config *model.VersionsCo
 		}
 	}
 	return false
+}
+
+func allSections(sections map[string]*model.Section) []*model.Section {
+	paths := make([]string, 0, len(sections))
+	for sectionPath := range sections {
+		paths = append(paths, sectionPath)
+	}
+	sort.Strings(paths)
+	result := make([]*model.Section, 0, len(paths))
+	for _, sectionPath := range paths {
+		if sections[sectionPath] != nil {
+			result = append(result, sections[sectionPath])
+		}
+	}
+	return result
 }
 
 func requiredSectionPaths(sources vault.StrictFrontmatterResult) map[string]struct{} {

@@ -1,6 +1,7 @@
 package link
 
 import (
+	"net/url"
 	"path"
 	"sort"
 	"strings"
@@ -120,9 +121,26 @@ func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex,
 		return
 	}
 	target = strings.TrimSpace(target)
-	pathTarget := standard || target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../"))
+	parsed, parseErr := url.Parse(target)
+	if standard && parseErr == nil {
+		if parsed.IsAbs() || parsed.Host != "" {
+			return
+		}
+		if parsed.Fragment != "" && strings.TrimSpace(fragment) == "" {
+			fragment = parsed.Fragment
+		}
+		target = parsed.Path
+	}
+	pathTarget := standard && target != "" || !standard && target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../"))
 	if pathTarget {
-		if standard && strings.HasPrefix(target, "/") {
+		if standard && parseErr == nil && strings.HasPrefix(target, "/") {
+			routeLookup := internalwikilink.LookupRouteTarget(idx, source, parsed.EscapedPath(), strings.TrimSpace(fragment))
+			if routeLookup.Note != nil || routeLookup.Section != nil {
+				if routeLookup.Note != nil {
+					targets[routeLookup.Note.RelPath] = struct{}{}
+				}
+				return
+			}
 			target = strings.TrimPrefix(target, "/")
 		} else {
 			target = path.Join(path.Dir(source.RelPath), target)

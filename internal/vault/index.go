@@ -26,6 +26,7 @@ import (
 type BuildIndexOptions struct {
 	Concurrency            int
 	CollectRelatedSemantic bool
+	ResourceSections       []*model.Section
 }
 
 // IndexResult owns the immutable index and any optional build-only sidecars.
@@ -92,7 +93,11 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 		Unpublished:          unpublished,
 	}
 	parser := markdown.NewParser(diagCollector)
-	resourceVersions := resourceVersionMap(scanResult.ResourceFiles, publicSections)
+	scopeSections := options.ResourceSections
+	if len(scopeSections) == 0 {
+		scopeSections = publicSections
+	}
+	resourceVersions := resourceVersionMap(scanResult.ResourceFiles, scopeSections)
 	idx.ResourceVersions = resourceVersions
 	indexedNotes := indexPublicNotes(public, scanResult, parser, diagCollector, indexBuildOptions{
 		concurrency:            options.Concurrency,
