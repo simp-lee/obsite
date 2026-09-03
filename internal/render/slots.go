@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"html/template"
-	"net/url"
 	"path"
 	"strings"
+
 	textparse "text/template/parse"
+
+	"github.com/simp-lee/obsite/internal/slug"
 )
 
 const (
@@ -151,15 +153,12 @@ func themeAssetURL(siteRootRel string, assetPath string) (string, error) {
 		return "", fmt.Errorf("theme asset path %q must be a clean theme-assets-relative URL path", assetPath)
 	}
 
-	segments := strings.Split(cleaned, "/")
-	for index := range segments {
-		segments[index] = url.PathEscape(segments[index])
-	}
+	encoded := slug.EncodePath(cleaned)
 	base := strings.TrimSpace(siteRootRel)
 	if base == "" {
 		base = "./"
 	} else if !strings.HasSuffix(base, "/") {
 		base += "/"
 	}
-	return base + "assets/theme/" + strings.Join(segments, "/"), nil
+	return base + "assets/theme/" + encoded, nil
 }

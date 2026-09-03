@@ -80,6 +80,8 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	idx := &model.VaultIndex{
 		AttachmentFolderPath: scanResult.AttachmentFolderPath,
 		Notes:                make(map[string]*model.Note, len(public)),
+		Sections:             make(map[string]*model.Section, len(publicSections)),
+		SectionsByRoute:      make(map[string]*model.Section, len(publicSections)),
 		NoteBySlug:           make(map[string]*model.Note, len(public)),
 		NoteByName:           make(map[string][]*model.Note),
 		AliasByName:          make(map[string][]*model.Note),
@@ -122,6 +124,10 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	sectionNotes := make([]*model.Note, 0, len(publicSections))
 	for _, section := range publicSections {
 		if section != nil {
+			idx.Sections[section.RelPath] = section
+			if section.Route != "" {
+				idx.SectionsByRoute[section.Route] = section
+			}
 			sectionNotes = append(sectionNotes, &model.Note{RelPath: section.SourcePath, RawContent: cloneBytes(section.RawContent), BodyStartLine: section.BodyStartLine, Route: section.Route, VersionID: section.VersionID, Slug: strings.Trim(section.Route, "/"), Frontmatter: model.Frontmatter{Title: section.Title}})
 		}
 	}

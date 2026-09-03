@@ -137,7 +137,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		record(collector, diag.KindSection, "_index.md", "vault root must contain _index.md")
 	}
 
-	versions, versionByPath := planVersions(cfg.Versions, resolvedVault, sections, sources, collector)
+	versions, versionByPath := planVersions(cfg.Versions, resolvedVault, sections, sources, scan.ResourceFiles, collector)
 	for _, section := range sections {
 		if versionID := versionByPath[section.RelPath]; versionID != "" {
 			section.VersionID = versionID
@@ -313,7 +313,7 @@ func hasSectionParent(sections map[string]*model.Section, sectionPath string) bo
 	}
 }
 
-func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, collector *diag.Collector) ([]*model.Version, map[string]string) {
+func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, resourceFiles []string, collector *diag.Collector) ([]*model.Version, map[string]string) {
 	if config == nil {
 		return nil, map[string]string{}
 	}
@@ -413,6 +413,22 @@ func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[s
 			if !claimed {
 				record(collector, diag.KindVersion, source.RelPath, "content under version root %q is not covered by a version source", root)
 			}
+		}
+	}
+	for _, relPath := range resourceFiles {
+		physical := path.Dir(relPath)
+		if physical == "." || (!isDescendant(physical, root) && physical != root) {
+			continue
+		}
+		claimed := false
+		for _, version := range versions {
+			if physical == version.Source || isDescendant(physical, version.Source) {
+				claimed = true
+				break
+			}
+		}
+		if !claimed {
+			record(collector, diag.KindVersion, relPath, "resource under version root %q is not covered by a version source", root)
 		}
 	}
 	return versions, versionByPath
@@ -925,9 +941,6 @@ func buildVersionCorrespondence(versions []*model.Version) {
 					continue
 				}
 				items[fold(path.Join(path.Dir(rel), segment))] = article
-				if article.Slug != "" {
-					items[fold(path.Join(path.Dir(rel), article.Slug))] = article
-				}
 			}
 		}
 		byVersionPath[version.ID] = items

@@ -303,8 +303,15 @@
       return normalizeSitePath(node && node.url);
     }
 
+    function encodedSitePath(value) {
+      if (typeof value !== "string") {
+        return "";
+      }
+      return value.replace(/^\/+|\/+$/g, "").trim();
+    }
+
     function buildNodeHref(rawURL) {
-      var cleanURL = normalizeSitePath(rawURL);
+      var cleanURL = encodedSitePath(rawURL);
       if (!servedSiteRootURL) {
         return cleanURL ? (basePath + cleanURL + "/") : basePath;
       }

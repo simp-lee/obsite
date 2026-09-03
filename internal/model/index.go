@@ -19,6 +19,8 @@ import (
 type VaultIndex struct {
 	AttachmentFolderPath string
 	Notes                map[string]*Note
+	Sections             map[string]*Section
+	SectionsByRoute      map[string]*Section
 	NoteBySlug           map[string]*Note
 	NoteByName           map[string][]*Note
 	AliasByName          map[string][]*Note

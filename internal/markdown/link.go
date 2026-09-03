@@ -10,6 +10,7 @@ import (
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
+	"github.com/simp-lee/obsite/internal/slug"
 	"github.com/yuin/goldmark"
 	gast "github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/renderer"
@@ -100,6 +101,13 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, vaultPath, fragment)
 	}
 	if lookup.Note == nil {
+		if section := lookupSectionTarget(r.index, r.sourceNote, targetPath); section != nil && inLinkVersionScope(r.sourceNote, section) {
+			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
+			if fragment != "" {
+				href += "#" + fragment
+			}
+			return basePathDestination(r.outputNote, href)
+		}
 		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" {
 			destination := resource
 			if r.assetSink != nil {
@@ -141,6 +149,33 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		return raw
 	}
 	return internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, "")
+}
+
+func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target string) *model.Section {
+	if index == nil {
+		return nil
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return nil
+	}
+	if strings.HasPrefix(target, "/") {
+		cleaned := strings.Trim(target, "/")
+		route := "/"
+		if cleaned != "" {
+			route = "/" + slug.EncodePath(cleaned) + "/"
+		}
+		return index.SectionsByRoute[route]
+	}
+	if note == nil {
+		return nil
+	}
+	sectionPath := path.Clean(path.Join(path.Dir(note.RelPath), target))
+	return index.Sections[sectionPath]
+}
+
+func inLinkVersionScope(note *model.Note, section *model.Section) bool {
+	return note == nil || section == nil || note.VersionID == section.VersionID
 }
 
 func basePathDestination(note *model.Note, raw string) string {
