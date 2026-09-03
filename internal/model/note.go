@@ -160,6 +160,7 @@ type LinkRef struct {
 	ResolvedRelPath string
 	Display         string
 	Fragment        string
+	Standard        bool
 	Line            int
 	Offset          int
 }

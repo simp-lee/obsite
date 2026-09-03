@@ -2,6 +2,7 @@ package embed
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"path"
 	"path/filepath"
@@ -437,7 +438,7 @@ func (r *wikilinkHTMLRenderer) recordDeadEmbed(ref *model.EmbedRef, rawTarget st
 		return
 	}
 
-	r.diag.Warningf(diag.KindDeadLink, r.location(ref), "note embed %q could not be resolved; rendering as plain text", rawTarget)
+	r.addDiagnostic(diag.KindDeadLink, ref, rawTarget, "note embed %q could not be resolved; rendering as plain text", rawTarget)
 }
 
 func (r *wikilinkHTMLRenderer) recordUnresolvedAsset(ref *model.EmbedRef, rawTarget string) {
@@ -445,7 +446,7 @@ func (r *wikilinkHTMLRenderer) recordUnresolvedAsset(ref *model.EmbedRef, rawTar
 		return
 	}
 
-	r.diag.Warningf(diag.KindUnresolvedAsset, r.location(ref), "image embed %q could not be resolved to a vault asset; rendering as plain text", rawTarget)
+	r.addDiagnostic(diag.KindUnresolvedAsset, ref, rawTarget, "image embed %q could not be resolved to a vault asset; rendering as plain text", rawTarget)
 }
 
 func (r *wikilinkHTMLRenderer) recordAmbiguousAsset(ref *model.EmbedRef, rawTarget string, candidates []string) {
@@ -453,7 +454,7 @@ func (r *wikilinkHTMLRenderer) recordAmbiguousAsset(ref *model.EmbedRef, rawTarg
 		return
 	}
 
-	r.diag.Warningf(diag.KindUnresolvedAsset, r.location(ref), "image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
+	r.addDiagnostic(diag.KindUnresolvedAsset, ref, rawTarget, "image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
 }
 
 func (r *wikilinkHTMLRenderer) recordUnpublished(ref *model.EmbedRef, rawTarget string, note *model.Note) {
@@ -461,7 +462,7 @@ func (r *wikilinkHTMLRenderer) recordUnpublished(ref *model.EmbedRef, rawTarget 
 		return
 	}
 
-	r.diag.Warningf(kindUnpublishedEmbed, r.location(ref), "note embed %q points to unpublished note %q; rendering as plain text", rawTarget, note.RelPath)
+	r.addDiagnostic(kindUnpublishedEmbed, ref, rawTarget, "note embed %q points to unpublished note %q; rendering as plain text", rawTarget, note.RelPath)
 }
 
 func (r *wikilinkHTMLRenderer) recordMissingFragment(ref *model.EmbedRef, rawTarget string, note *model.Note, fragment string) {
@@ -470,7 +471,7 @@ func (r *wikilinkHTMLRenderer) recordMissingFragment(ref *model.EmbedRef, rawTar
 	}
 
 	missing := normalizeInlineText(fragment)
-	r.diag.Warningf(diag.KindDeadLink, r.location(ref), "note embed %q points to missing heading %q in %q; rendering as plain text", rawTarget, missing, note.RelPath)
+	r.addDiagnostic(diag.KindDeadLink, ref, rawTarget, "note embed %q points to missing heading %q in %q; rendering as plain text", rawTarget, missing, note.RelPath)
 }
 
 func (r *wikilinkHTMLRenderer) recordAmbiguous(ref *model.EmbedRef, rawTarget string, chosen *model.Note, candidates []string) {
@@ -478,7 +479,7 @@ func (r *wikilinkHTMLRenderer) recordAmbiguous(ref *model.EmbedRef, rawTarget st
 		return
 	}
 
-	r.diag.Warningf(kindAmbiguousEmbed, r.location(ref), "note embed %q matched multiple notes at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.RelPath)
+	r.addDiagnostic(kindAmbiguousEmbed, ref, rawTarget, "note embed %q matched multiple notes at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.RelPath)
 }
 
 func (r *wikilinkHTMLRenderer) recordCycle(ref *model.EmbedRef, rawTarget string, note *model.Note, fragmentID string) {
@@ -495,7 +496,7 @@ func (r *wikilinkHTMLRenderer) recordCycle(ref *model.EmbedRef, rawTarget string
 	}
 	sort.Strings(cycle)
 
-	r.diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "note embed %q would create a transclusion cycle (%s); rendering as plain text", rawTarget, strings.Join(cycle, " -> "))
+	r.addDiagnostic(diag.KindUnsupportedSyntax, ref, rawTarget, "note embed %q would create a transclusion cycle (%s); rendering as plain text", rawTarget, strings.Join(cycle, " -> "))
 }
 
 func (r *wikilinkHTMLRenderer) recordUnsupported(ref *model.EmbedRef, rawTarget string, message string) {
@@ -511,7 +512,7 @@ func (r *wikilinkHTMLRenderer) recordAmbiguousCanvas(ref *model.EmbedRef, rawTar
 		return
 	}
 
-	r.diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "embed %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
+	r.addDiagnostic(diag.KindUnsupportedSyntax, ref, rawTarget, "embed %q matched multiple canvas resources after canonical lookup (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
 }
 
 func (r *wikilinkHTMLRenderer) recordUnsupportedWithFallback(ref *model.EmbedRef, rawTarget string, message string, fallback string) {
@@ -519,7 +520,14 @@ func (r *wikilinkHTMLRenderer) recordUnsupportedWithFallback(ref *model.EmbedRef
 		return
 	}
 
-	r.diag.Warningf(diag.KindUnsupportedSyntax, r.location(ref), "embed %q %s; rendering as %s", rawTarget, message, fallback)
+	r.addDiagnostic(diag.KindUnsupportedSyntax, ref, rawTarget, "embed %q %s; rendering as %s", rawTarget, message, fallback)
+}
+
+func (r *wikilinkHTMLRenderer) addDiagnostic(kind diag.Kind, ref *model.EmbedRef, target, format string, args ...any) {
+	if r == nil || r.diag == nil {
+		return
+	}
+	r.diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kind, Location: r.location(ref), Target: target, Message: fmt.Sprintf(format, args...)})
 }
 
 func (r *wikilinkHTMLRenderer) location(ref *model.EmbedRef) diag.Location {

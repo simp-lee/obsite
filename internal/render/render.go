@@ -2,12 +2,9 @@ package render
 
 import (
 	"crypto/sha256"
-	"errors"
 	"fmt"
 	"io/fs"
-	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -76,24 +73,6 @@ func StyleCSSData() ([]byte, error) {
 	return compact, nil
 }
 
-// EmitStyleCSS writes the fixed built-in stylesheet into the output root.
-func EmitStyleCSS(outputRoot string) (bool, error) {
-	if strings.TrimSpace(outputRoot) == "" {
-		return false, errors.New("emit style.css: output root is required")
-	}
-	data, err := StyleCSSData()
-	if err != nil {
-		return false, err
-	}
-	if err := os.MkdirAll(outputRoot, 0o755); err != nil {
-		return false, fmt.Errorf("emit style.css: mkdir %q: %w", outputRoot, err)
-	}
-	if err := os.WriteFile(filepath.Join(outputRoot, "style.css"), data, 0o644); err != nil {
-		return false, fmt.Errorf("emit style.css: write style.css: %w", err)
-	}
-	return true, nil
-}
-
 // RuntimeAssetData returns all fixed offline runtime files for owner-registry publication.
 func RuntimeAssetData() ([]RuntimeAsset, error) {
 	result := make([]RuntimeAsset, 0, len(runtimeTemplateAssets)+1)
@@ -112,34 +91,6 @@ func RuntimeAssetData() ([]RuntimeAsset, error) {
 	return result, nil
 }
 
-// EmitRuntimeAssets writes all fixed offline runtime and vendor assets once.
-func EmitRuntimeAssets(outputRoot string) error {
-	if strings.TrimSpace(outputRoot) == "" {
-		return errors.New("emit runtime assets: output root is required")
-	}
-	assets, err := RuntimeAssetData()
-	if err != nil {
-		return err
-	}
-	for _, asset := range assets {
-		if err := writeRuntimeAsset(outputRoot, asset.OutputPath, asset.Data); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func writeRuntimeAsset(outputRoot, outputPath string, data []byte) error {
-	assetPath := filepath.Join(outputRoot, filepath.FromSlash(outputPath))
-	if err := os.MkdirAll(filepath.Dir(assetPath), 0o755); err != nil {
-		return fmt.Errorf("emit runtime assets: mkdir %q: %w", filepath.Dir(assetPath), err)
-	}
-	if err := os.WriteFile(assetPath, data, 0o644); err != nil {
-		return fmt.Errorf("emit runtime assets: write %q: %w", outputPath, err)
-	}
-	return nil
-}
-
 // SharedRuntimeOutputPath returns the content-addressed shared runtime path.
 func SharedRuntimeOutputPath() (string, error) {
 	runtimeFile, err := loadSharedRuntimeFile()
@@ -147,18 +98,6 @@ func SharedRuntimeOutputPath() (string, error) {
 		return "", err
 	}
 	return runtimeFile.outputPath, nil
-}
-
-// RuntimeAssetOutputPaths returns all fixed offline runtime output paths.
-func RuntimeAssetOutputPaths() []string {
-	paths := make([]string, 0, len(runtimeTemplateAssets)+1)
-	for _, asset := range runtimeTemplateAssets {
-		paths = append(paths, asset.outputPath)
-	}
-	if runtimeFile, err := loadSharedRuntimeFile(); err == nil {
-		paths = append(paths, runtimeFile.outputPath)
-	}
-	return paths
 }
 
 func readEmbeddedAsset(name string) ([]byte, error) {

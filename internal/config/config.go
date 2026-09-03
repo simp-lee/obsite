@@ -680,8 +680,8 @@ func normalizeDefaultImg(raw string) (string, bool, error) {
 		return "", false, fmt.Errorf("defaultImg must be an absolute hosted http(s) URL or a vault-root-relative resource path using '/' separators")
 	}
 	cleaned := path.Clean(trimmed)
-	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
-		return "", false, fmt.Errorf("defaultImg must stay inside the vault")
+	if cleaned != trimmed || cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", false, fmt.Errorf("defaultImg must be a normalized vault-relative path")
 	}
 	return cleaned, false, nil
 }

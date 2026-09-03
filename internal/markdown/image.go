@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"bytes"
+	"fmt"
 	"html"
 	"net/url"
 	"path"
@@ -419,7 +420,7 @@ func (r *codeBlockHTMLRenderer) recordUnsupportedFence(source []byte, node *gast
 		location.Path = r.note.RelPath
 	}
 	location.Line = fencedCodeBlockLine(r.note, source, node)
-	r.diag.Warningf(diag.KindUnsupportedSyntax, location, "%s fenced code block is not supported; rendering as plain preformatted text", language)
+	r.diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnsupportedSyntax, Location: location, Field: "code-fence", Target: language, Message: fmt.Sprintf("%s fenced code block is not supported; rendering as plain preformatted text", language)})
 }
 
 func unsupportedFenceLanguage(language []byte) (string, bool) {

@@ -88,7 +88,7 @@ func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
 		if source != nil {
 			for _, ref := range source.OutLinks {
 				target, fragment := sourceLinkTarget(ref.RawTarget, ref.Fragment)
-				addResolvedSourceTarget(outgoing, idx, source, target, fragment)
+				addResolvedSourceTarget(outgoing, idx, source, target, fragment, ref.Standard)
 			}
 			for _, embed := range source.Embeds {
 				if embed.IsImage {
@@ -98,7 +98,7 @@ func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
 				if strings.HasPrefix(strings.TrimSpace(fragment), "^") {
 					fragment = ""
 				}
-				addResolvedSourceTarget(outgoing, idx, source, embed.Target, fragment)
+				addResolvedSourceTarget(outgoing, idx, source, embed.Target, fragment, false)
 			}
 		}
 
@@ -115,15 +115,23 @@ func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
 	return graph
 }
 
-func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex, source *model.Note, target string, fragment string) {
+func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex, source *model.Note, target string, fragment string, standard bool) {
 	if targets == nil || idx == nil || source == nil {
 		return
 	}
 	target = strings.TrimSpace(target)
-	if target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../")) {
-		target = path.Join(path.Dir(source.RelPath), target)
+	pathTarget := standard || target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../"))
+	if pathTarget {
+		if standard && strings.HasPrefix(target, "/") {
+			target = strings.TrimPrefix(target, "/")
+		} else {
+			target = path.Join(path.Dir(source.RelPath), target)
+		}
 	}
 	lookup := internalwikilink.LookupTarget(idx, source, target, strings.TrimSpace(fragment))
+	if pathTarget {
+		lookup = internalwikilink.LookupPathTarget(idx, source, target, strings.TrimSpace(fragment))
+	}
 	if lookup.Note == nil || lookup.Unpublished || lookup.MissingFragment {
 		return
 	}

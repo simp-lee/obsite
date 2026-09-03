@@ -35,6 +35,7 @@ type Server struct {
 	port           int
 	notFoundPath   string
 	basePath       string
+	basePathMu     sync.RWMutex
 	liveReload     *liveReloadHub
 }
 
@@ -200,9 +201,10 @@ func (s *Server) serveNotFound(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	body = injectPreviewBaseHrefAt(body, s.basePath)
+	basePath := s.currentBasePath()
+	body = injectPreviewBaseHrefAt(body, basePath)
 	if s.liveReload != nil {
-		body = injectLiveReloadScriptAt(body, s.basePath)
+		body = injectLiveReloadScriptAt(body, basePath)
 	}
 	if len(body) == 0 {
 		http.NotFound(w, r)
@@ -304,7 +306,7 @@ func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, s
 	headers := cloneHeaders(recorder.Header())
 	headers.Set("Cache-Control", "no-store")
 	if statusCode != http.StatusPartialContent && !requestHasRange(r) && shouldInjectLiveReload(headers, body) {
-		body = injectLiveReloadScriptAt(body, s.basePath)
+		body = injectLiveReloadScriptAt(body, s.currentBasePath())
 		headers.Set("Content-Length", strconv.Itoa(len(body)))
 		clearRangeHeaders(headers)
 	}
@@ -384,11 +386,32 @@ func detectOutputBasePath(outputPath string) string {
 	return ensureDirectoryPath(cleaned)
 }
 
+// RefreshBasePath reloads the base path embedded in the current root page.
+// Watch mode calls it after a successful configuration rebuild.
+func (s *Server) RefreshBasePath() {
+	if s == nil {
+		return
+	}
+	basePath := detectOutputBasePath(s.outputPath)
+	s.basePathMu.Lock()
+	s.basePath = basePath
+	s.basePathMu.Unlock()
+}
+
+func (s *Server) currentBasePath() string {
+	if s == nil {
+		return "/"
+	}
+	s.basePathMu.RLock()
+	defer s.basePathMu.RUnlock()
+	return s.basePath
+}
+
 func (s *Server) outputPathForRequest(cleanPath string) (string, bool) {
 	if s == nil {
 		return "", false
 	}
-	base := s.basePath
+	base := s.currentBasePath()
 	if base == "" || base == "/" {
 		return cleanPath, true
 	}
@@ -410,10 +433,11 @@ func (s *Server) outputPathForRequest(cleanPath string) (string, bool) {
 }
 
 func (s *Server) externalOutputPath(outputPath string) string {
-	if s == nil || s.basePath == "" || s.basePath == "/" {
+	basePath := s.currentBasePath()
+	if basePath == "" || basePath == "/" {
 		return outputPath
 	}
-	return strings.TrimSuffix(s.basePath, "/") + outputPath
+	return strings.TrimSuffix(basePath, "/") + outputPath
 }
 
 func normalizeOutputPath(outputPath string) (string, error) {

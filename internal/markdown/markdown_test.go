@@ -2276,12 +2276,14 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 			Severity: diag.SeverityWarning,
 			Kind:     diag.KindDeadLink,
 			Location: diag.Location{Path: current.RelPath, Line: 1},
+			Target:   "Missing Note",
 			Message:  `note embed "Missing Note" could not be resolved; rendering as plain text`,
 		},
 		{
 			Severity: diag.SeverityWarning,
 			Kind:     diag.KindUnresolvedAsset,
 			Location: diag.Location{Path: current.RelPath, Line: 3},
+			Target:   "missing.png",
 			Message:  `image embed "missing.png" could not be resolved to a vault asset; rendering as plain text`,
 		},
 	}
@@ -2326,6 +2328,7 @@ func TestNewMarkdownWarnsOnAmbiguousCanonicalImageEmbeds(t *testing.T) {
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindUnresolvedAsset,
 		Location: diag.Location{Path: note.RelPath, Line: 1},
+		Target:   "../images/CAFÉ Chart.png",
 		Message:  `image embed "../images/CAFÉ Chart.png" matched multiple publishable vault assets after canonical path normalization (images/Café Chart.png, images/Café Chart.png); refusing canonical fallback and rendering as plain text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -2454,6 +2457,8 @@ func TestNewMarkdownSectionEmbedUnsupportedFenceDiagnosticsUseOriginalSourceLine
 		Severity: diag.SeverityWarning,
 		Kind:     diag.KindUnsupportedSyntax,
 		Location: diag.Location{Path: target.RelPath, Line: 19},
+		Field:    "code-fence",
+		Target:   "dataview",
 		Message:  `dataview fenced code block is not supported; rendering as plain preformatted text`,
 	}}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {

@@ -126,6 +126,9 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedV
 		debounce:   defaultWatchDebounce,
 		rebuild:    build,
 		notifyReload: func() {
+			if refresher, ok := srv.(interface{ RefreshBasePath() }); ok {
+				refresher.RefreshBasePath()
+			}
 			srv.NotifyReload()
 		},
 		onError: func(err error) {

@@ -125,6 +125,10 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 
 	required := requiredSectionPaths(sources)
 	for sectionPath := range required {
+		if isIntermediateVersionContainer(sectionPath, cfg.Versions, sources) {
+			delete(required, sectionPath)
+			continue
+		}
 		if _, ok := sections[sectionPath]; !ok {
 			record(collector, diag.KindSection, sectionSourcePath(sectionPath), "missing required _index.md for section %q", sectionPath)
 		}
@@ -244,6 +248,24 @@ func record(collector *diag.Collector, kind diag.Kind, source string, format str
 		}
 	}
 	collector.Add(item)
+}
+
+func isIntermediateVersionContainer(sectionPath string, config *model.VersionsConfig, sources vault.StrictFrontmatterResult) bool {
+	if config == nil || sectionPath == "." || sectionPath == config.Root {
+		return false
+	}
+	for _, source := range sources.Sources {
+		if source.Article != nil && path.Dir(source.RelPath) == sectionPath {
+			return false
+		}
+	}
+	for _, entry := range config.Entries {
+		fullSource := path.Join(config.Root, entry.Source)
+		if sectionPath != fullSource && isDescendant(fullSource, sectionPath) {
+			return true
+		}
+	}
+	return false
 }
 
 func requiredSectionPaths(sources vault.StrictFrontmatterResult) map[string]struct{} {
@@ -554,14 +576,16 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 		if article == nil {
 			continue
 		}
-		if _, _, prefixErr := slug.NumericPrefix(path.Base(article.RelPath)); prefixErr != nil {
-			record(collector, diag.KindOrder, article.RelPath, "%v", prefixErr)
-			continue
-		}
 		sectionPath := path.Dir(article.RelPath)
 		section := sections[sectionPath]
 		if section == nil {
 			record(collector, diag.KindSection, article.RelPath, "article directory %q has no _index.md", sectionPath)
+			continue
+		}
+		article.SectionPath = section.RelPath
+		article.VersionID = section.VersionID
+		if _, _, prefixErr := slug.NumericPrefix(path.Base(article.RelPath)); prefixErr != nil {
+			record(collector, diag.KindOrder, article.RelPath, "%v", prefixErr)
 			continue
 		}
 		if article.Frontmatter.Publish == nil || !*article.Frontmatter.Publish {
@@ -586,8 +610,6 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 			record(collector, diag.KindRoute, article.RelPath, "%v", err)
 			continue
 		}
-		article.SectionPath = section.RelPath
-		article.VersionID = section.VersionID
 		article.Slug = segment
 		if section.VersionID == "" {
 			article.Route = joinRoute(section.Route, segment)
@@ -739,6 +761,10 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 	}
 }
 
+func portableVaultAssetPath(value string) bool {
+	return internalfsutil.IsPortableSitePath(strings.ReplaceAll(value, "%", "x"))
+}
+
 func assetRecord(collector *diag.Collector, owner, field, target, format string, args ...any) {
 	if collector == nil {
 		return
@@ -761,7 +787,7 @@ func validatePlannedAssets(vaultRoot string, plan *model.SitePlan, sources vault
 			return
 		}
 		seen[seenKey] = struct{}{}
-		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !internalfsutil.IsPortableSitePath(source) {
+		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !portableVaultAssetPath(source) {
 			assetRecord(collector, owner, kind, source, "%s must be a normalized vault-relative local asset", kind)
 			return
 		}
@@ -831,7 +857,7 @@ func validateStrictMarkdown(plan *model.SitePlan, index *model.VaultIndex, colle
 		}
 		note := &model.Note{
 			RelPath: section.SourcePath, BodyStartLine: section.BodyStartLine, RawContent: section.RawContent,
-			Route: section.Route, Slug: strings.Trim(section.Route, "/"), Headings: section.Headings,
+			Route: section.Route, VersionID: section.VersionID, Slug: strings.Trim(section.Route, "/"), Headings: section.Headings,
 			HeadingSections: section.HeadingSections, OutLinks: section.OutLinks, Embeds: section.Embeds,
 			ImageRefs: section.ImageRefs, HasMath: section.HasMath, HasMermaid: section.HasMermaid,
 		}
@@ -884,6 +910,9 @@ func buildVersionCorrespondence(versions []*model.Version) {
 					continue
 				}
 				items[fold(path.Join(path.Dir(rel), segment))] = article
+				if article.Slug != "" {
+					items[fold(path.Join(path.Dir(rel), article.Slug))] = article
+				}
 			}
 		}
 		byVersionPath[version.ID] = items
@@ -1170,7 +1199,8 @@ func portableRoute(route string) bool {
 			continue
 		}
 		decoded, err := url.PathUnescape(segment)
-		if err != nil || !internalfsutil.IsPortableSitePath(decoded) {
+		portableValue := strings.ReplaceAll(decoded, "%", "x")
+		if err != nil || !internalfsutil.IsPortableSitePath(portableValue) {
 			return false
 		}
 	}
