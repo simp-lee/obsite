@@ -104,6 +104,12 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 	} else if targetPath != "" {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
+		if lookup.Note == nil && err == nil && r.sourceNote.Route != "" {
+			if base, parseErr := url.Parse(r.sourceNote.Route); parseErr == nil {
+				resolved := base.ResolveReference(parsed)
+				lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, resolved.EscapedPath(), fragment)
+			}
+		}
 	} else {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, "", fragment)
 	}
