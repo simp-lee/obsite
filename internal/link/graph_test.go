@@ -53,6 +53,25 @@ func TestEmbedLinksDoNotPropagateToRecommendations(t *testing.T) {
 	}
 }
 
+func TestBuildSourceGraphResolvesRelativeGeneratedRoutes(t *testing.T) {
+	t.Parallel()
+
+	current := testNote("docs/topic/current.md", "docs/topic/current")
+	current.Route = "/docs/topic/current/"
+	target := testNote("docs/topic/02-next.md", "docs/topic/next", withHeadings(model.Heading{Level: 2, Text: "Section Title", ID: "section-title"}))
+	target.Route = "/docs/topic/next/"
+	current.OutLinks = []model.LinkRef{{
+		RawTarget: "../next/?q=1#Section%20Title",
+		Fragment:  "Section%20Title",
+		Standard:  true,
+	}}
+
+	graph := BuildSourceGraph(buildIndex([]*model.Note{current, target}, nil))
+	if got, want := graph.Forward[current.RelPath], []string{target.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("graph.Forward[%q] = %#v, want relative generated route target %#v", current.RelPath, got, want)
+	}
+}
+
 func TestBuildGraphBuildsForwardAndBackwardMaps(t *testing.T) {
 	t.Parallel()
 

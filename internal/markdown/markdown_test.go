@@ -2578,6 +2578,46 @@ func TestNewMarkdownSectionEmbedsScopeRenderedMetadata(t *testing.T) {
 	}
 }
 
+func TestNewMarkdownResolvesRelativeGeneratedRoutes(t *testing.T) {
+	t.Parallel()
+
+	current := &model.Note{RelPath: "docs/topic/current.md", Slug: "docs/topic/current", Route: "/docs/topic/current/"}
+	target := &model.Note{
+		RelPath:  "docs/topic/02-next.md",
+		Slug:     "docs/topic/next",
+		Route:    "/docs/topic/next/",
+		Headings: []model.Heading{{Level: 2, Text: "Section Title", ID: "section-title"}},
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			current.RelPath: current,
+			target.RelPath:  target,
+		},
+		NoteBySlug: map[string]*model.Note{
+			current.Slug: current,
+			target.Slug:  target,
+		},
+		NoteByName: map[string][]*model.Note{
+			"current": {current},
+			"next":    {target},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, _ := NewMarkdown(idx, current, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte(`[Next](../next/?q=1#Section%20Title)`), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	if got, want := buf.String(), "<p><a href=\"../next/?q=1#section-title\">Next</a></p>\n"; got != want {
+		t.Fatalf("HTML = %q, want %q", got, want)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+}
+
 func TestNewMarkdownSectionEmbedsPreserveDuplicateHeadingIDs(t *testing.T) {
 	t.Parallel()
 
