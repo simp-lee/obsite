@@ -369,10 +369,13 @@ func extractNoteMetadata(
 			if current.Embed {
 				embedRef := extractEmbedRef(note, scanResult, current, source, lineStarts, lineOffset)
 				note.Embeds = append(note.Embeds, embedRef)
+				imageLookup := lookupImageEmbedAssetPath(note, scanResult, embedRef.Target)
 				if embedRef.IsImage {
-					if assetPath := resolveImageAssetPath(note, scanResult, embedRef.Target); assetPath != "" && resourceVersionAllowed(note, resourceVersions, assetPath) {
-						registerAsset(assets, assetPath)
+					if imageLookup.Path != "" && resourceVersionAllowed(note, resourceVersions, imageLookup.Path) {
+						registerAsset(assets, imageLookup.Path)
 					}
+				} else if resourcepath.LooksLikeImage(embedRef.Target) && len(imageLookup.Ambiguous) > 0 {
+					recordAmbiguousImageEmbed(diagCollector, note, embedRef.Target, imageLookup.Ambiguous, current, lineStarts, lineOffset)
 				}
 			} else {
 				note.OutLinks = append(note.OutLinks, extractLinkRef(current, source, lineStarts, lineOffset))
@@ -387,7 +390,7 @@ func extractNoteMetadata(
 			} else if len(lookup.Ambiguous) > 0 {
 				recordAmbiguousMarkdownImage(diagCollector, note, rawDestination, lookup.Ambiguous, current, lineStarts, lineOffset)
 			} else {
-				recordUnresolvedMarkdownImage(diagCollector, note, scanResult, rawDestination, current, lineStarts, lineOffset)
+				recordUnresolvedMarkdownImage(diagCollector, note, rawDestination, current, lineStarts, lineOffset)
 			}
 			return gast.WalkSkipChildren, nil
 		case *gast.FencedCodeBlock:
@@ -622,10 +625,6 @@ func looksLikeImageEmbed(note *model.Note, scanResult ScanResult, target string)
 	return lookup.Path != "" && resourcepath.LooksLikeImage(lookup.Path)
 }
 
-func resolveImageAssetPath(note *model.Note, scanResult ScanResult, target string) string {
-	return lookupImageEmbedAssetPath(note, scanResult, target).Path
-}
-
 func lookupImageEmbedAssetPath(note *model.Note, scanResult ScanResult, target string) model.PathLookupResult {
 	return resourcepath.LookupImageEmbedPath(note, scanResult.AttachmentFolderPath, target, scanResult.LookupResourcePath)
 }
@@ -634,28 +633,44 @@ func lookupImageAssetPath(note *model.Note, scanResult ScanResult, target string
 	return resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, target, scanResult.LookupResourcePath)
 }
 
-func imageAssetCandidates(note *model.Note, scanResult ScanResult, target string) []string {
-	return resourcepath.CandidatePathsWithAttachmentFolder(note, scanResult.AttachmentFolderPath, target)
-}
-
 func recordUnresolvedMarkdownImage(
 	diagCollector *diag.Collector,
 	note *model.Note,
-	scanResult ScanResult,
 	rawTarget string,
 	node gast.Node,
 	lineStarts []int,
 	lineOffset int,
 ) {
-	if diagCollector == nil || note == nil || !shouldDiagnoseMarkdownImageTarget(note, scanResult, rawTarget) {
+	if diagCollector == nil || note == nil || !resourcepath.IsLocalTarget(rawTarget) {
 		return
 	}
 
 	diagCollector.Add(diag.Diagnostic{
-		Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset,
+		Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset,
 		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
 		Target:   rawTarget,
 		Message:  fmt.Sprintf("markdown image %q could not be resolved to a publishable vault asset", strings.TrimSpace(rawTarget)),
+	})
+}
+
+func recordAmbiguousImageEmbed(
+	diagCollector *diag.Collector,
+	note *model.Note,
+	rawTarget string,
+	ambiguous []string,
+	node gast.Node,
+	lineStarts []int,
+	lineOffset int,
+) {
+	if diagCollector == nil || note == nil || len(ambiguous) == 0 {
+		return
+	}
+
+	diagCollector.Add(diag.Diagnostic{
+		Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset,
+		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
+		Target:   rawTarget,
+		Message:  fmt.Sprintf("image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", strings.TrimSpace(rawTarget), strings.Join(ambiguous, ", ")),
 	})
 }
 
@@ -673,26 +688,11 @@ func recordAmbiguousMarkdownImage(
 	}
 
 	diagCollector.Add(diag.Diagnostic{
-		Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset,
+		Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset,
 		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
 		Target:   rawTarget,
 		Message:  fmt.Sprintf("markdown image %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", strings.TrimSpace(rawTarget), strings.Join(ambiguous, ", ")),
 	})
-}
-
-func shouldDiagnoseMarkdownImageTarget(note *model.Note, scanResult ScanResult, rawTarget string) bool {
-	for _, candidate := range imageAssetCandidates(note, scanResult, rawTarget) {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "" || candidate == "." || candidate == ".." {
-			continue
-		}
-		if strings.HasPrefix(candidate, "../") {
-			continue
-		}
-		return true
-	}
-
-	return false
 }
 
 func lineStartOffsets(source []byte) []int {

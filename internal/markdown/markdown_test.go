@@ -965,8 +965,8 @@ func TestNewMarkdownFallsBackToImageTargetWhenEmbeddedAssetIsMissing(t *testing.
 	if len(gotDiagnostics) != 1 {
 		t.Fatalf("len(collector.Diagnostics()) = %d, want 1", len(gotDiagnostics))
 	}
-	if gotDiagnostics[0].Kind != diag.KindUnresolvedAsset {
-		t.Fatalf("collector.Diagnostics()[0] = %#v, want unresolved_asset warning", gotDiagnostics[0])
+	if gotDiagnostics[0].Severity != diag.SeverityError || gotDiagnostics[0].Kind != diag.KindUnresolvedAsset {
+		t.Fatalf("collector.Diagnostics()[0] = %#v, want unresolved_asset error", gotDiagnostics[0])
 	}
 }
 
@@ -2232,7 +2232,7 @@ func TestNewMarkdownCanonicalizesUnicodeFragmentsForLinksAndSectionEmbeds(t *tes
 	}
 }
 
-func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
+func TestNewMarkdownReportsUnresolvedEmbeds(t *testing.T) {
 	t.Parallel()
 
 	current := &model.Note{
@@ -2241,6 +2241,7 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 		Embeds: []model.EmbedRef{
 			{Target: "Missing Note", Line: 1},
 			{Target: "missing.png", IsImage: true, Line: 3},
+			{Target: "https://cdn.example.test/image.png", IsImage: true, Line: 5},
 		},
 	}
 	idx := &model.VaultIndex{
@@ -2260,12 +2261,12 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 	md, _ := NewMarkdown(idx, current, nil, collector)
 
 	var buf bytes.Buffer
-	if err := md.Convert([]byte("![[Missing Note]]\n\n![[missing.png]]\n"), &buf); err != nil {
+	if err := md.Convert([]byte("![[Missing Note]]\n\n![[missing.png]]\n\n![[https://cdn.example.test/image.png]]\n"), &buf); err != nil {
 		t.Fatalf("Convert() error = %v", err)
 	}
 
 	html := buf.String()
-	for _, want := range []string{"Missing Note", "missing.png"} {
+	for _, want := range []string{"Missing Note", "missing.png", "https://cdn.example.test/image.png"} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("HTML = %q, want unresolved embed fallback text %q", html, want)
 		}
@@ -2280,11 +2281,18 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 			Message:  `note embed "Missing Note" could not be resolved; rendering as plain text`,
 		},
 		{
-			Severity: diag.SeverityWarning,
+			Severity: diag.SeverityError,
 			Kind:     diag.KindUnresolvedAsset,
 			Location: diag.Location{Path: current.RelPath, Line: 3},
 			Target:   "missing.png",
 			Message:  `image embed "missing.png" could not be resolved to a vault asset; rendering as plain text`,
+		},
+		{
+			Severity: diag.SeverityWarning,
+			Kind:     diag.KindUnresolvedAsset,
+			Location: diag.Location{Path: current.RelPath, Line: 5},
+			Target:   "https://cdn.example.test/image.png",
+			Message:  `image embed "https://cdn.example.test/image.png" could not be resolved to a vault asset; rendering as plain text`,
 		},
 	}
 	if got := collector.Diagnostics(); !reflect.DeepEqual(got, want) {
@@ -2292,7 +2300,7 @@ func TestNewMarkdownWarnsOnUnresolvedEmbeds(t *testing.T) {
 	}
 }
 
-func TestNewMarkdownWarnsOnAmbiguousCanonicalImageEmbeds(t *testing.T) {
+func TestNewMarkdownReportsErrorOnAmbiguousCanonicalImageEmbeds(t *testing.T) {
 	t.Parallel()
 
 	note := &model.Note{
@@ -2325,7 +2333,7 @@ func TestNewMarkdownWarnsOnAmbiguousCanonicalImageEmbeds(t *testing.T) {
 	}
 
 	want := []diag.Diagnostic{{
-		Severity: diag.SeverityWarning,
+		Severity: diag.SeverityError,
 		Kind:     diag.KindUnresolvedAsset,
 		Location: diag.Location{Path: note.RelPath, Line: 1},
 		Target:   "../images/CAFÉ Chart.png",

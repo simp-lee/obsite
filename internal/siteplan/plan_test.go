@@ -143,6 +143,73 @@ func TestBuildWithConfigRejectsUnknownAndImplicitArticleMetadata(t *testing.T) {
 	}
 }
 
+func TestBuildWithConfigRejectsMissingLocalMarkdownAssets(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "images/Cafe\u0301.png", "decomposed")
+	writePlanFile(t, vault, "images/Café.png", "composed")
+	writePlanFile(t, vault, "files/Cafe\u0301", "decomposed")
+	writePlanFile(t, vault, "files/Café", "composed")
+	writePlanFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\n---\n![Missing](missing.png)\n\n[Attachment](missing.pdf)\n\n![[missing-embed.png]]\n\n![[missing%2Epng]]\n\n![Outside](../outside.png)\n\n[Root attachment](/missing-root.pdf)\n\n[Fragment attachment](missing-fragment.pdf#page=2)\n\n![[images/CAF%C3%89%2Epng]]\n\n![[images/CAFÉ.png]]\n\n![Exact](images/Café.png)\n\n[Ambiguous attachment](/files/CAFÉ#part)\n\n[Windows attachment](C:/assets/manual.pdf)\n\n[Malformed attachment](missing%ZZ.pdf)\n\n![Remote](https://images.example.test/remote.png)\n\n[Remote attachment](https://files.example.test/manual.pdf)\n\n![[https://cdn.example.test/embed.png]]\n\n[Missing route](missing/)\n\n[Missing extensionless route](missing-page)\n\n[[Missing Note]]\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil {
+		t.Fatal("BuildWithConfig() error = nil, want unresolved local asset errors")
+	}
+
+	wantErrors := map[string]int{
+		"missing.png":                 6,
+		"missing.pdf":                 8,
+		"missing-embed.png":           10,
+		"missing%2Epng":               12,
+		"../outside.png":              14,
+		"/missing-root.pdf":           16,
+		"missing-fragment.pdf#page=2": 18,
+		"images/CAF%C3%89%2Epng":      20,
+		"images/CAFÉ.png":             22,
+		"/files/CAFÉ#part":            26,
+		"C:/assets/manual.pdf":        28,
+		"missing%ZZ.pdf":              30,
+	}
+	for target, line := range wantErrors {
+		found := false
+		for _, item := range result.Diagnostics {
+			if item.Target != target {
+				continue
+			}
+			found = true
+			if item.Severity != diag.SeverityError || item.Kind != diag.KindUnresolvedAsset || item.Location.Path != "article.md" || item.Location.Line != line {
+				t.Fatalf("diagnostic for %q = %#v, want unresolved_asset error at article.md:%d", target, item, line)
+			}
+		}
+		if !found {
+			t.Fatalf("diagnostics = %#v, want error for %q", result.Diagnostics, target)
+		}
+	}
+	for _, item := range result.Diagnostics {
+		if item.Target == "https://images.example.test/remote.png" || item.Target == "https://files.example.test/manual.pdf" {
+			t.Fatalf("standard external target produced diagnostic: %#v", item)
+		}
+	}
+	wantWarnings := map[string]diag.Kind{
+		"https://cdn.example.test/embed.png": diag.KindUnresolvedAsset,
+		"missing/":                           diag.KindDeadLink,
+		"missing-page":                       diag.KindDeadLink,
+		"Missing Note":                       diag.KindDeadLink,
+	}
+	for target, kind := range wantWarnings {
+		found := false
+		for _, item := range result.Diagnostics {
+			if item.Target == target && item.Severity == diag.SeverityWarning && item.Kind == kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("diagnostics = %#v, want %s warning for %q", result.Diagnostics, kind, target)
+		}
+	}
+}
+
 func diagnosticMessages(diagnostics []diag.Diagnostic) string {
 	var values []string
 	for _, diagnostic := range diagnostics {

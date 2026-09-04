@@ -2,6 +2,7 @@
 package resourcepath
 
 import (
+	"net/url"
 	"strings"
 
 	internalasset "github.com/simp-lee/obsite/internal/asset"
@@ -85,6 +86,27 @@ func LookupIndexedAssetPath(note *model.Note, idx *model.VaultIndex, rawTarget s
 // note-relative and attachment-folder rules.
 func CandidatePathsWithAttachmentFolder(note *model.Note, attachmentFolderPath string, rawTarget string) []string {
 	return internalasset.CandidatePaths(note, attachmentFolderPath, rawTarget)
+}
+
+// IsLocalTarget reports whether a Markdown resource target denotes a local
+// path rather than an external URL, protocol-relative URL, or fragment.
+func IsLocalTarget(rawTarget string) bool {
+	target := strings.TrimSpace(rawTarget)
+	if target == "" || strings.HasPrefix(target, "#") || strings.HasPrefix(target, "//") {
+		return false
+	}
+	if isWindowsDrivePath(target) {
+		return true
+	}
+	parsed, err := url.Parse(target)
+	return err != nil || parsed.Scheme == ""
+}
+
+func isWindowsDrivePath(value string) bool {
+	if len(value) < 3 || value[1] != ':' || value[2] != '/' && value[2] != '\\' {
+		return false
+	}
+	return value[0] >= 'A' && value[0] <= 'Z' || value[0] >= 'a' && value[0] <= 'z'
 }
 
 // IsResourceAllowedForNote reports whether a resource belongs to the note's

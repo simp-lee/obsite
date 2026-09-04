@@ -12,6 +12,9 @@ import (
 // HasImageExtension reports whether the destination ends with a supported image extension.
 func HasImageExtension(value string) bool {
 	cleaned, _ := splitDestinationSuffix(strings.TrimSpace(value))
+	if decoded, err := url.PathUnescape(cleaned); err == nil {
+		cleaned = decoded
+	}
 	ext := strings.ToLower(path.Ext(strings.TrimSpace(cleaned)))
 	switch ext {
 	case ".apng", ".avif", ".bmp", ".gif", ".heic", ".jpeg", ".jpg", ".jfif", ".pjp", ".pjpeg", ".png", ".svg", ".webp":

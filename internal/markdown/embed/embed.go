@@ -450,7 +450,7 @@ func (r *wikilinkHTMLRenderer) recordUnresolvedAsset(ref *model.EmbedRef, rawTar
 		return
 	}
 
-	r.addDiagnostic(diag.KindUnresolvedAsset, ref, rawTarget, "image embed %q could not be resolved to a vault asset; rendering as plain text", rawTarget)
+	r.addAssetDiagnostic(ref, rawTarget, "image embed %q could not be resolved to a vault asset; rendering as plain text", rawTarget)
 }
 
 func (r *wikilinkHTMLRenderer) recordAmbiguousAsset(ref *model.EmbedRef, rawTarget string, candidates []string) {
@@ -458,7 +458,7 @@ func (r *wikilinkHTMLRenderer) recordAmbiguousAsset(ref *model.EmbedRef, rawTarg
 		return
 	}
 
-	r.addDiagnostic(diag.KindUnresolvedAsset, ref, rawTarget, "image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
+	r.addAssetDiagnostic(ref, rawTarget, "image embed %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback and rendering as plain text", rawTarget, strings.Join(candidates, ", "))
 }
 
 func (r *wikilinkHTMLRenderer) recordUnpublished(ref *model.EmbedRef, rawTarget string, note *model.Note) {
@@ -528,10 +528,22 @@ func (r *wikilinkHTMLRenderer) recordUnsupportedWithFallback(ref *model.EmbedRef
 }
 
 func (r *wikilinkHTMLRenderer) addDiagnostic(kind diag.Kind, ref *model.EmbedRef, target, format string, args ...any) {
+	r.addDiagnosticWithSeverity(diag.SeverityWarning, kind, ref, target, format, args...)
+}
+
+func (r *wikilinkHTMLRenderer) addAssetDiagnostic(ref *model.EmbedRef, target, format string, args ...any) {
+	severity := diag.SeverityWarning
+	if resourcepath.IsLocalTarget(target) {
+		severity = diag.SeverityError
+	}
+	r.addDiagnosticWithSeverity(severity, diag.KindUnresolvedAsset, ref, target, format, args...)
+}
+
+func (r *wikilinkHTMLRenderer) addDiagnosticWithSeverity(severity diag.Severity, kind diag.Kind, ref *model.EmbedRef, target, format string, args ...any) {
 	if r == nil || r.diag == nil {
 		return
 	}
-	r.diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kind, Location: r.location(ref), Target: target, Message: fmt.Sprintf(format, args...)})
+	r.diag.Add(diag.Diagnostic{Severity: severity, Kind: kind, Location: r.location(ref), Target: target, Message: fmt.Sprintf(format, args...)})
 }
 
 func (r *wikilinkHTMLRenderer) location(ref *model.EmbedRef) diag.Location {

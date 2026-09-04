@@ -79,12 +79,18 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		return raw
 	}
 	parsed, err := url.Parse(raw)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || strings.HasPrefix(raw, "//") {
+	if err != nil {
+		r.recordUnresolvedLocalAttachment(raw, line)
+		return raw
+	}
+	if parsed.IsAbs() || parsed.Host != "" || strings.HasPrefix(raw, "//") {
+		r.recordUnresolvedLocalAttachment(raw, line)
 		return raw
 	}
 	escapedTargetPath := parsed.EscapedPath()
 	targetPath, err := url.PathUnescape(escapedTargetPath)
 	if err != nil {
+		r.recordUnresolvedLocalAttachment(raw, line)
 		return raw
 	}
 	fragment := parsed.Fragment
@@ -104,7 +110,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 	} else if targetPath != "" {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
-		if lookup.Note == nil && err == nil && r.sourceNote.Route != "" {
+		if lookup.Note == nil && r.sourceNote.Route != "" {
 			if base, parseErr := url.Parse(r.sourceNote.Route); parseErr == nil {
 				resolved := base.ResolveReference(parsed)
 				lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, resolved.EscapedPath(), fragment)
@@ -139,34 +145,51 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 			}
 			return href
 		}
-		if resource := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath).Path; resource != "" && resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
-			destination := resource
-			if r.assetSink != nil {
-				if planned := r.assetSink.Register(resource); planned != "" {
-					destination = planned
+		resourceLookup := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath)
+		if resource := resourceLookup.Path; resource != "" {
+			if resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
+				destination := resource
+				if r.assetSink != nil {
+					if planned := r.assetSink.Register(resource); planned != "" {
+						destination = planned
+					}
 				}
+				suffix := ""
+				if parsed.RawQuery != "" {
+					suffix += "?" + parsed.RawQuery
+				}
+				if fragment != "" {
+					suffix += "#" + fragment
+				}
+				return relativeToNoteOutput(r.outputNote, destination) + suffix
 			}
-			suffix := ""
-			if parsed.RawQuery != "" {
-				suffix += "?" + parsed.RawQuery
-			}
-			if fragment != "" {
-				suffix += "#" + fragment
-			}
-			return relativeToNoteOutput(r.outputNote, destination) + suffix
-		}
-		if rootRelative {
 			if r.diagnostics != nil {
-				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q is outside the current version resource scope", raw)})
 			}
-			return prefixRootRelativeDestination(r.outputNote, raw)
+			if rootRelative {
+				return prefixRootRelativeDestination(r.outputNote, raw)
+			}
+			return raw
 		}
-		if strings.HasSuffix(strings.ToLower(targetPath), ".md") || fragment != "" {
+		if len(resourceLookup.Ambiguous) > 0 {
+			if r.diagnostics != nil {
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", raw, strings.Join(resourceLookup.Ambiguous, ", "))})
+			}
+			if rootRelative {
+				return prefixRootRelativeDestination(r.outputNote, raw)
+			}
+			return raw
+		}
+		attachment := isMarkdownAttachmentTarget(targetPath)
+		if !attachment {
 			if r.diagnostics != nil {
 				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
 			}
 		} else if targetPath != "" && r.diagnostics != nil {
-			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
+		}
+		if rootRelative {
+			return prefixRootRelativeDestination(r.outputNote, raw)
 		}
 		return raw
 	}
@@ -197,6 +220,18 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 	}
 	return href
+}
+
+func (r *strictLinkRenderer) recordUnresolvedLocalAttachment(raw string, line int) {
+	if r == nil || r.diagnostics == nil || !resourcepath.IsLocalTarget(raw) {
+		return
+	}
+	r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
+}
+
+func isMarkdownAttachmentTarget(targetPath string) bool {
+	extension := strings.ToLower(path.Ext(strings.TrimSpace(targetPath)))
+	return extension != "" && extension != ".md"
 }
 
 func sectionFragmentID(section *model.Section, fragment string) (string, bool) {

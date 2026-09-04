@@ -7,6 +7,31 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func TestIsLocalTargetDistinguishesLocalResourcesFromExternalDestinations(t *testing.T) {
+	t.Parallel()
+
+	tests := map[string]bool{
+		"missing.png":                    true,
+		"../outside.png":                 true,
+		"/assets/manual.pdf#page=2":      true,
+		`C:\\assets\\manual.pdf`:         true,
+		"https://example.test/image.png": false,
+		"//cdn.example.test/image.png":   false,
+		"data:image/png;base64,AA":       false,
+		"#local-fragment":                false,
+		"":                               false,
+	}
+	for target, want := range tests {
+		target, want := target, want
+		t.Run(target, func(t *testing.T) {
+			t.Parallel()
+			if got := IsLocalTarget(target); got != want {
+				t.Fatalf("IsLocalTarget(%q) = %v, want %v", target, got, want)
+			}
+		})
+	}
+}
+
 func TestCandidatePathsIncludeAttachmentFolderFallback(t *testing.T) {
 	t.Parallel()
 

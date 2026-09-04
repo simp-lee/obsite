@@ -99,6 +99,16 @@ func copyAssetsForTest(vaultRoot string, outputRoot string, assets map[string]*m
 	return CopyAssetsWithReservedPaths(vaultRoot, outputRoot, assets, diagCollector, nil)
 }
 
+func TestHasImageExtensionRecognizesEscapedSuffix(t *testing.T) {
+	t.Parallel()
+
+	for _, target := range []string{"missing%2Epng", "images/diagram%2ESVG?raw=1#preview"} {
+		if !HasImageExtension(target) {
+			t.Fatalf("HasImageExtension(%q) = false, want true", target)
+		}
+	}
+}
+
 func TestResolvePathAttachmentFallbackOnlyForBarePaths(t *testing.T) {
 	t.Parallel()
 
