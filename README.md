@@ -133,6 +133,8 @@ Article `og:image` and `twitter:image` point to that generated local PNG with `s
 
 All source assets pass through one contained asset planner. The planner owns Markdown images/embeds, banners, covers, local `defaultImg`, theme assets, and output collision checks. The generated output contains one shared content-addressed runtime, offline KaTeX/Mermaid resources, one optional Sidebar JSON, structural CSS, optional `.obsite/theme/theme.css`, and optional vault-root `custom.css`. Themes can change variables and append-only slots but cannot replace the HTML shell or renderer. No runtime resource is downloaded and no public Go SDK is provided.
 
+Theme resources are planned during validation and published with content-addressed URLs. In slots, use `{{themeAssetURL .SiteRootRel "logo.svg"}}` for `.obsite/theme/assets/logo.svg`. Relative CSS URLs and imports are rewritten to planned resources: `theme.css` resolves them from `assets/`, and nested stylesheets from their own directory. Missing references and cyclic stylesheet dependencies are validation errors.
+
 Related recommendations retain the existing dynamic TF-IDF, sparse-cosine, source-link/tag signal algorithm and fixed tokenizer. `related.count` is restricted to `1..20`.
 
 ## Install and development

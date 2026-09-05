@@ -5,11 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"encoding/xml"
-	"errors"
 	"fmt"
 	"image"
 	"io"
-	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -230,6 +228,10 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 	}
 	applyStrictPlannedDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
+	for source, planned := range plan.ThemeAssets {
+		asset := planned.Asset
+		allAssets[source] = &asset
+	}
 	assetSources := make([]string, 0, len(allAssets))
 	for source := range allAssets {
 		assetSources = append(assetSources, source)
@@ -242,9 +244,15 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if asset == nil || asset.DstPath == "" {
 			continue
 		}
-		_, data, _, readErr := internalfsutil.ReadContainedRegularFile(boundary.VaultPath, source)
-		if readErr != nil {
-			return result, fmt.Errorf("read asset %q: %w", source, readErr)
+		var data []byte
+		if planned := plan.ThemeAssets[source]; planned != nil {
+			data = planned.Data
+		} else {
+			_, sourceData, _, readErr := internalfsutil.ReadContainedRegularFile(boundary.VaultPath, source)
+			if readErr != nil {
+				return result, fmt.Errorf("read asset %q: %w", source, readErr)
+			}
+			data = sourceData
 		}
 		hash := sha256.Sum256(data)
 		hashValue := fmt.Sprintf("%x", hash)
@@ -543,81 +551,13 @@ func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SiteP
 			return err
 		}
 	}
-	if plan.Config.ThemeDir == "" {
-		return nil
-	}
-	themeCSS := filepath.Join(plan.Config.ThemeDir, "theme.css")
-	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, themeCSS)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return writeStrictThemeAssets(vaultRoot, outputRoot, plan, outputs)
-		}
-		return fmt.Errorf("read theme CSS: %w", err)
-	}
-	plan.Config.ThemeCSS = "assets/theme/theme.css"
-	if err := outputs.write(outputRoot, plan.Config.ThemeCSS, "theme CSS", data); err != nil {
-		return err
-	}
-	return writeStrictThemeAssets(vaultRoot, outputRoot, plan, outputs)
-}
-
-func writeStrictThemeAssets(vaultRoot, outputRoot string, plan *model.SitePlan, outputs *strictOutputRegistry) error {
-	if plan == nil || plan.Config.ThemeDir == "" {
-		return nil
-	}
-	return filepath.WalkDir(plan.Config.ThemeDir, func(current string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		rel, err := filepath.Rel(plan.Config.ThemeDir, current)
-		if err != nil {
-			return err
-		}
-		if rel == "." {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("theme entry %q must not be a symbolic link", rel)
-		}
-		if entry.IsDir() {
-			if rel != "assets" && !strings.HasPrefix(rel, "assets/") {
-				return fmt.Errorf("unsupported theme directory %q", rel)
-			}
-			return nil
-		}
-		if rel == "theme.css" {
-			return nil
-		}
-		if rel == "slots.html" {
-			_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
-			if err != nil {
-				return fmt.Errorf("read theme slots: %w", err)
-			}
-			if err := render.ValidateThemeSlots(string(data)); err != nil {
-				return err
-			}
-			plan.Config.ThemeSlots = string(data)
-			return nil
-		}
-		if !strings.HasPrefix(rel, "assets/") {
-			return fmt.Errorf("unsupported theme entry %q", rel)
-		}
-		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
-		if err != nil {
-			return fmt.Errorf("read theme asset %q: %w", rel, err)
-		}
-		return outputs.write(outputRoot, path.Join("assets/theme", slug.EncodePath(strings.TrimPrefix(rel, "assets/"))), "theme:"+rel, data)
-	})
+	return nil
 }
 
 func strictReservedAssetOutputs(plan *model.SitePlan) []string {
 	reserved := []string{"style.css", "assets/obsite-runtime", "assets/obsite", "assets/social"}
 	if plan != nil && plan.Config.CustomCSS != "" {
 		reserved = append(reserved, "assets/custom.css")
-	}
-	if plan != nil && plan.Config.ThemeDir != "" {
-		reserved = append(reserved, "assets/theme")
 	}
 	return reserved
 }

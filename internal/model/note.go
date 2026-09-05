@@ -189,9 +189,16 @@ type Tag struct {
 	Notes []string
 }
 
-// Asset represents a non-Markdown resource referenced by notes.
+// Asset represents a published non-Markdown source resource.
 type Asset struct {
 	SrcPath  string
 	DstPath  string
 	RefCount int
+}
+
+// PlannedAsset holds the exact emitted bytes and destination of an explicitly
+// discovered input. Data may differ from the source after URL rewriting.
+type PlannedAsset struct {
+	Asset
+	Data []byte
 }

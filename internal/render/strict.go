@@ -385,11 +385,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	if err != nil {
 		return nil, fmt.Errorf("resolve shared runtime: %w", err)
 	}
-	slots, err := RenderThemeSlots(plan.Config.ThemeSlots, SlotData{
-		Kind: strictSlotKind(currentRoute, metadata, sourcePath), Title: title, Canonical: canonical,
-		RelPath: currentRoute, SiteRootRel: strictSlotRootRel(currentRoute),
-		Site: SlotSiteData{Title: plan.Config.Title, BaseURL: plan.Config.BaseURL, Author: plan.Config.Author, Description: plan.Config.Description, Language: plan.Config.Language},
-	})
+	slots, err := RenderStrictThemeSlots(plan, currentRoute, title, metadata, sourcePath)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +490,7 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/assets/custom.css")))
 	}
 	if plan.Config.ThemeCSS != "" {
-		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/assets/theme/theme.css")))
+		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/"+plan.Config.ThemeCSS)))
 	}
 	if strings.Contains(body, "data-obsite-math-source") {
 		_, _ = fmt.Fprintf(&output, `<link rel="stylesheet" href="%s">`, esc(strictSitePath(plan, "/"+katexCSSOutputPath)))

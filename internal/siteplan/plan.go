@@ -176,6 +176,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		}
 	}
 
+	validateThemeSlotAssets(plan, indexResult.Index, collector)
 	result := &Result{Plan: plan, Scan: scan, Sources: sources, Index: indexResult.Index, RelatedSemantic: indexResult.RelatedSemantic, Diagnostics: collector.Diagnostics()}
 	if collector.HasErrors() {
 		return result, fmt.Errorf("site plan has %d error(s)", collector.ErrorCount())
@@ -752,6 +753,9 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 		record(collector, diag.KindMetadata, plan.Config.ThemeDir, "theme directory must be inside the vault")
 		return
 	}
+	inputs := make(map[string][]byte)
+	assetSources := make(map[string]string)
+	cssSource := ""
 	_ = filepath.WalkDir(plan.Config.ThemeDir, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			record(collector, diag.KindMetadata, current, "theme entry: %v", walkErr)
@@ -776,12 +780,6 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 			}
 			return nil
 		}
-		if rel == "theme.css" {
-			if _, _, _, readErr := internalfsutil.ReadContainedRegularFile(vaultRoot, current); readErr != nil {
-				record(collector, diag.KindMetadata, current, "theme CSS: %v", readErr)
-			}
-			return nil
-		}
 		_, data, _, readErr := internalfsutil.ReadContainedRegularFile(vaultRoot, current)
 		if readErr != nil {
 			record(collector, diag.KindMetadata, current, "theme entry %q: %v", rel, readErr)
@@ -795,19 +793,19 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 			}
 			return nil
 		}
-		if !strings.HasPrefix(rel, "assets/") {
+		source := filepath.ToSlash(filepath.Join(relTheme, filepath.FromSlash(rel)))
+		if rel == "theme.css" {
+			cssSource = source
+		} else if strings.HasPrefix(rel, "assets/") {
+			assetSources[strings.TrimPrefix(rel, "assets/")] = source
+		} else {
 			record(collector, diag.KindMetadata, current, "unsupported theme entry %q", rel)
+			return nil
 		}
+		inputs[source] = data
 		return nil
 	})
-	if strings.TrimSpace(plan.Config.ThemeSlots) != "" {
-		if _, err := render.RenderThemeSlots(plan.Config.ThemeSlots, render.SlotData{
-			Kind: "section", Title: plan.Config.Title, Canonical: plan.Config.BaseURL, RelPath: "/", SiteRootRel: "./",
-			Site: render.SlotSiteData{Title: plan.Config.Title, BaseURL: plan.Config.BaseURL, Author: plan.Config.Author, Description: plan.Config.Description, Language: plan.Config.Language},
-		}); err != nil {
-			record(collector, diag.KindMetadata, filepath.Join(plan.Config.ThemeDir, "slots.html"), "theme slots: %v", err)
-		}
-	}
+	planThemeAssets(plan, inputs, assetSources, cssSource, collector)
 }
 
 func portableVaultAssetPath(value string) bool {

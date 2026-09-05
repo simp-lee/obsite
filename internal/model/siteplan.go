@@ -62,6 +62,8 @@ type SitePlan struct {
 	Versions       []*Version
 	Routes         map[string]string
 	ReservedRoutes map[string]struct{}
+	ThemeAssets    map[string]*PlannedAsset
+	ThemeAssetURLs map[string]string
 }
 
 // PlannedSource keeps the strict parse result for either an article or a

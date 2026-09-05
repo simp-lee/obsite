@@ -145,6 +145,18 @@ func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map
 	return planned
 }
 
+// PlanData allocates an explicitly discovered, contained input using the same
+// content-addressed destinations as collected Markdown resources. The caller
+// owns source admission and must keep the emitted data immutable; this does not
+// make internal inputs discoverable through Markdown or the vault inventory.
+func PlanData(srcPath string, data []byte) *model.PlannedAsset {
+	hash := sha256.Sum256(data)
+	return &model.PlannedAsset{
+		Asset: model.Asset{SrcPath: srcPath, DstPath: hashedAssetPath(srcPath, hex.EncodeToString(hash[:]))},
+		Data:  data,
+	}
+}
+
 func plainAssetPath(srcPath string) string {
 	return path.Join(outputDirPrefix, encodeAssetSegment(path.Base(srcPath)))
 }

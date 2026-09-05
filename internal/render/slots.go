@@ -9,7 +9,7 @@ import (
 
 	textparse "text/template/parse"
 
-	"github.com/simp-lee/obsite/internal/slug"
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 const (
@@ -45,17 +45,27 @@ type SlotData struct {
 
 // ValidateThemeSlots parses and validates one append-only slots.html snapshot.
 func ValidateThemeSlots(source string) error {
-	_, err := parseThemeSlots(source)
+	_, err := parseThemeSlots(source, nil)
 	return err
 }
 
+// RenderStrictThemeSlots uses the same page projection during validation and
+// publication, including resolution of themeAssetURL through the asset plan.
+func RenderStrictThemeSlots(plan *model.SitePlan, route, title string, metadata *model.Note, sourcePath string) (map[string]string, error) {
+	return RenderThemeSlots(plan.Config.ThemeSlots, SlotData{
+		Kind: strictSlotKind(route, metadata, sourcePath), Title: title, Canonical: strictAbsoluteURL(plan, route),
+		RelPath: route, SiteRootRel: strictSlotRootRel(route),
+		Site: SlotSiteData{Title: plan.Config.Title, BaseURL: plan.Config.BaseURL, Author: plan.Config.Author, Description: plan.Config.Description, Language: plan.Config.Language},
+	}, plan.ThemeAssetURLs)
+}
+
 // RenderThemeSlots executes each supported append-only slot once.
-func RenderThemeSlots(source string, data SlotData) (map[string]string, error) {
+func RenderThemeSlots(source string, data SlotData, assetURLs map[string]string) (map[string]string, error) {
 	result := make(map[string]string, len(themeSlotNames))
 	if strings.TrimSpace(source) == "" {
 		return result, nil
 	}
-	slots, err := parseThemeSlots(source)
+	slots, err := parseThemeSlots(source, assetURLs)
 	if err != nil {
 		return nil, err
 	}
@@ -72,8 +82,10 @@ func RenderThemeSlots(source string, data SlotData) (map[string]string, error) {
 	return result, nil
 }
 
-func parseThemeSlots(source string) (*template.Template, error) {
-	funcs := template.FuncMap{"themeAssetURL": themeAssetURL}
+func parseThemeSlots(source string, assetURLs map[string]string) (*template.Template, error) {
+	funcs := template.FuncMap{"themeAssetURL": func(root, assetPath string) (string, error) {
+		return themeAssetURL(root, assetPath, assetURLs)
+	}}
 	slots, err := template.New(themeSlotsRootName).Funcs(funcs).Parse(source)
 	if err != nil {
 		return nil, fmt.Errorf("parse theme slots: %w", err)
@@ -117,6 +129,9 @@ func rejectThemeSlotTemplateCalls(node textparse.Node) error {
 	}
 	switch current := node.(type) {
 	case *textparse.ListNode:
+		if current == nil {
+			return nil
+		}
 		for _, child := range current.Nodes {
 			if err := rejectThemeSlotTemplateCalls(child); err != nil {
 				return err
@@ -143,7 +158,7 @@ func rejectThemeSlotTemplateCalls(node textparse.Node) error {
 	return nil
 }
 
-func themeAssetURL(siteRootRel string, assetPath string) (string, error) {
+func themeAssetURL(siteRootRel string, assetPath string, assetURLs map[string]string) (string, error) {
 	raw := strings.TrimSpace(assetPath)
 	if raw == "" || strings.Contains(raw, `\`) || strings.ContainsAny(raw, "?#:\r\n\x00") || strings.HasPrefix(raw, "/") {
 		return "", fmt.Errorf("theme asset path %q must be a theme-assets-relative URL path", assetPath)
@@ -153,12 +168,15 @@ func themeAssetURL(siteRootRel string, assetPath string) (string, error) {
 		return "", fmt.Errorf("theme asset path %q must be a clean theme-assets-relative URL path", assetPath)
 	}
 
-	encoded := slug.EncodePath(cleaned)
+	destination := assetURLs[cleaned]
+	if destination == "" {
+		return "", fmt.Errorf("theme asset %q was not found in the planned theme assets", assetPath)
+	}
 	base := strings.TrimSpace(siteRootRel)
 	if base == "" {
 		base = "./"
 	} else if !strings.HasSuffix(base, "/") {
 		base += "/"
 	}
-	return base + "assets/theme/" + encoded, nil
+	return base + destination, nil
 }

@@ -11,6 +11,7 @@ require (
 	github.com/rivo/uniseg v0.4.7
 	github.com/spf13/cobra v1.10.2
 	github.com/tdewolff/minify/v2 v2.24.12
+	github.com/tdewolff/parse/v2 v2.8.12
 	github.com/vcaesar/cedar v0.30.0
 	github.com/yuin/goldmark v1.8.2
 	github.com/yuin/goldmark-highlighting/v2 v2.0.0-20230729083705-37449abec8cc
@@ -28,6 +29,5 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
-	github.com/tdewolff/parse/v2 v2.8.12 // indirect
 	golang.org/x/sys v0.43.0 // indirect
 )
