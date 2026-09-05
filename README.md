@@ -135,7 +135,7 @@ All source assets pass through one contained asset planner. The planner owns Mar
 
 Theme resources are planned during validation and published with content-addressed URLs. In slots, use `{{themeAssetURL .SiteRootRel "logo.svg"}}` for `.obsite/theme/assets/logo.svg`. Relative CSS URLs and imports are rewritten to planned resources: `theme.css` resolves them from `assets/`, and nested stylesheets from their own directory. Missing references and cyclic stylesheet dependencies are validation errors.
 
-Related recommendations retain the existing dynamic TF-IDF, sparse-cosine, source-link/tag signal algorithm and fixed tokenizer. `related.count` is restricted to `1..20`.
+Related recommendations retain the existing dynamic TF-IDF, sparse-cosine, source-link/tag signal algorithm and fixed tokenizer. `related.enabled` is a boolean feature switch (`true` or `false`); `related.count` is an integer restricted to `1..20`, including when recommendations are disabled.
 
 ## Install and development
 

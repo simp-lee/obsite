@@ -7,8 +7,12 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/simp-lee/obsite/internal/diag"
 )
 
 func TestStrictBuildPublishesSectionAndArticlePages(t *testing.T) {
@@ -72,33 +76,99 @@ func TestStrictBuildPublishesBannersAndIndependentSocialCards(t *testing.T) {
 	}
 }
 
-func TestStrictAndNormalBuildApplyWarningPolicyToTheSameAnalysis(t *testing.T) {
+func TestValidateNormalAndStrictBuildShareWarningDiagnostics(t *testing.T) {
 	vault := t.TempDir()
 	normalOutput := filepath.Join(t.TempDir(), "normal")
 	strictOutput := filepath.Join(t.TempDir(), "strict")
 	writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
 	writeValidateFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
 	writeValidateFile(t, vault, "broken.md", "---\ntitle: Broken\npublish: true\ntype: page\n---\nSee [[Missing]].\n")
-	_, normalStderr, err := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", normalOutput})
-	if err != nil {
-		t.Fatalf("normal build error = %v", err)
+
+	_, validateStderr, validateErr := executeForTest(t, defaultCommandDependencies(), []string{"validate", "--vault", vault})
+	if validateErr == nil {
+		t.Fatal("validate error = nil, want warning failure")
 	}
-	if !strings.Contains(normalStderr, "deadlink") {
-		t.Fatalf("normal diagnostics = %q, want deadlink warning", normalStderr)
+	_, normalStderr, normalErr := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", normalOutput})
+	if normalErr != nil {
+		t.Fatalf("normal build error = %v", normalErr)
+	}
+	_, strictStderr, strictErr := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", strictOutput, "--strict"})
+	if strictErr == nil || !strings.Contains(strictErr.Error(), "warning") {
+		t.Fatalf("strict build error = %v, want warning failure", strictErr)
+	}
+
+	got := map[string][]diag.Diagnostic{
+		"validate": parseCLIDiagnostics(t, validateStderr),
+		"normal":   parseCLIDiagnostics(t, normalStderr),
+		"strict":   parseCLIDiagnostics(t, strictStderr),
+	}
+	want := []diag.Diagnostic{{
+		Severity: diag.SeverityWarning,
+		Kind:     diag.KindDeadLink,
+		Location: diag.Location{Path: "broken.md", Line: 6},
+		Target:   "Missing",
+		Message:  `wikilink "Missing" could not be resolved`,
+	}}
+	for command, diagnostics := range got {
+		if !reflect.DeepEqual(diagnostics, want) {
+			t.Errorf("%s diagnostics = %#v, want %#v", command, diagnostics, want)
+		}
+	}
+	if !reflect.DeepEqual(got["validate"], got["normal"]) || !reflect.DeepEqual(got["validate"], got["strict"]) {
+		t.Fatalf("commands did not share normalized diagnostics: %#v", got)
 	}
 	if _, err := os.Stat(filepath.Join(normalOutput, "broken", "index.html")); err != nil {
 		t.Fatalf("normal build did not publish output: %v", err)
 	}
-	_, strictStderr, err := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", strictOutput, "--strict"})
-	if err == nil || !strings.Contains(err.Error(), "warning") {
-		t.Fatalf("strict build error = %v, want warning failure", err)
-	}
-	if !strings.Contains(strictStderr, "deadlink") {
-		t.Fatalf("strict diagnostics = %q, want same deadlink category", strictStderr)
-	}
 	if _, err := os.Stat(strictOutput); !os.IsNotExist(err) {
 		t.Fatalf("strict warning changed output: %v", err)
 	}
+}
+
+// parseCLIDiagnostics decodes the stable diagnostic lines emitted by the CLI so
+// this test compares the structured contract rather than just rendered text.
+func parseCLIDiagnostics(t *testing.T, stderr string) []diag.Diagnostic {
+	t.Helper()
+	var diagnostics []diag.Diagnostic
+	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
+		if line == "" {
+			continue
+		}
+		header, message, ok := strings.Cut(line, ": ")
+		if !ok {
+			t.Fatalf("diagnostic line %q has no message separator", line)
+		}
+		parts := strings.SplitN(header, " ", 3)
+		if len(parts) != 3 {
+			t.Fatalf("diagnostic line %q has malformed header", line)
+		}
+		location := parts[2]
+		item := diag.Diagnostic{Severity: diag.Severity(parts[0]), Kind: diag.Kind(parts[1]), Message: message}
+		for {
+			start := strings.LastIndex(location, " [")
+			if start < 0 || !strings.HasSuffix(location, "]") {
+				break
+			}
+			field := location[start+2 : len(location)-1]
+			switch {
+			case strings.HasPrefix(field, "field="):
+				item.Field = strings.TrimPrefix(field, "field=")
+			case strings.HasPrefix(field, "target="):
+				item.Target = strings.TrimPrefix(field, "target=")
+			}
+			location = location[:start]
+		}
+		lastColon := strings.LastIndex(location, ":")
+		if lastColon >= 0 {
+			if lineNumber, err := strconv.Atoi(location[lastColon+1:]); err == nil {
+				item.Location.Line = lineNumber
+				location = location[:lastColon]
+			}
+		}
+		item.Location.Path = location
+		diagnostics = append(diagnostics, item)
+	}
+	return diagnostics
 }
 
 func TestStrictBuildStopsBeforePublicationOnSchemaFailure(t *testing.T) {

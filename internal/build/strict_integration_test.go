@@ -90,6 +90,34 @@ func TestStrictBuildUsesCanonicalSectionPlanAndRichMarkdown(t *testing.T) {
 	}
 }
 
+func TestStrictBuildIncludesNestedSidebarEntriesInHTMLFallback(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeStrictFile(t, vaultPath, "obsite.yaml", `title: Nested Sidebar
+baseURL: https://example.test/
+navigation: []
+sidebar:
+  enabled: true
+`)
+	writeStrictFile(t, vaultPath, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vaultPath, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\nDocs\n")
+	writeStrictFile(t, vaultPath, "docs/nested/_index.md", "---\ntitle: Nested\npublish: true\n---\nNested\n")
+	writeStrictFile(t, vaultPath, "docs/nested/leaf.md", "---\ntitle: Leaf\npublish: true\ntype: page\n---\nLeaf\n")
+
+	outputPath := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vaultPath, outputPath, Options{}); err != nil {
+		t.Fatalf("BuildWithOptions() error = %v", err)
+	}
+	index := string(readBuildOutputFile(t, outputPath, "index.html"))
+	for _, want := range []string{"Docs", "Nested", "Leaf"} {
+		if !strings.Contains(index, want) {
+			t.Fatalf("HTML sidebar fallback missing nested entry %q:\n%s", want, index)
+		}
+	}
+	if strings.Count(index, `sidebar-list`) < 3 {
+		t.Fatalf("HTML sidebar fallback did not preserve nested list structure:\n%s", index)
+	}
+}
+
 func TestStrictBuildPreservesManagedOutputOnPlanningFailure(t *testing.T) {
 	vaultPath := copyFixtureVault(t, "slug-conflict-vault")
 	outputPath := filepath.Join(t.TempDir(), "site")

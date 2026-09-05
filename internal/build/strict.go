@@ -33,13 +33,17 @@ import (
 
 // buildStrictSite publishes the normalized section model through the same
 // managed staging publisher used by the existing build foundation.
-func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, strict bool) (result *BuildResult, err error) {
+func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, strict bool, concurrency ...int) (result *BuildResult, err error) {
+	workerConcurrency := 0
+	if len(concurrency) > 0 {
+		workerConcurrency = concurrency[0]
+	}
 	result = &BuildResult{}
 	if planned == nil || planned.Plan == nil {
 		return result, fmt.Errorf("strict site plan is required")
 	}
 	plan := planned.Plan
-	graph, relatedByPath, relationErr := buildStrictRelations(planned)
+	graph, relatedByPath, relationErr := buildStrictRelations(planned, workerConcurrency)
 	if relationErr != nil {
 		return result, relationErr
 	}
@@ -109,6 +113,9 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if sidebarErr != nil {
 			return result, sidebarErr
 		}
+		if err := outputs.dependency("sidebar", "obsite.yaml", payload); err != nil {
+			return result, err
+		}
 		if writeErr := outputs.write(staging, "assets/obsite/sidebar.json", "sidebar", data); writeErr != nil {
 			return result, writeErr
 		}
@@ -117,11 +124,16 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if section == nil || section.Route == "" {
 			continue
 		}
-		data, renderErr := render.RenderStrictSection(plan, section, planned.Index, assetCollector)
+		pageAssets := newStrictCacheAssetSink(assetCollector)
+		data, renderErr := render.RenderStrictSection(plan, section, planned.Index, pageAssets)
 		if renderErr != nil {
 			return result, fmt.Errorf("render section %q: %w", section.RelPath, renderErr)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(section.Route), "section:"+section.SourcePath, data); writeErr != nil {
+		owner := "section:" + section.SourcePath
+		if dependencyErr := outputs.dependency(owner, section.SourcePath, strictCacheSectionPageInput(plan, section, planned.Index, pageAssets.destinations)); dependencyErr != nil {
+			return result, dependencyErr
+		}
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(section.Route), owner, data); writeErr != nil {
 			return result, writeErr
 		}
 	}
@@ -152,16 +164,26 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if cardErr != nil {
 			return result, fmt.Errorf("generate social card for %q: %w", article.RelPath, cardErr)
 		}
+		if err := outputs.dependencyBytes("social:"+article.RelPath, article.RelPath, card.CanonicalJSON); err != nil {
+			return result, err
+		}
 		article.SocialImage = card.Path
 		if writeErr := outputs.write(staging, card.Path, "social:"+article.RelPath, card.PNG); writeErr != nil {
 			return result, writeErr
 		}
 		previous, next, position, total := strictReadingFlow(section, article)
-		data, renderErr := render.RenderStrictArticle(plan, article, previous, next, position, total, strictBacklinks(planned.Index, graph, article), relatedByPath[article.RelPath], planned.Index, assetCollector)
+		backlinks := strictBacklinks(planned.Index, graph, article)
+		related := relatedByPath[article.RelPath]
+		pageAssets := newStrictCacheAssetSink(assetCollector)
+		data, renderErr := render.RenderStrictArticle(plan, article, previous, next, position, total, backlinks, related, planned.Index, pageAssets)
 		if renderErr != nil {
 			return result, fmt.Errorf("render article %q: %w", article.RelPath, renderErr)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(article.Route), "article:"+article.RelPath, data); writeErr != nil {
+		owner := "article:" + article.RelPath
+		if dependencyErr := outputs.dependency(owner, article.RelPath, strictCacheArticlePageInput(plan, article, section, previous, next, position, total, backlinks, related, planned.Index, pageAssets.destinations)); dependencyErr != nil {
+			return result, dependencyErr
+		}
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(article.Route), owner, data); writeErr != nil {
 			return result, writeErr
 		}
 		result.NotePages++
@@ -182,7 +204,14 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		if renderErr != nil {
 			return result, fmt.Errorf("render tag %q: %w", tag.Name, renderErr)
 		}
-		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath("/"+slug.EncodePath(tag.Slug)+"/"), "tag:"+tag.Name, data); writeErr != nil {
+		route := "/" + slug.EncodePath(tag.Slug) + "/"
+		owner := "tag:" + tag.Name
+		dependency := strictCacheHTMLBase(plan, route, "Tag: "+tag.Name, "", "", "")
+		dependency.Entries = strictCachePageEntries(notes)
+		if dependencyErr := outputs.dependency(owner, tag.Name, dependency); dependencyErr != nil {
+			return result, dependencyErr
+		}
+		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(route), owner, data); writeErr != nil {
 			return result, writeErr
 		}
 		result.TagPages++
@@ -212,9 +241,15 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 				timelineRoute = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
 				owner += ":" + strconv.Itoa(page)
 			}
-			data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, plan.Posts[start:end])
+			pagePosts := plan.Posts[start:end]
+			data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, pagePosts)
 			if renderErr != nil {
 				return result, fmt.Errorf("render timeline: %w", renderErr)
+			}
+			dependency := strictCacheHTMLBase(plan, timelineRoute, "Recent articles", "", "", "")
+			dependency.Entries = strictCachePageEntries(pagePosts)
+			if dependencyErr := outputs.dependency(owner, "obsite.yaml", dependency); dependencyErr != nil {
+				return result, dependencyErr
 			}
 			if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(timelineRoute), owner, data); writeErr != nil {
 				return result, writeErr
@@ -238,8 +273,20 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		assetSources = append(assetSources, source)
 	}
 	sort.Strings(assetSources)
-	assetOwners := make(map[string]string, len(assetSources))
-	assetHashes := make(map[string]string, len(assetSources))
+	overrides := make(map[string][]byte, len(plan.ThemeAssets))
+	for source, planned := range plan.ThemeAssets {
+		if planned != nil {
+			overrides[source] = planned.Data
+		}
+	}
+	distinct := make(map[string]bool, len(assetSources))
+	for _, source := range assetSources {
+		distinct[source] = strictDistinctAssetSource(plan, source)
+	}
+	if err := internalasset.ValidateDestinationCollisions(boundary.VaultPath, allAssets, distinct, overrides); err != nil {
+		return result, err
+	}
+	writtenAssetHashes := make(map[string]string, len(assetSources))
 	for _, source := range assetSources {
 		asset := allAssets[source]
 		if asset == nil || asset.DstPath == "" {
@@ -257,26 +304,22 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 		hash := sha256.Sum256(data)
 		hashValue := fmt.Sprintf("%x", hash)
-		if owner, exists := assetOwners[asset.DstPath]; exists {
-			if (strictDistinctAssetSource(plan, owner) || strictDistinctAssetSource(plan, source)) && assetHashes[asset.DstPath] == hashValue {
-				return result, fmt.Errorf("asset destination %q is claimed by distinct sources %q and %q", asset.DstPath, owner, source)
-			}
-			if assetHashes[asset.DstPath] != hashValue {
-				return result, fmt.Errorf("asset destination %q is claimed by %q and %q with different content", asset.DstPath, owner, source)
-			}
+		if existing, ok := writtenAssetHashes[asset.DstPath]; ok && existing == hashValue {
 			continue
 		}
 		if err := outputs.write(staging, asset.DstPath, "asset:"+source, data); err != nil {
 			return result, err
 		}
-		assetOwners[asset.DstPath] = source
-		assetHashes[asset.DstPath] = hashValue
+		writtenAssetHashes[asset.DstPath] = hashValue
 	}
 	applyStrictAssetURLs(plan, allAssets)
 	result.Assets = allAssets
 	styleData, err := render.StyleCSSData()
 	if err != nil {
 		return result, fmt.Errorf("read style.css: %w", err)
+	}
+	if err := outputs.dependencyBytes("built-in CSS", "style.css", styleData); err != nil {
+		return result, err
 	}
 	if err := outputs.write(staging, "style.css", "built-in CSS", styleData); err != nil {
 		return result, err
@@ -286,6 +329,9 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		return result, fmt.Errorf("read runtime assets: %w", err)
 	}
 	for _, runtimeAsset := range runtimeAssets {
+		if err := outputs.dependencyBytes("runtime", runtimeAsset.OutputPath, runtimeAsset.Data); err != nil {
+			return result, err
+		}
 		if err := outputs.write(staging, runtimeAsset.OutputPath, "runtime", runtimeAsset.Data); err != nil {
 			return result, err
 		}
@@ -319,6 +365,253 @@ func strictDistinctAssetSource(plan *model.SitePlan, source string) bool {
 	return false
 }
 
+type strictCacheAssetSink struct {
+	delegate     markdown.AssetSink
+	destinations map[string]string
+}
+
+func newStrictCacheAssetSink(delegate markdown.AssetSink) *strictCacheAssetSink {
+	return &strictCacheAssetSink{delegate: delegate, destinations: make(map[string]string)}
+}
+
+func (sink *strictCacheAssetSink) Register(source string) string {
+	if sink == nil || sink.delegate == nil {
+		return ""
+	}
+	destination := sink.delegate.Register(source)
+	if destination != "" {
+		sink.destinations[source] = destination
+	}
+	return destination
+}
+
+type strictCachePageEntry struct {
+	RelPath   string `json:"relPath"`
+	Route     string `json:"route"`
+	Title     string `json:"title"`
+	VersionID string `json:"versionID,omitempty"`
+}
+
+type strictCacheVersionEntry struct {
+	ID        string `json:"id"`
+	Label     string `json:"label"`
+	RootRoute string `json:"rootRoute"`
+}
+
+type strictCacheLookupEntry struct {
+	RelPath   string            `json:"relPath"`
+	Route     string            `json:"route"`
+	Title     string            `json:"title"`
+	VersionID string            `json:"versionID,omitempty"`
+	Aliases   []string          `json:"aliases,omitempty"`
+	Headings  []model.Heading   `json:"headings,omitempty"`
+	Metadata  model.Frontmatter `json:"metadata,omitempty"`
+	Content   []byte            `json:"content,omitempty"`
+}
+
+type strictCacheSectionInput struct {
+	RelPath       string                 `json:"relPath"`
+	SourcePath    string                 `json:"sourcePath"`
+	Route         string                 `json:"route"`
+	Title         string                 `json:"title"`
+	Description   string                 `json:"description,omitempty"`
+	Order         *int                   `json:"order,omitempty"`
+	Banner        string                 `json:"banner,omitempty"`
+	BannerURL     string                 `json:"bannerURL,omitempty"`
+	BannerAlt     string                 `json:"bannerAlt,omitempty"`
+	RawContent    []byte                 `json:"rawContent"`
+	Children      []strictCachePageEntry `json:"children,omitempty"`
+	Articles      []strictCachePageEntry `json:"articles,omitempty"`
+	VersionID     string                 `json:"versionID,omitempty"`
+	VersionRoutes map[string]string      `json:"versionRoutes,omitempty"`
+	Breadcrumbs   []model.Breadcrumb     `json:"breadcrumbs,omitempty"`
+}
+
+type strictCacheArticleInput struct {
+	RelPath       string            `json:"relPath"`
+	Route         string            `json:"route"`
+	SectionPath   string            `json:"sectionPath"`
+	VersionID     string            `json:"versionID,omitempty"`
+	VersionRoutes map[string]string `json:"versionRoutes,omitempty"`
+	SocialImage   string            `json:"socialImage"`
+	BannerURL     string            `json:"bannerURL,omitempty"`
+	CoverURL      string            `json:"coverURL,omitempty"`
+	Frontmatter   model.Frontmatter `json:"frontmatter"`
+	Aliases       []string          `json:"aliases,omitempty"`
+	Tags          []string          `json:"tags,omitempty"`
+	RawContent    []byte            `json:"rawContent"`
+}
+
+type strictCacheHTMLInput struct {
+	Config         model.SiteConfig          `json:"config"`
+	ThemeAssetURLs map[string]string         `json:"themeAssetURLs,omitempty"`
+	Route          string                    `json:"route"`
+	Title          string                    `json:"title"`
+	Description    string                    `json:"description,omitempty"`
+	SourcePath     string                    `json:"sourcePath,omitempty"`
+	VersionID      string                    `json:"versionID,omitempty"`
+	Versions       []strictCacheVersionEntry `json:"versions,omitempty"`
+	Sidebar        []model.SidebarNode       `json:"sidebar,omitempty"`
+	Section        *strictCacheSectionInput  `json:"section,omitempty"`
+	Article        *strictCacheArticleInput  `json:"article,omitempty"`
+	Entries        []strictCachePageEntry    `json:"entries,omitempty"`
+	Previous       *strictCachePageEntry     `json:"previous,omitempty"`
+	Next           *strictCachePageEntry     `json:"next,omitempty"`
+	Position       int                       `json:"position,omitempty"`
+	Total          int                       `json:"total,omitempty"`
+	Backlinks      []strictCachePageEntry    `json:"backlinks,omitempty"`
+	Related        []strictCachePageEntry    `json:"related,omitempty"`
+	MarkdownAssets map[string]string         `json:"markdownAssets,omitempty"`
+	Lookup         []strictCacheLookupEntry  `json:"lookup,omitempty"`
+}
+
+func strictCacheHTMLBase(plan *model.SitePlan, route, title, description, sourcePath, versionID string) strictCacheHTMLInput {
+	input := strictCacheHTMLInput{
+		Config:         strictCacheConfig(plan),
+		Route:          route,
+		Title:          title,
+		Description:    description,
+		SourcePath:     sourcePath,
+		VersionID:      versionID,
+		ThemeAssetURLs: make(map[string]string),
+	}
+	if plan == nil {
+		return input
+	}
+	for name, assetRoute := range plan.ThemeAssetURLs {
+		input.ThemeAssetURLs[name] = assetRoute
+	}
+	for _, version := range plan.Versions {
+		if version == nil || version.Root == nil || !version.Root.EffectivePublish || version.Root.Route == "" {
+			continue
+		}
+		input.Versions = append(input.Versions, strictCacheVersionEntry{ID: version.ID, Label: version.Label, RootRoute: version.Root.Route})
+	}
+	if plan.Config.Sidebar.Enabled {
+		input.Sidebar = strictSidebar(plan, versionID)
+	}
+	return input
+}
+
+func strictCacheConfig(plan *model.SitePlan) model.SiteConfig {
+	if plan == nil {
+		return model.SiteConfig{}
+	}
+	config := plan.Config
+	config.CustomCSS = strictCacheRelativePath(plan.VaultPath, config.CustomCSS)
+	config.ThemeDir = strictCacheRelativePath(plan.VaultPath, config.ThemeDir)
+	return config
+}
+
+func strictCachePageEntries(notes []*model.Note) []strictCachePageEntry {
+	entries := make([]strictCachePageEntry, 0, len(notes))
+	for _, note := range notes {
+		if note != nil {
+			entries = append(entries, strictCachePageEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID})
+		}
+	}
+	return entries
+}
+
+func strictCacheSectionEntries(sections []*model.Section) []strictCachePageEntry {
+	entries := make([]strictCachePageEntry, 0, len(sections))
+	for _, section := range sections {
+		if section != nil && section.EffectivePublish {
+			entries = append(entries, strictCachePageEntry{RelPath: section.SourcePath, Route: section.Route, Title: section.Title, VersionID: section.VersionID})
+		}
+	}
+	return entries
+}
+
+func strictCacheNoteEntry(note *model.Note) *strictCachePageEntry {
+	if note == nil {
+		return nil
+	}
+	return &strictCachePageEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID}
+}
+
+func strictCacheLookup(index *model.VaultIndex, includeContent bool) []strictCacheLookupEntry {
+	if index == nil {
+		return nil
+	}
+	paths := make([]string, 0, len(index.Notes))
+	for relPath := range index.Notes {
+		paths = append(paths, relPath)
+	}
+	sort.Strings(paths)
+	entries := make([]strictCacheLookupEntry, 0, len(paths)+len(index.Sections))
+	for _, relPath := range paths {
+		note := index.Notes[relPath]
+		if note == nil {
+			continue
+		}
+		entry := strictCacheLookupEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID, Aliases: append([]string(nil), note.Aliases...), Headings: append([]model.Heading(nil), note.Headings...)}
+		if includeContent {
+			entry.Metadata = note.Frontmatter
+			entry.Content = append([]byte(nil), note.RawContent...)
+		}
+		entries = append(entries, entry)
+	}
+	sectionPaths := make([]string, 0, len(index.Sections))
+	for relPath := range index.Sections {
+		sectionPaths = append(sectionPaths, relPath)
+	}
+	sort.Strings(sectionPaths)
+	for _, relPath := range sectionPaths {
+		section := index.Sections[relPath]
+		if section != nil {
+			entry := strictCacheLookupEntry{RelPath: section.SourcePath, Route: section.Route, Title: section.Title, VersionID: section.VersionID, Headings: append([]model.Heading(nil), section.Headings...)}
+			if includeContent {
+				entry.Content = append([]byte(nil), section.RawContent...)
+			}
+			entries = append(entries, entry)
+		}
+	}
+	return entries
+}
+
+func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, index *model.VaultIndex, markdownAssets map[string]string) strictCacheHTMLInput {
+	input := strictCacheHTMLBase(plan, section.Route, section.Title, section.Description, section.SourcePath, section.VersionID)
+	input.Section = &strictCacheSectionInput{
+		RelPath: section.RelPath, SourcePath: section.SourcePath, Route: section.Route,
+		Title: section.Title, Description: section.Description, Order: section.Order,
+		Banner: section.Banner, BannerURL: section.BannerURL, BannerAlt: section.BannerAlt,
+		RawContent: append([]byte(nil), section.RawContent...), Children: strictCacheSectionEntries(section.Children),
+		Articles: strictCachePageEntries(section.Articles), VersionID: section.VersionID,
+		VersionRoutes: section.VersionRoutes, Breadcrumbs: section.Breadcrumbs,
+	}
+	input.MarkdownAssets = markdownAssets
+	input.Lookup = strictCacheLookup(index, len(section.Embeds) > 0)
+	return input
+}
+
+func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, section *model.Section, previous, next *model.Note, position, total int, backlinks, related []*model.Note, index *model.VaultIndex, markdownAssets map[string]string) strictCacheHTMLInput {
+	input := strictCacheHTMLBase(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, article.RelPath, article.VersionID)
+	input.Article = &strictCacheArticleInput{
+		RelPath: article.RelPath, Route: article.Route, SectionPath: article.SectionPath,
+		VersionID: article.VersionID, VersionRoutes: article.VersionRoutes, SocialImage: article.SocialImage,
+		BannerURL: article.BannerURL, CoverURL: article.CoverURL, Frontmatter: article.Frontmatter,
+		Aliases: append([]string(nil), article.Aliases...), Tags: append([]string(nil), article.Tags...), RawContent: append([]byte(nil), article.RawContent...),
+	}
+	if section != nil {
+		sectionInput := strictCacheSectionInput{
+			RelPath: section.RelPath, SourcePath: section.SourcePath, Route: section.Route,
+			Title: section.Title, VersionID: section.VersionID, VersionRoutes: section.VersionRoutes,
+			Breadcrumbs: section.Breadcrumbs,
+		}
+		input.Section = &sectionInput
+	}
+	input.Previous = strictCacheNoteEntry(previous)
+	input.Next = strictCacheNoteEntry(next)
+	input.Position = position
+	input.Total = total
+	input.Backlinks = strictCachePageEntries(backlinks)
+	input.Related = strictCachePageEntries(related)
+	input.MarkdownAssets = markdownAssets
+	input.Lookup = strictCacheLookup(index, len(article.Embeds) > 0)
+	return input
+}
+
 func writeStrictHTML(outputs *strictOutputRegistry, outputRoot, relPath, owner string, data []byte) error {
 	minifier := minify.New()
 	minifier.AddFunc("text/html", minhtml.Minify)
@@ -329,7 +622,7 @@ func writeStrictHTML(outputs *strictOutputRegistry, outputRoot, relPath, owner s
 	return outputs.write(outputRoot, relPath, owner, compact)
 }
 
-func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[string][]*model.Note, error) {
+func buildStrictRelations(planned *siteplan.Result, concurrency int) (*model.LinkGraph, map[string][]*model.Note, error) {
 	related := make(map[string][]*model.Note)
 	if planned == nil || planned.Plan == nil || planned.Index == nil {
 		return &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}, related, nil
@@ -359,7 +652,7 @@ func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[strin
 	}
 	sort.Strings(groupKeys)
 	for _, key := range groupKeys {
-		engine, err := recommend.BuildEngine(groups[key], planned.Index, recommendationGraph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, 0))
+		engine, err := recommend.BuildEngine(groups[key], planned.Index, recommendationGraph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, concurrency))
 		if err != nil {
 			return nil, nil, fmt.Errorf("build related articles: %w", err)
 		}
@@ -442,6 +735,12 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outp
 		if err != nil {
 			return fmt.Errorf("marshal popover payload %q: %w", relPath, err)
 		}
+		if err := outputs.dependency("popover:"+relPath, relPath, struct {
+			Frontmatter model.Frontmatter `json:"frontmatter"`
+			Tags        []string          `json:"tags"`
+		}{note.Frontmatter, note.Tags}); err != nil {
+			return err
+		}
 		if err := outputs.write(outputRoot, path.Join("_popover", slug.EncodePath(relPath)+".json"), "popover:"+relPath, data); err != nil {
 			return err
 		}
@@ -460,16 +759,26 @@ func strictBuildTags(tags map[string]*model.Tag) []*model.Tag {
 	return values
 }
 
-type strictCacheEntry struct {
-	Owner     string `json:"owner"`
-	Source    string `json:"source"`
-	Route     string `json:"route,omitempty"`
-	Signature string `json:"signature"`
+// strictCacheDependency describes the canonical inputs owned by a build
+// producer. It is intentionally separate from strictCacheOutput: an output
+// hash proves what was emitted, while this signature records why it was
+// emitted and which source owns the input.
+type strictCacheDependency struct {
+	Owner          string `json:"owner"`
+	Source         string `json:"source"`
+	InputSignature string `json:"inputSignature"`
+}
+
+type strictCacheOutput struct {
+	Owner      string `json:"owner"`
+	Route      string `json:"route"`
+	OutputHash string `json:"outputHash"`
 }
 
 type strictCacheManifest struct {
-	Version int                `json:"version"`
-	Entries []strictCacheEntry `json:"entries"`
+	Version      int                     `json:"version"`
+	Dependencies []strictCacheDependency `json:"dependencies"`
+	Outputs      []strictCacheOutput     `json:"outputs"`
 }
 
 func strictCacheRelativePath(vaultRoot, value string) string {
@@ -492,49 +801,40 @@ func loadStrictCacheManifest(outputRoot string) *strictCacheManifest {
 		return nil
 	}
 	var manifest strictCacheManifest
-	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != 1 {
+	if err := json.Unmarshal(data, &manifest); err != nil || manifest.Version != 2 {
 		return nil
 	}
 	return &manifest
 }
 
 func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, assets map[string]*model.Asset, outputs *strictOutputRegistry) error {
-	manifest := strictCacheManifest{Version: 1, Entries: make([]strictCacheEntry, 0)}
-	add := func(owner, source, route string, data []byte) {
+	manifest := strictCacheManifest{Version: 2, Dependencies: make([]strictCacheDependency, 0), Outputs: make([]strictCacheOutput, 0)}
+	if outputs != nil {
+		manifest.Dependencies = append(manifest.Dependencies, outputs.dependencies...)
+	}
+	addDependency := func(owner, source string, value any) error {
+		data, err := json.Marshal(value)
+		if err != nil {
+			return fmt.Errorf("marshal cache dependency %q: %w", source, err)
+		}
 		hash := sha256.Sum256(data)
-		manifest.Entries = append(manifest.Entries, strictCacheEntry{Owner: owner, Source: source, Route: route, Signature: fmt.Sprintf("%x", hash)})
+		manifest.Dependencies = append(manifest.Dependencies, strictCacheDependency{
+			Owner: owner, Source: source, InputSignature: fmt.Sprintf("%x", hash),
+		})
+		return nil
 	}
 	if plan != nil {
 		cacheConfig := plan.Config
 		cacheConfig.CustomCSS = strictCacheRelativePath(plan.VaultPath, cacheConfig.CustomCSS)
 		cacheConfig.ThemeDir = strictCacheRelativePath(plan.VaultPath, cacheConfig.ThemeDir)
-		configData, _ := json.Marshal(struct {
+		// These fields are assigned from planned assets during the build and
+		// therefore belong to output state, not the canonical config input.
+		cacheConfig.ThemeCSS = ""
+		cacheConfig.DefaultImgURL = ""
+		if err := addDependency("site", "obsite.yaml", struct {
 			Config model.SiteConfig `json:"config"`
-		}{Config: cacheConfig})
-		add("site", "obsite.yaml", "", configData)
-		for _, section := range plan.Sections {
-			if section != nil {
-				data := append([]byte(section.Title+"\x00"+section.Description+"\x00"+section.Banner+"\x00"+section.BannerAlt), section.RawContent...)
-				add("section", section.SourcePath, section.Route, data)
-			}
-		}
-		for _, article := range plan.Articles {
-			if article != nil {
-				meta, _ := json.Marshal(article.Frontmatter)
-				data := append(meta, article.RawContent...)
-				add("article", article.RelPath, article.Route, data)
-				if article.SocialImage != "" {
-					add("social", article.RelPath, article.SocialImage, append(meta, []byte(article.Route+"\x00"+article.SocialImage)...))
-				}
-			}
-		}
-	}
-	if index != nil {
-		for _, tag := range strictBuildTags(index.Tags) {
-			if tag != nil {
-				data, _ := json.Marshal(tag)
-				add("tag", tag.Name, "/"+slug.EncodePath(tag.Slug)+"/", data)
-			}
+		}{Config: cacheConfig}); err != nil {
+			return err
 		}
 	}
 	assetSources := make([]string, 0, len(assets))
@@ -543,42 +843,45 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 	}
 	sort.Strings(assetSources)
 	for _, source := range assetSources {
-		if asset := assets[source]; asset != nil {
-			data, _ := json.Marshal(asset)
-			add("asset", source, asset.DstPath, data)
+		asset := assets[source]
+		if asset == nil {
+			continue
 		}
-	}
-	if plan != nil && plan.Config.Timeline.Enabled {
-		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
-		pageSize := plan.Config.Pagination.PageSize
-		if pageSize <= 0 || pageSize >= len(plan.Posts) {
-			pageSize = len(plan.Posts)
+		if plan == nil {
+			return fmt.Errorf("site plan is required for asset dependency %q", source)
 		}
-		if pageSize == 0 {
-			pageSize = 1
-		}
-		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
-		if pageCount == 0 {
-			pageCount = 1
-		}
-		for page := 1; page <= pageCount; page++ {
-			route := baseTimelineRoute
-			if page > 1 {
-				route = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
+		if planned := plan.ThemeAssets[source]; planned != nil {
+			if err := addDependency("asset:"+source, source, struct {
+				Content []byte `json:"content"`
+			}{planned.Data}); err != nil {
+				return err
 			}
-			add("timeline", "obsite.yaml", route, []byte(route))
+			continue
+		}
+		_, content, _, err := internalfsutil.ReadContainedRegularFile(plan.VaultPath, source)
+		if err != nil {
+			return fmt.Errorf("read cache dependency asset %q: %w", source, err)
+		}
+		if err := addDependency("asset:"+source, source, struct {
+			Content []byte `json:"content"`
+		}{content}); err != nil {
+			return err
 		}
 	}
 	if outputs != nil {
-		manifest.Entries = append(manifest.Entries, outputs.records...)
+		manifest.Outputs = append(manifest.Outputs, outputs.records...)
 	}
-	sort.Slice(manifest.Entries, func(i, j int) bool {
-		left, right := manifest.Entries[i], manifest.Entries[j]
+	sort.Slice(manifest.Dependencies, func(i, j int) bool {
+		left, right := manifest.Dependencies[i], manifest.Dependencies[j]
 		if left.Owner != right.Owner {
 			return left.Owner < right.Owner
 		}
-		if left.Source != right.Source {
-			return left.Source < right.Source
+		return left.Source < right.Source
+	})
+	sort.Slice(manifest.Outputs, func(i, j int) bool {
+		left, right := manifest.Outputs[i], manifest.Outputs[j]
+		if left.Owner != right.Owner {
+			return left.Owner < right.Owner
 		}
 		return left.Route < right.Route
 	})
@@ -597,6 +900,9 @@ func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SiteP
 		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, plan.Config.CustomCSS)
 		if err != nil {
 			return fmt.Errorf("read custom CSS: %w", err)
+		}
+		if err := outputs.dependencyBytes("custom CSS", strictCacheRelativePath(vaultRoot, plan.Config.CustomCSS), data); err != nil {
+			return err
 		}
 		if err := outputs.write(outputRoot, customCSSOutputPath, "custom CSS", data); err != nil {
 			return err
@@ -657,6 +963,7 @@ func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 
 func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, outputs *strictOutputRegistry) error {
 	var sitemap strings.Builder
+	sitemapTimeline := make([]string, 0)
 	sitemap.WriteString(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
 	for _, section := range plan.Sections {
 		if section != nil && section.Route != "" {
@@ -693,11 +1000,51 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 			if page > 1 {
 				route = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
 			}
+			sitemapTimeline = append(sitemapTimeline, route)
 			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, route)))
 		}
 	}
 	sitemap.WriteString(`</urlset>`)
-	if err := outputs.write(outputRoot, "sitemap.xml", "sitemap", []byte(sitemap.String())); err != nil {
+	type sitemapEntry struct {
+		Route        string    `json:"route"`
+		LastModified time.Time `json:"lastModified,omitempty"`
+	}
+	sitemapSections := make([]sitemapEntry, 0, len(plan.Sections))
+	for _, section := range plan.Sections {
+		if section != nil && section.Route != "" {
+			sitemapSections = append(sitemapSections, sitemapEntry{Route: section.Route, LastModified: section.LastModified})
+		}
+	}
+	sitemapArticles := make([]sitemapEntry, 0, len(plan.Articles))
+	for _, article := range plan.Articles {
+		if article != nil && article.Route != "" {
+			sitemapArticles = append(sitemapArticles, sitemapEntry{Route: article.Route, LastModified: article.LastModified})
+		}
+	}
+	sitemapTags := make([]string, 0)
+	if index != nil {
+		for _, tag := range strictBuildTags(index.Tags) {
+			if tag != nil {
+				sitemapTags = append(sitemapTags, tag.Slug)
+			}
+		}
+	}
+	if err := outputs.dependency("sitemap", "obsite.yaml", struct {
+		BaseURL  string         `json:"baseURL"`
+		Sections []sitemapEntry `json:"sections"`
+		Articles []sitemapEntry `json:"articles"`
+		Tags     []string       `json:"tags,omitempty"`
+		Timeline []string       `json:"timeline,omitempty"`
+	}{plan.Config.BaseURL, sitemapSections, sitemapArticles, sitemapTags, sitemapTimeline}); err != nil {
+		return err
+	}
+	sitemapData := []byte(sitemap.String())
+	if err := outputs.write(outputRoot, "sitemap.xml", "sitemap", sitemapData); err != nil {
+		return err
+	}
+	if err := outputs.dependency("robots", "obsite.yaml", struct {
+		BaseURL string `json:"baseURL"`
+	}{plan.Config.BaseURL}); err != nil {
 		return err
 	}
 	if err := outputs.write(outputRoot, "robots.txt", "robots", []byte(strictBuildRobots(plan.Config.BaseURL))); err != nil {
@@ -754,12 +1101,51 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 			rss.WriteString(`</item>`)
 		}
 		rss.WriteString(`</channel></rss>`)
-		if err := outputs.write(outputRoot, "index.xml", "rss", []byte(rss.String())); err != nil {
+		type rssPostInput struct {
+			Route          string    `json:"route"`
+			Title          string    `json:"title"`
+			Description    string    `json:"description,omitempty"`
+			Author         string    `json:"author,omitempty"`
+			Tags           []string  `json:"tags,omitempty"`
+			Reviewed       time.Time `json:"reviewed,omitempty"`
+			Status         string    `json:"status,omitempty"`
+			Audience       string    `json:"audience,omitempty"`
+			ProductVersion string    `json:"productVersion,omitempty"`
+			Series         string    `json:"series,omitempty"`
+			Date           time.Time `json:"date,omitempty"`
+			Updated        time.Time `json:"updated,omitempty"`
+		}
+		posts := make([]rssPostInput, 0, len(plan.Posts))
+		for _, article := range plan.Posts {
+			if article == nil {
+				continue
+			}
+			posts = append(posts, rssPostInput{
+				Route: article.Route, Title: article.Frontmatter.Title, Description: article.Frontmatter.Description,
+				Author: article.Frontmatter.Author, Tags: append([]string(nil), article.Tags...), Reviewed: article.Frontmatter.Reviewed,
+				Status: article.Frontmatter.Status, Audience: article.Frontmatter.Audience, ProductVersion: article.Frontmatter.ProductVersion,
+				Series: article.Frontmatter.Series, Date: article.Frontmatter.Date, Updated: article.Frontmatter.Updated,
+			})
+		}
+		if err := outputs.dependency("rss", "obsite.yaml", struct {
+			Title       string         `json:"title"`
+			BaseURL     string         `json:"baseURL"`
+			Description string         `json:"description,omitempty"`
+			Language    string         `json:"language,omitempty"`
+			Posts       []rssPostInput `json:"posts"`
+		}{plan.Config.Title, plan.Config.BaseURL, plan.Config.Description, plan.Config.Language, posts}); err != nil {
+			return err
+		}
+		rssData := []byte(rss.String())
+		if err := outputs.write(outputRoot, "index.xml", "rss", rssData); err != nil {
 			return err
 		}
 	}
 	notFound, err := render.RenderStrictNotFound(plan)
 	if err != nil {
+		return err
+	}
+	if err := outputs.dependency("404", "obsite.yaml", strictCacheHTMLBase(plan, "/404.html", "Not found", "", "", "")); err != nil {
 		return err
 	}
 	return writeStrictHTML(outputs, outputRoot, "404.html", "404", notFound)

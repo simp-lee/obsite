@@ -2,6 +2,7 @@ package build
 
 import (
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -47,20 +48,47 @@ const (
 type strictOutputRegistry struct {
 	claims       map[string]string
 	previousRoot string
-	previous     map[string]strictCacheEntry
-	records      []strictCacheEntry
+	previous     map[string]strictCacheOutput
+	records      []strictCacheOutput
+	dependencies []strictCacheDependency
 }
 
 func newStrictOutputRegistry(previousRoot string, manifest *strictCacheManifest) *strictOutputRegistry {
-	previous := make(map[string]strictCacheEntry)
+	previous := make(map[string]strictCacheOutput)
 	if manifest != nil {
-		for _, entry := range manifest.Entries {
+		for _, entry := range manifest.Outputs {
 			if entry.Route != "" {
 				previous[entry.Route] = entry
 			}
 		}
 	}
 	return &strictOutputRegistry{claims: make(map[string]string), previousRoot: previousRoot, previous: previous}
+}
+
+func (registry *strictOutputRegistry) dependency(owner, source string, value any) error {
+	if registry == nil {
+		return fmt.Errorf("output registry is required")
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal cache dependency %q: %w", source, err)
+	}
+	hash := sha256.Sum256(data)
+	registry.dependencies = append(registry.dependencies, strictCacheDependency{
+		Owner: owner, Source: source, InputSignature: fmt.Sprintf("%x", hash),
+	})
+	return nil
+}
+
+func (registry *strictOutputRegistry) dependencyBytes(owner, source string, data []byte) error {
+	if registry == nil {
+		return fmt.Errorf("output registry is required")
+	}
+	hash := sha256.Sum256(data)
+	registry.dependencies = append(registry.dependencies, strictCacheDependency{
+		Owner: owner, Source: source, InputSignature: fmt.Sprintf("%x", hash),
+	})
+	return nil
 }
 
 func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, content []byte) error {
@@ -77,13 +105,13 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	registry.claims[cleaned] = owner
 	writeContent := content
 	hash := sha256.Sum256(content)
-	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.Signature == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
+	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.OutputHash == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
 		previousPath := filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))
 		if previousContent, err := os.ReadFile(previousPath); err == nil {
 			previousHash := sha256.Sum256(previousContent)
-			if fmt.Sprintf("%x", previousHash) == previous.Signature {
+			if fmt.Sprintf("%x", previousHash) == previous.OutputHash {
 				if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
-					registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+					registry.records = append(registry.records, strictCacheOutput{Owner: owner, Route: cleaned, OutputHash: fmt.Sprintf("%x", hash)})
 					return nil
 				}
 				writeContent = previousContent
@@ -93,7 +121,7 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	if err := writeOutputFile(outputRoot, cleaned, writeContent); err != nil {
 		return err
 	}
-	registry.records = append(registry.records, strictCacheEntry{Owner: owner, Route: cleaned, Signature: fmt.Sprintf("%x", hash)})
+	registry.records = append(registry.records, strictCacheOutput{Owner: owner, Route: cleaned, OutputHash: fmt.Sprintf("%x", hash)})
 	return nil
 }
 

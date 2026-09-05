@@ -34,7 +34,7 @@ EXPECTED_OUTPUT="obsite version=$EXPECTED_VERSION commit=$EXPECTED_COMMIT date=$
 
 python3 - "$ROOT" "$DIST" <<'PY'
 from pathlib import Path
-import hashlib, re, sys, tarfile, zipfile
+import hashlib, json, re, subprocess, sys, tarfile, zipfile
 
 root, dist = map(Path, sys.argv[1:])
 archives = sorted(list(dist.glob('*.tar.gz')) + list(dist.glob('*.zip')))
@@ -96,6 +96,53 @@ for path in dist.rglob('*'):
         raw_binaries[key] = path
 if set(raw_binaries) != expected_matrix:
     raise SystemExit(f'binary matrix = {sorted(raw_binaries)}, want {sorted(expected_matrix)}')
+
+# Verify the build provenance and object format for every target. Linux also
+# exposes its static-link status through file(1); on Darwin and Windows,
+# CGO_ENABLED=0 is the platform-appropriate check that cgo was disabled (their
+# native formats retain normal operating-system loader dependencies).
+format_markers = {
+    ('linux', 'amd64'): ('ELF 64-bit', 'x86-64'),
+    ('linux', 'arm64'): ('ELF 64-bit', 'ARM aarch64'),
+    ('darwin', 'amd64'): ('Mach-O 64-bit', 'x86_64'),
+    ('darwin', 'arm64'): ('Mach-O 64-bit', 'arm64'),
+    ('windows', 'amd64'): ('PE32+', 'x86-64'),
+    ('windows', 'arm64'): ('PE32+', 'ARM64'),
+}
+for key, binary in sorted(raw_binaries.items()):
+    os_name, arch = key
+    try:
+        build_info = subprocess.run(
+            ['go', 'version', '-m', '-json', str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        settings = {
+            item['Key']: item['Value']
+            for item in json.loads(build_info.stdout).get('Settings', [])
+        }
+    except (FileNotFoundError, subprocess.CalledProcessError, KeyError, json.JSONDecodeError) as error:
+        raise SystemExit(f'{binary}: unable to read Go build metadata: {error}')
+    for setting, expected in (('CGO_ENABLED', '0'), ('GOOS', os_name), ('GOARCH', arch)):
+        if settings.get(setting) != expected:
+            actual = settings.get(setting, '<missing>')
+            raise SystemExit(f'{binary}: {setting} = {actual}, want {expected}')
+
+    try:
+        file_info = subprocess.run(
+            ['file', '-b', str(binary)],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        raise SystemExit(f'{binary}: unable to inspect executable format: {error}')
+    for marker in format_markers[key]:
+        if marker not in file_info:
+            raise SystemExit(f'{binary}: file format = {file_info.strip()!r}, missing {marker!r}')
+    if os_name == 'linux' and not re.search(r'(?:statically linked|not a dynamic executable)', file_info):
+        raise SystemExit(f'{binary}: not statically linked: {file_info.strip()}')
 
 seen = set()
 for archive in archives:
@@ -161,16 +208,7 @@ for key, binary in sorted(raw_binaries.items()):
 PY
 
 linux_amd64=$(find "$DIST" -type f -path '*linux*amd64*/obsite' | head -n 1)
-linux_arm64=$(find "$DIST" -type f -path '*linux*arm64*/obsite' | head -n 1)
 [ -n "$linux_amd64" ] || { echo "linux amd64 binary missing" >&2; exit 1; }
-[ -n "$linux_arm64" ] || { echo "linux arm64 binary missing" >&2; exit 1; }
-for linux_binary in "$linux_amd64" "$linux_arm64"; do
-file "$linux_binary" | grep -E 'statically linked|not a dynamic executable' >/dev/null || {
-  echo "linux amd64 binary is not statically linked" >&2
-  file "$linux_binary" >&2
-  exit 1
-}
-done
 VERSION_OUTPUT=$($linux_amd64 version)
 VERSION_FLAG_OUTPUT=$($linux_amd64 --version)
 [ "$VERSION_OUTPUT" = "$EXPECTED_OUTPUT" ] || { echo "version metadata mismatch: $VERSION_OUTPUT" >&2; exit 1; }

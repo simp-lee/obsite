@@ -34,11 +34,46 @@ func TestStrictBuildIsByteStableAcrossConcurrentBuilds(t *testing.T) {
 			t.Fatalf("file counts differ: %d and %d", len(want), len(got))
 		}
 		for name, data := range want {
-			if !bytes.Equal(data, got[name]) {
+			other, ok := got[name]
+			if !ok {
+				t.Fatalf("concurrent build omitted output %q", name)
+			}
+			if !bytes.Equal(data, other) {
 				t.Fatalf("concurrent output %q differs", name)
 			}
 		}
 	}
+}
+
+func TestStrictBuildIsByteStableAcrossWorkerConcurrency(t *testing.T) {
+	vault := copyFixtureVault(t, "feature-vault")
+	concurrencies := []int{1, 4}
+	roots := make([]string, len(concurrencies))
+	results := make([]*BuildResult, len(concurrencies))
+	for index, concurrency := range concurrencies {
+		roots[index] = filepath.Join(t.TempDir(), "site")
+		result, err := BuildWithOptions(vault, roots[index], Options{Concurrency: concurrency})
+		if err != nil {
+			t.Fatalf("BuildWithOptions(concurrency=%d): %v", concurrency, err)
+		}
+		results[index] = result
+	}
+
+	want := strictOutputBytes(t, roots[0])
+	got := strictOutputBytes(t, roots[1])
+	if len(got) != len(want) {
+		t.Fatalf("worker configurations produced %d and %d files", len(want), len(got))
+	}
+	for name, data := range want {
+		other, ok := got[name]
+		if !ok {
+			t.Fatalf("worker configuration omitted output %q", name)
+		}
+		if !bytes.Equal(data, other) {
+			t.Fatalf("worker configuration changed output %q", name)
+		}
+	}
+	compareStrictURLValues(t, strictOutputURLs(results[0]), strictOutputURLs(results[1]))
 }
 
 func TestStrictBuildIsByteStableAcrossEquivalentInputOrders(t *testing.T) {
@@ -118,6 +153,56 @@ func TestStrictBuildIsByteStableAcrossOutputRootsAndRebuilds(t *testing.T) {
 	for name, data := range first {
 		if !bytes.Equal(data, third[name]) {
 			t.Fatalf("rebuild output %q differs", name)
+		}
+	}
+}
+
+func strictOutputURLs(result *BuildResult) map[string]string {
+	values := make(map[string]string)
+	if result == nil || result.Index == nil {
+		return values
+	}
+	for source, asset := range result.Assets {
+		if asset != nil {
+			values["asset:"+source] = asset.DstPath
+		}
+	}
+	for relPath, note := range result.Index.Notes {
+		if note == nil {
+			continue
+		}
+		prefix := "note:" + relPath + ":"
+		values[prefix+"route"] = note.Route
+		values[prefix+"social"] = note.SocialImage
+		values[prefix+"banner"] = note.BannerURL
+		values[prefix+"cover"] = note.CoverURL
+		for version, route := range note.VersionRoutes {
+			values[prefix+"version:"+version] = route
+		}
+	}
+	for relPath, section := range result.Index.Sections {
+		if section == nil {
+			continue
+		}
+		prefix := "section:" + relPath + ":"
+		values[prefix+"route"] = section.Route
+		values[prefix+"banner"] = section.BannerURL
+	}
+	return values
+}
+
+func compareStrictURLValues(t *testing.T, want, got map[string]string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("worker configurations produced %d and %d URL values", len(want), len(got))
+	}
+	for name, value := range want {
+		other, ok := got[name]
+		if !ok {
+			t.Fatalf("worker configuration omitted URL %q", name)
+		}
+		if other != value {
+			t.Fatalf("worker configuration changed URL %q: %q and %q", name, value, other)
 		}
 	}
 }

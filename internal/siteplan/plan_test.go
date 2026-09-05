@@ -1,6 +1,9 @@
 package siteplan
 
 import (
+	"bytes"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +143,42 @@ func TestBuildWithConfigRejectsUnknownAndImplicitArticleMetadata(t *testing.T) {
 	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
 	if err == nil || !strings.Contains(diagnosticMessages(result.Diagnostics), "unknown frontmatter field") {
 		t.Fatalf("BuildWithConfig() error=%v diagnostics=%v, want unknown-field rejection", err, result.Diagnostics)
+	}
+}
+
+func TestBuildWithConfigRejectsAssetDestinationCollisions(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"images/one/banner.png", "images/two/banner.png"} {
+		writePlanFile(t, vault, source, imageData.String())
+	}
+	writePlanFile(t, vault, "one.md", "---\ntitle: One\npublish: true\ntype: page\nbanner: images/one/banner.png\nbannerAlt: Banner\n---\n")
+	writePlanFile(t, vault, "two.md", "---\ntitle: Two\npublish: true\ntype: page\nbanner: images/two/banner.png\nbannerAlt: Banner\n---\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil || !strings.Contains(diagnosticMessages(result.Diagnostics), "asset destination") || !strings.Contains(diagnosticMessages(result.Diagnostics), "distinct sources") {
+		t.Fatalf("BuildWithConfig() error=%v diagnostics=%v, want asset destination collision", err, result.Diagnostics)
+	}
+}
+
+func TestBuildWithConfigRejectsAssetCollisionAcrossFrontmatterAndMarkdown(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewNRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	writePlanFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\nbanner: images/one/banner.png\nbannerAlt: Banner\n---\n[Inline](images/two/banner.png)\n")
+	writePlanFile(t, vault, "images/one/banner.png", imageData.String())
+	writePlanFile(t, vault, "images/two/banner.png", imageData.String())
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil || !strings.Contains(diagnosticMessages(result.Diagnostics), "asset destination") || !strings.Contains(diagnosticMessages(result.Diagnostics), "distinct sources") {
+		t.Fatalf("BuildWithConfig() error=%v diagnostics=%v, want cross-pass asset collision", err, result.Diagnostics)
 	}
 }
 

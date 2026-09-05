@@ -157,6 +157,67 @@ func PlanData(srcPath string, data []byte) *model.PlannedAsset {
 	}
 }
 
+// DestinationCollisionError describes two sources that the asset planner
+// assigned to the same output destination.
+type DestinationCollisionError struct {
+	Destination    string
+	FirstSource    string
+	SecondSource   string
+	DifferentBytes bool
+}
+
+func (err *DestinationCollisionError) Error() string {
+	if err == nil {
+		return "asset destination collision"
+	}
+	if err.DifferentBytes {
+		return fmt.Sprintf("asset destination %q is claimed by %q and %q with different content", err.Destination, err.FirstSource, err.SecondSource)
+	}
+	return fmt.Sprintf("asset destination %q is claimed by distinct sources %q and %q", err.Destination, err.FirstSource, err.SecondSource)
+}
+
+// ValidateDestinationCollisions checks the destinations produced by the asset
+// planner. Distinct sources may share a destination only when they are not
+// marked distinct and have identical content. overrides supplies bytes for
+// explicitly planned inputs that are not read from vaultRoot.
+func ValidateDestinationCollisions(vaultRoot string, assets map[string]*model.Asset, distinct map[string]bool, overrides map[string][]byte) error {
+	sources := make([]string, 0, len(assets))
+	for source, asset := range assets {
+		if asset != nil && asset.DstPath != "" {
+			sources = append(sources, source)
+		}
+	}
+	sort.Strings(sources)
+
+	owners := make(map[string]string, len(sources))
+	hashes := make(map[string]string, len(sources))
+	for _, source := range sources {
+		asset := assets[source]
+		data, ok := overrides[source]
+		if !ok {
+			_, readData, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, source)
+			if err != nil {
+				return fmt.Errorf("read asset %q: %w", source, err)
+			}
+			data = readData
+		}
+		hash := sha256.Sum256(data)
+		hashValue := fmt.Sprintf("%x", hash)
+		if owner, exists := owners[asset.DstPath]; exists {
+			if (distinct[owner] || distinct[source]) && hashes[asset.DstPath] == hashValue {
+				return &DestinationCollisionError{Destination: asset.DstPath, FirstSource: owner, SecondSource: source}
+			}
+			if hashes[asset.DstPath] != hashValue {
+				return &DestinationCollisionError{Destination: asset.DstPath, FirstSource: owner, SecondSource: source, DifferentBytes: true}
+			}
+			continue
+		}
+		owners[asset.DstPath] = source
+		hashes[asset.DstPath] = hashValue
+	}
+	return nil
+}
+
 func plainAssetPath(srcPath string) string {
 	return path.Join(outputDirPrefix, encodeAssetSegment(path.Base(srcPath)))
 }

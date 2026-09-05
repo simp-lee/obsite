@@ -73,7 +73,9 @@ type PopoverConfig struct {
 	Enabled bool
 }
 
-// RelatedConfig controls related-article generation.
+// RelatedConfig controls related-article generation. Enabled is a boolean
+// feature switch; Count is the requested number of recommendations and must be
+// normalized to the inclusive range 1..20.
 type RelatedConfig struct {
 	Enabled bool
 	Count   int

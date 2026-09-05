@@ -4,6 +4,7 @@ package siteplan
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	_ "image/jpeg"
@@ -45,6 +46,12 @@ type Result struct {
 
 // Build loads the vault-local configuration and creates a strict site plan.
 func Build(vaultPath string) (*Result, error) {
+	return BuildWithConcurrency(vaultPath, 0)
+}
+
+// BuildWithConcurrency creates a strict plan with an optional bound on
+// independent Markdown indexing workers.
+func BuildWithConcurrency(vaultPath string, concurrency int) (*Result, error) {
 	resolved, err := internalfsutil.ResolveVaultPath(vaultPath)
 	if err != nil {
 		return nil, err
@@ -53,12 +60,19 @@ func Build(vaultPath string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return BuildWithConfig(resolved, cfg)
+	return buildWithConfigAndOutput(resolved, cfg, "", concurrency)
 }
 
 // BuildForOutput creates the same strict plan while excluding the resolved
 // publication destination from vault discovery.
 func BuildForOutput(vaultPath, outputPath string) (*Result, error) {
+	return BuildForOutputWithConcurrency(vaultPath, outputPath, 0)
+}
+
+// BuildForOutputWithConcurrency creates a strict plan with an optional bound
+// on independent Markdown indexing workers. A non-positive value preserves the
+// default worker selection.
+func BuildForOutputWithConcurrency(vaultPath, outputPath string, concurrency int) (*Result, error) {
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
 		return nil, err
@@ -67,16 +81,16 @@ func BuildForOutput(vaultPath, outputPath string) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	return buildWithConfigAndOutput(boundary.VaultPath, cfg, boundary.OutputPath)
+	return buildWithConfigAndOutput(boundary.VaultPath, cfg, boundary.OutputPath, concurrency)
 }
 
 // BuildWithConfig creates a strict plan from an already loaded configuration.
 // The configuration is normalized again so callers cannot bypass its contract.
 func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
-	return buildWithConfigAndOutput(vaultPath, cfg, "")
+	return buildWithConfigAndOutput(vaultPath, cfg, "", 0)
 }
 
-func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath string) (*Result, error) {
+func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath string, concurrency int) (*Result, error) {
 	collector := diag.NewCollector()
 	cfg, err := internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
@@ -154,11 +168,11 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
 	validateNavigation(sections, cfg.Navigation, cfg.FieldLines, collector)
-	validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
+	frontmatterAssets, assetOwners := validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
 	finalizeCollections(plan, sections, versions)
-	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
+	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{Concurrency: concurrency, CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
 	if indexErr != nil {
 		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
 	}
@@ -176,6 +190,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		}
 	}
 
+	validateAssetDestinations(resolvedVault, plan, frontmatterAssets, assetOwners, indexResult.Index, collector)
 	validateThemeSlotAssets(plan, indexResult.Index, collector)
 	result := &Result{Plan: plan, Scan: scan, Sources: sources, Index: indexResult.Index, RelatedSemantic: indexResult.RelatedSemantic, Diagnostics: collector.Diagnostics()}
 	if collector.HasErrors() {
@@ -830,8 +845,10 @@ func assetRecord(collector *diag.Collector, owner string, line int, field, targe
 	})
 }
 
-func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, resourceFiles []string, collector *diag.Collector) {
+func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, resourceFiles []string, collector *diag.Collector) (map[string]*model.Asset, map[string]assetDiagnostic) {
 	seen := make(map[string]struct{})
+	validated := make(map[string]*model.Asset)
+	owners := make(map[string]assetDiagnostic)
 	resourceVersions := make(map[string]string, len(resourceFiles))
 	for _, resource := range resourceFiles {
 		physical := path.Dir(resource)
@@ -886,6 +903,13 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		if strings.HasSuffix(lower, ".svg") {
 			if err := internalasset.ValidateLocalSVG(data); err != nil {
 				assetRecord(collector, owner, line, kind, source, "banner SVG: %v", err)
+				return
+			}
+			if plannedAssetReference(plan, kind, owner) {
+				validated[source] = &model.Asset{SrcPath: source}
+				if _, exists := owners[source]; !exists {
+					owners[source] = assetDiagnostic{path: owner, line: line, field: kind}
+				}
 			}
 			return
 		}
@@ -893,6 +917,11 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 			assetRecord(collector, owner, line, kind, source, "%s cannot be decoded: %v", kind, err)
 		} else if format != "png" && format != "jpeg" && format != "webp" {
 			assetRecord(collector, owner, line, kind, source, "%s decoded as unsupported format %q", kind, format)
+		} else if plannedAssetReference(plan, kind, owner) {
+			validated[source] = &model.Asset{SrcPath: source}
+			if _, exists := owners[source]; !exists {
+				owners[source] = assetDiagnostic{path: owner, line: line, field: kind}
+			}
 		}
 	}
 	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
@@ -913,6 +942,135 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 			}
 			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath, articleVersion, source.Article.FieldLines["banner"])
 			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath, articleVersion, source.Article.FieldLines["cover"])
+		}
+	}
+	return validated, owners
+}
+
+func plannedAssetReference(plan *model.SitePlan, kind, owner string) bool {
+	if plan == nil {
+		return false
+	}
+	if kind == "defaultImg" {
+		return true
+	}
+	for _, section := range plan.Sections {
+		if section != nil && kind == "banner" && section.SourcePath == owner {
+			return true
+		}
+	}
+	for _, article := range plan.Articles {
+		if article == nil || article.RelPath != owner {
+			continue
+		}
+		return kind == "banner" || kind == "cover"
+	}
+	return false
+}
+
+func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatter map[string]*model.Asset, owners map[string]assetDiagnostic, index *model.VaultIndex, collector *diag.Collector) {
+	if plan == nil {
+		return
+	}
+
+	assets := make(map[string]*model.Asset, len(frontmatter))
+	for source := range frontmatter {
+		assets[source] = &model.Asset{SrcPath: source}
+	}
+	if index != nil {
+		for source, indexed := range index.Assets {
+			if indexed == nil {
+				continue
+			}
+			if existing := assets[source]; existing != nil {
+				existing.RefCount += indexed.RefCount
+				continue
+			}
+			clone := *indexed
+			clone.DstPath = ""
+			assets[source] = &clone
+		}
+	}
+	if len(assets) == 0 && len(plan.ThemeAssets) == 0 {
+		return
+	}
+
+	assetCollector, err := internalasset.NewCollectorWithResourceFiles(vaultRoot, assets, nil, nil)
+	if err != nil {
+		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
+		return
+	}
+	applyPlannedAssetDestinations(assets, assetCollector.PlanDestinations(assets))
+
+	allAssets := make(map[string]*model.Asset, len(assets)+len(plan.ThemeAssets))
+	for source, asset := range assets {
+		allAssets[source] = asset
+	}
+	overrides := make(map[string][]byte, len(plan.ThemeAssets))
+	for source, planned := range plan.ThemeAssets {
+		if planned == nil {
+			continue
+		}
+		asset := planned.Asset
+		allAssets[source] = &asset
+		overrides[source] = planned.Data
+	}
+	distinct := make(map[string]bool, len(allAssets))
+	for source := range frontmatter {
+		distinct[source] = true
+	}
+	if err := internalasset.ValidateDestinationCollisions(vaultRoot, allAssets, distinct, overrides); err != nil {
+		var collision *internalasset.DestinationCollisionError
+		if errors.As(err, &collision) {
+			owner := owners[collision.FirstSource]
+			if owner.path == "" {
+				owner = owners[collision.SecondSource]
+			}
+			if owner.path == "" {
+				owner = assetDiagnosticOwner(plan, collision.FirstSource)
+			}
+			assetRecord(collector, owner.path, owner.line, owner.field, collision.Destination, "%v", err)
+			return
+		}
+		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
+	}
+}
+
+type assetDiagnostic struct {
+	path  string
+	line  int
+	field string
+}
+
+func assetDiagnosticOwner(plan *model.SitePlan, source string) assetDiagnostic {
+	if plan != nil {
+		if plan.Config.DefaultImg == source && !plan.Config.DefaultImgExternal {
+			return assetDiagnostic{path: internalconfig.Filename, line: plan.Config.FieldLines["defaultImg"], field: "defaultImg"}
+		}
+		for _, section := range plan.Sections {
+			if section != nil && section.Banner == source {
+				return assetDiagnostic{path: section.SourcePath, field: "banner"}
+			}
+		}
+		for _, article := range plan.Articles {
+			if article == nil {
+				continue
+			}
+			if article.Frontmatter.Banner == source {
+				return assetDiagnostic{path: article.RelPath, field: "banner"}
+			}
+			if article.Frontmatter.Cover == source {
+				return assetDiagnostic{path: article.RelPath, field: "cover"}
+			}
+		}
+	}
+	return assetDiagnostic{path: source, field: "asset"}
+}
+
+func applyPlannedAssetDestinations(assets map[string]*model.Asset, destinations map[string]string) {
+	for source, destination := range destinations {
+		if asset := assets[source]; asset != nil {
+			asset.DstPath = destination
 		}
 	}
 }

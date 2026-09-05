@@ -44,12 +44,18 @@ func Analyze(vaultPath string) (Result, error) {
 // AnalyzeWithOutput uses the same strict plan for publication while excluding
 // the resolved output root from the vault source tree.
 func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
+	return AnalyzeWithOutputAndConcurrency(vaultPath, outputPath, 0)
+}
+
+// AnalyzeWithOutputAndConcurrency uses the same strict plan for publication,
+// optionally selecting the worker bound used by independent indexing work.
+func AnalyzeWithOutputAndConcurrency(vaultPath, outputPath string, concurrency int) (Result, error) {
 	var planned *siteplan.Result
 	var err error
 	if outputPath == "" {
-		planned, err = siteplan.Build(vaultPath)
+		planned, err = siteplan.BuildWithConcurrency(vaultPath, concurrency)
 	} else {
-		planned, err = siteplan.BuildForOutput(vaultPath, outputPath)
+		planned, err = siteplan.BuildForOutputWithConcurrency(vaultPath, outputPath, concurrency)
 	}
 	if planned == nil {
 		collector := diagnostic.NewCollector()

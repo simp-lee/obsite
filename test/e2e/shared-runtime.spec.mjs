@@ -7,6 +7,12 @@ import path from 'node:path';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const fixtureRoot = path.join(repoRoot, 'test', 'testdata', 'e2e', 'runtime-vault');
+const childDocumentRoutes = [
+  '/alpha/child/intro/',
+  '/alpha/child/tie-a/',
+  '/alpha/child/tie-b/',
+  '/alpha/child/child/'
+];
 let tempRoot;
 let binaryPath;
 let alphaVault;
@@ -108,6 +114,32 @@ async function glob(pattern) {
   return matches;
 }
 
+async function expectHrefOrder(locator, expected) {
+  await expect(locator).toHaveCount(expected.length);
+  for (const [index, href] of expected.entries()) {
+    await expect(locator.nth(index)).toHaveAttribute('href', href);
+  }
+}
+
+async function expectHrefSubsetOrder(root, expected) {
+  const links = root.locator('a');
+  const paths = async () => links.evaluateAll(anchors => anchors.map(anchor => {
+    const href = anchor.getAttribute('href');
+    try {
+      return new URL(href, document.baseURI).pathname;
+    } catch {
+      return href;
+    }
+  }));
+  await expect.poll(async () => {
+    const hrefs = await paths();
+    return hrefs.filter(href => expected.includes(href));
+  }).toEqual(expected);
+  for (const href of expected) {
+    await expect.poll(async () => (await paths()).filter(path => path === href).length).toBe(1);
+  }
+}
+
 async function freePort() {
   const server = createServer();
   const port = await listen(server);
@@ -138,9 +170,32 @@ test('strict section pages and article flow remain usable without JavaScript', a
   await expect(page.getByRole('heading', {name: 'Nested Child'})).toBeVisible();
   await expect(page.locator('nav[aria-label="Global navigation"] a')).toHaveCount(2);
   await expect(page.locator('.breadcrumbs')).toContainText('Nested Child');
-  await page.goto(`${origin}/alpha/child/child/`);
+  const collection = page.locator('.section-articles a');
+  await expectHrefOrder(collection, childDocumentRoutes);
+  await expect(collection).toHaveText(['Intro', 'Tie', 'Tie', 'Child Article']);
+  await expectHrefSubsetOrder(page.locator('[data-sidebar-root]'), childDocumentRoutes);
+
+  const readingFlow = [
+    {route: 'intro', position: '1 of 4', previous: null, next: 'tie-a'},
+    {route: 'tie-a', position: '2 of 4', previous: 'intro', next: 'tie-b'},
+    {route: 'tie-b', position: '3 of 4', previous: 'tie-a', next: 'child'},
+    {route: 'child', position: '4 of 4', previous: 'tie-b', next: null}
+  ];
+  for (const item of readingFlow) {
+    await page.goto(`${origin}/alpha/child/${item.route}/`);
+    await expect(page.locator('.reading-flow .position')).toHaveText(item.position);
+    const previous = page.locator('.reading-flow .previous');
+    const next = page.locator('.reading-flow .next');
+    await expect(previous).toHaveCount(item.previous ? 1 : 0);
+    await expect(next).toHaveCount(item.next ? 1 : 0);
+    if (item.previous) {
+      await expect(previous).toHaveAttribute('href', `/alpha/child/${item.previous}/`);
+    }
+    if (item.next) {
+      await expect(next).toHaveAttribute('href', `/alpha/child/${item.next}/`);
+    }
+  }
   await expect(page.locator('article > header h1')).toHaveText('Child Article');
-  await expect(page.locator('.reading-flow')).toContainText('1 of 1');
   await expect(page.locator('.source-links')).toHaveCount(0);
   expect(blocked).toEqual([]);
   await context.close();
@@ -177,7 +232,7 @@ test('section banners, navigation activity, canonical URLs, and every social PNG
   expect(sitemap).toContain(`${origin}/alpha/child/`);
   expect(sitemap).toContain(`${origin}/alpha/child/child/`);
   const social = await glob(path.join(alphaVault, 'public', 'assets', 'social', '*', '*.png'));
-  expect(social.length).toBe(5);
+  expect(social.length).toBe(8);
   for (const file of social) {
     const assetPath = path.relative(path.join(alphaVault, 'public'), file).replaceAll(path.sep, '/');
     const response = await page.request.get(`${origin}/alpha/${assetPath}`);
@@ -199,12 +254,16 @@ test('strict Markdown runtime stays local and social PNG is independently reacha
   await page.goto(`${origin}/alpha/child/child/`);
   await expect.poll(() => page.locator('[data-site-body]').getAttribute('data-sidebar-ready')).toBe('true');
   await expect(page.locator('[data-sidebar-root] a[aria-current="page"]')).toHaveText('Child Article');
+  await expectHrefSubsetOrder(page.locator('[data-sidebar-root]'), childDocumentRoutes);
+  for (const href of childDocumentRoutes) {
+    await expect(page.locator(`[data-sidebar-root] a[href$="${href}"]`)).toBeVisible();
+  }
   const reference = page.locator('[data-page-content] a[data-popover-path="reference.md"]');
   await reference.focus();
   await expect.poll(() => page.locator('[data-popover-card]').getAttribute('aria-hidden')).toBe('false');
   await expect(page.locator('[data-popover-card]')).toContainText('Reference');
   const social = await glob(path.join(alphaVault, 'public', 'assets', 'social', '*', '*.png'));
-  expect(social.length).toBeGreaterThanOrEqual(5);
+  expect(social.length).toBeGreaterThanOrEqual(8);
   const response = await page.request.get(`${origin}/alpha/${path.relative(path.join(alphaVault, 'public'), social[0]).replaceAll(path.sep, '/')}`);
   expect(response.status()).toBe(200);
   expect(response.headers()['content-type']).toBe('image/png');

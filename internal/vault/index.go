@@ -364,6 +364,10 @@ func extractNoteMetadata(
 		case *gast.Link:
 			if ref := extractStandardLinkRef(current, source, lineStarts, lineOffset); ref.RawTarget != "" || ref.Fragment != "" {
 				note.OutLinks = append(note.OutLinks, ref)
+				resource := resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, ref.RawTarget, scanResult.LookupResourcePath)
+				if resource.Path != "" && resourceVersionAllowed(note, resourceVersions, resource.Path) {
+					registerAsset(assets, resource.Path)
+				}
 			}
 		case *gmwikilink.Node:
 			if current.Embed {

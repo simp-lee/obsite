@@ -26,13 +26,16 @@ type BuildResult struct {
 type Options struct {
 	Strict            bool
 	DiagnosticsWriter io.Writer
+	// Concurrency bounds independent Markdown indexing and recommendation
+	// workers. A non-positive value uses the production default.
+	Concurrency int
 }
 
 // BuildWithOptions analyzes the vault once and publishes the resulting
 // canonical section plan. Normal builds continue after warnings; strict builds
 // reject both warnings and errors before opening a staging publisher.
 func BuildWithOptions(vaultPath, outputPath string, options Options) (*BuildResult, error) {
-	analysis, analyzeErr := internalanalyze.AnalyzeWithOutput(vaultPath, outputPath)
+	analysis, analyzeErr := internalanalyze.AnalyzeWithOutputAndConcurrency(vaultPath, outputPath, options.Concurrency)
 	if writeErr := internalanalyze.WriteDiagnostics(options.DiagnosticsWriter, analysis.Diagnostics); writeErr != nil {
 		return nil, fmt.Errorf("write diagnostics: %w", writeErr)
 	}
@@ -43,7 +46,7 @@ func BuildWithOptions(vaultPath, outputPath string, options Options) (*BuildResu
 		}
 		return result, internalanalyze.Failure(analysis.Diagnostics)
 	}
-	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Strict)
+	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Strict, options.Concurrency)
 	if strictResult == nil {
 		strictResult = &BuildResult{}
 	}
