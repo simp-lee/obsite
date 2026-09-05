@@ -301,6 +301,7 @@ func decodeSectionSource(relPath string, body []byte, bodyStartLine int, info in
 		RelPath: relPath, SectionPath: path.Dir(relPath), RawContent: append([]byte(nil), body...),
 		BodyStartLine: bodyStartLine,
 		Frontmatter:   model.SectionFrontmatter{Title: title, Publish: publish},
+		FieldLines:    frontmatterFieldLines(fields),
 	}
 	if section.SectionPath == "." {
 		section.SectionPath = "."
@@ -354,7 +355,7 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 	if typeName != "doc" && typeName != "post" && typeName != "page" {
 		return nil, fmt.Errorf("type must be one of doc, post, or page")
 	}
-	note := &model.Note{RelPath: relPath, RawContent: append([]byte(nil), body...), BodyStartLine: bodyStartLine}
+	note := &model.Note{RelPath: relPath, RawContent: append([]byte(nil), body...), BodyStartLine: bodyStartLine, FieldLines: frontmatterFieldLines(fields)}
 	note.Frontmatter.Title, note.Frontmatter.Publish, note.Frontmatter.Type = title, publish, typeName
 	if value, ok := fields["description"]; ok {
 		note.Frontmatter.Description, err = strictString(value, "description", false)
@@ -450,6 +451,14 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 		note.LastModified = note.Frontmatter.Date
 	}
 	return note, nil
+}
+
+func frontmatterFieldLines(fields map[string]*yaml.Node) map[string]int {
+	lines := make(map[string]int, len(fields))
+	for name, node := range fields {
+		lines[name] = node.Line + 1 // opening frontmatter delimiter
+	}
+	return lines
 }
 
 func requiredStrictString(fields map[string]*yaml.Node, name string) (string, error) {

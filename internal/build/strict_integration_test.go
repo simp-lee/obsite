@@ -80,7 +80,7 @@ func TestStrictBuildUsesCanonicalSectionPlanAndRichMarkdown(t *testing.T) {
 		t.Fatal("article missing generated social image")
 	}
 	rss := string(readBuildOutputFile(t, outputPath, "index.xml"))
-	for _, want := range []string{"<link>https://example.com/blog/</link>", "<description>Integration coverage for strict section features.</description>", "<status>deprecated</status>", "<audience>Developers</audience>", "<productVersion>2.0</productVersion>", "<series>Releases</series>"} {
+	for _, want := range []string{"<link>https://example.com/blog/</link>", "<description>Integration coverage for strict section features.</description>", "<obsite:status>deprecated</obsite:status>", "<obsite:audience>Developers</obsite:audience>", "<obsite:productVersion>2.0</obsite:productVersion>", "<obsite:series>Releases</obsite:series>"} {
 		if !strings.Contains(rss, want) {
 			t.Fatalf("RSS missing %q: %s", want, rss)
 		}

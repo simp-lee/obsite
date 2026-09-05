@@ -39,8 +39,8 @@ func TestAnalyzeExcludesDefaultPublicationOutputFromVaultInputs(t *testing.T) {
 	writeAnalyzeFile(t, vault, "public/old.html", "generated output")
 	writeAnalyzeFile(t, vault, "public/invalid.md", "not strict frontmatter")
 	result, err := Analyze(vault)
-	if err != nil || len(result.Diagnostics) != 0 {
-		t.Fatalf("Analyze() error = %v diagnostics = %#v, want output excluded", err, result.Diagnostics)
+	if err == nil || len(result.Diagnostics) == 0 || !strings.Contains(result.Diagnostics[0].Message, "frontmatter is required") {
+		t.Fatalf("Analyze() error = %v diagnostics = %#v, want unmanaged output diagnosed", err, result.Diagnostics)
 	}
 }
 

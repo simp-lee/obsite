@@ -153,7 +153,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	computeEffectivePublish(sections, versions, collector)
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
-	validateNavigation(sections, cfg.Navigation, collector)
+	validateNavigation(sections, cfg.Navigation, cfg.FieldLines, collector)
 	validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions)
@@ -683,12 +683,19 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 	}
 }
 
-func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, collector *diag.Collector) {
+func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, lines map[string]int, collector *diag.Collector) {
 	seen := make(map[string]int, len(navigation))
 	for index, item := range navigation {
+		field := fmt.Sprintf("navigation[%d].url", index)
+		if item.Section != "" {
+			field = fmt.Sprintf("navigation[%d].section", index)
+		}
+		report := func(format string, args ...any) {
+			collector.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindNavigation, Location: diag.Location{Path: "obsite.yaml", Line: lines[field]}, Field: field, Message: fmt.Sprintf(format, args...)})
+		}
 		targetKey := navigationTargetKey(item, sections)
 		if previous, exists := seen[targetKey]; exists {
-			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] duplicates navigation[%d] target", index, previous)
+			report("navigation[%d] duplicates navigation[%d] target", index, previous)
 		} else {
 			seen[targetKey] = index
 		}
@@ -697,14 +704,14 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 		}
 		section := sections[item.Section]
 		if section == nil {
-			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] targets missing section %q", index, item.Section)
+			report("navigation[%d] targets missing section %q", index, item.Section)
 			continue
 		}
 		if !section.EffectivePublish {
-			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] targets unpublished section %q", index, item.Section)
+			report("navigation[%d] targets unpublished section %q", index, item.Section)
 		}
 		if section.VersionID != "" {
-			record(collector, diag.KindNavigation, "obsite.yaml", "navigation[%d] cannot target version entry section %q", index, item.Section)
+			report("navigation[%d] cannot target version entry section %q", index, item.Section)
 		}
 	}
 }
@@ -812,13 +819,13 @@ func portableVaultAssetPath(value string) bool {
 	return internalfsutil.IsPortableSitePath(strings.ReplaceAll(value, "%", "x"))
 }
 
-func assetRecord(collector *diag.Collector, owner, field, target, format string, args ...any) {
+func assetRecord(collector *diag.Collector, owner string, line int, field, target, format string, args ...any) {
 	if collector == nil {
 		return
 	}
 	collector.Add(diag.Diagnostic{
 		Severity: diag.SeverityError, Kind: diag.KindMetadata,
-		Location: diag.Location{Path: owner}, Field: field, Target: target,
+		Location: diag.Location{Path: owner, Line: line}, Field: field, Target: target,
 		Message: fmt.Sprintf(format, args...),
 	})
 }
@@ -840,7 +847,7 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 			}
 		}
 	}
-	check := func(source, kind, owner, ownerVersion string) {
+	check := func(source, kind, owner, ownerVersion string, line int) {
 		if source == "" {
 			return
 		}
@@ -851,15 +858,15 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		seen[seenKey] = struct{}{}
 		candidate := filepath.Join(vaultRoot, filepath.FromSlash(source))
 		if outputPath != "" && internalfsutil.PathWithinRoot(outputPath, candidate) {
-			assetRecord(collector, owner, kind, source, "%s must not be inside the generated output", kind)
+			assetRecord(collector, owner, line, kind, source, "%s must not be inside the generated output", kind)
 			return
 		}
 		if resourceVersion := resourceVersions[source]; resourceVersion != "" && resourceVersion != ownerVersion {
-			assetRecord(collector, owner, kind, source, "%s belongs to version %q and cannot be used from version %q", kind, resourceVersion, ownerVersion)
+			assetRecord(collector, owner, line, kind, source, "%s belongs to version %q and cannot be used from version %q", kind, resourceVersion, ownerVersion)
 			return
 		}
 		if !internalasset.IsPublishableAssetPath(source) || strings.Contains(source, `\`) || strings.HasPrefix(source, "/") || strings.Contains(source, "?") || strings.Contains(source, "#") || path.Clean(source) != source || strings.HasPrefix(path.Clean(source), "../") || !portableVaultAssetPath(source) {
-			assetRecord(collector, owner, kind, source, "%s must be a normalized vault-relative local asset", kind)
+			assetRecord(collector, owner, line, kind, source, "%s must be a normalized vault-relative local asset", kind)
 			return
 		}
 		lower := strings.ToLower(source)
@@ -868,28 +875,28 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 			supported = supported || strings.HasSuffix(lower, ".svg")
 		}
 		if !supported {
-			assetRecord(collector, owner, kind, source, "%s has an unsupported format", kind)
+			assetRecord(collector, owner, line, kind, source, "%s has an unsupported format", kind)
 			return
 		}
 		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, source)
 		if err != nil {
-			assetRecord(collector, owner, kind, source, "%s cannot be read: %v", kind, err)
+			assetRecord(collector, owner, line, kind, source, "%s cannot be read: %v", kind, err)
 			return
 		}
 		if strings.HasSuffix(lower, ".svg") {
 			if err := internalasset.ValidateLocalSVG(data); err != nil {
-				assetRecord(collector, owner, kind, source, "banner SVG: %v", err)
+				assetRecord(collector, owner, line, kind, source, "banner SVG: %v", err)
 			}
 			return
 		}
 		if _, format, err := image.Decode(bytes.NewReader(data)); err != nil {
-			assetRecord(collector, owner, kind, source, "%s cannot be decoded: %v", kind, err)
+			assetRecord(collector, owner, line, kind, source, "%s cannot be decoded: %v", kind, err)
 		} else if format != "png" && format != "jpeg" && format != "webp" {
-			assetRecord(collector, owner, kind, source, "%s decoded as unsupported format %q", kind, format)
+			assetRecord(collector, owner, line, kind, source, "%s decoded as unsupported format %q", kind, format)
 		}
 	}
 	if plan != nil && plan.Config.DefaultImg != "" && !plan.Config.DefaultImgExternal {
-		check(plan.Config.DefaultImg, "defaultImg", internalconfig.Filename, "")
+		check(plan.Config.DefaultImg, "defaultImg", internalconfig.Filename, "", plan.Config.FieldLines["defaultImg"])
 	}
 	for _, source := range sources.Sources {
 		if source.Section != nil {
@@ -897,15 +904,15 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 			if section := sections[source.Section.SectionPath]; section != nil {
 				sectionVersion = section.VersionID
 			}
-			check(source.Section.Frontmatter.Banner, "banner", source.Section.RelPath, sectionVersion)
+			check(source.Section.Frontmatter.Banner, "banner", source.Section.RelPath, sectionVersion, source.Section.FieldLines["banner"])
 		}
 		if source.Article != nil {
 			articleVersion := ""
 			if section := sections[path.Dir(source.Article.RelPath)]; section != nil {
 				articleVersion = section.VersionID
 			}
-			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath, articleVersion)
-			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath, articleVersion)
+			check(source.Article.Frontmatter.Banner, "banner", source.Article.RelPath, articleVersion, source.Article.FieldLines["banner"])
+			check(source.Article.Frontmatter.Cover, "cover", source.Article.RelPath, articleVersion, source.Article.FieldLines["cover"])
 		}
 	}
 }

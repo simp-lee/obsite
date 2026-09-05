@@ -7,6 +7,7 @@ type Note struct {
 	RelPath      string
 	Frontmatter  Frontmatter
 	LastModified time.Time
+	FieldLines   map[string]int `json:"-"`
 
 	// The planning fields are assigned once by the strict site planner and are
 	// intentionally kept on the canonical note handed to later render phases.
@@ -140,6 +141,7 @@ type SectionSource struct {
 	RelPath       string
 	SectionPath   string
 	Frontmatter   SectionFrontmatter
+	FieldLines    map[string]int `json:"-"`
 	RawContent    []byte
 	BodyStartLine int
 	LastModified  time.Time

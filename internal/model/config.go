@@ -26,6 +26,8 @@ type SiteConfig struct {
 	Timeline           TimelineConfig
 
 	RuntimeJSURL string
+	// FieldLines preserves YAML source locations for semantic diagnostics.
+	FieldLines map[string]int `json:"-"`
 }
 
 // NavigationItem is one server-rendered global navigation entry. Exactly one

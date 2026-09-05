@@ -20,6 +20,7 @@ import (
 	d "github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/link"
+	"github.com/simp-lee/obsite/internal/markdown"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/recommend"
 	"github.com/simp-lee/obsite/internal/render"
@@ -257,6 +258,9 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		hash := sha256.Sum256(data)
 		hashValue := fmt.Sprintf("%x", hash)
 		if owner, exists := assetOwners[asset.DstPath]; exists {
+			if (strictDistinctAssetSource(plan, owner) || strictDistinctAssetSource(plan, source)) && assetHashes[asset.DstPath] == hashValue {
+				return result, fmt.Errorf("asset destination %q is claimed by distinct sources %q and %q", asset.DstPath, owner, source)
+			}
 			if assetHashes[asset.DstPath] != hashValue {
 				return result, fmt.Errorf("asset destination %q is claimed by %q and %q with different content", asset.DstPath, owner, source)
 			}
@@ -298,6 +302,23 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	return result, nil
 }
 
+func strictDistinctAssetSource(plan *model.SitePlan, source string) bool {
+	if plan == nil || source == "" {
+		return false
+	}
+	for _, section := range plan.Sections {
+		if section != nil && section.Banner == source {
+			return true
+		}
+	}
+	for _, article := range plan.Articles {
+		if article != nil && (article.Frontmatter.Banner == source || article.Frontmatter.Cover == source) {
+			return true
+		}
+	}
+	return false
+}
+
 func writeStrictHTML(outputs *strictOutputRegistry, outputRoot, relPath, owner string, data []byte) error {
 	minifier := minify.New()
 	minifier.AddFunc("text/html", minhtml.Minify)
@@ -313,11 +334,17 @@ func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[strin
 	if planned == nil || planned.Plan == nil || planned.Index == nil {
 		return &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}, related, nil
 	}
+	// Recommendations intentionally use only source-declared edges. Backlinks,
+	// however, describe visible page content and must include links contributed
+	// by embeds, so build that graph from the render-local pass-2 results.
+	graph, err := buildStrictRenderGraph(planned.Index)
+	if err != nil {
+		return nil, nil, err
+	}
 	recommendationGraph := link.BuildSourceGraph(planned.Index)
 	if !planned.Plan.Config.Related.Enabled {
-		return recommendationGraph, related, nil
+		return graph, related, nil
 	}
-	graph := recommendationGraph
 	groups := make(map[string][]model.RelatedSemanticDocument)
 	for _, semantic := range planned.RelatedSemantic {
 		versionID := ""
@@ -332,7 +359,7 @@ func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[strin
 	}
 	sort.Strings(groupKeys)
 	for _, key := range groupKeys {
-		engine, err := recommend.BuildEngine(groups[key], planned.Index, graph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, 0))
+		engine, err := recommend.BuildEngine(groups[key], planned.Index, recommendationGraph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, 0))
 		if err != nil {
 			return nil, nil, fmt.Errorf("build related articles: %w", err)
 		}
@@ -351,6 +378,30 @@ func buildStrictRelations(planned *siteplan.Result) (*model.LinkGraph, map[strin
 		}
 	}
 	return graph, related, nil
+}
+
+// buildStrictRenderGraph performs the same markdown expansion used for pages,
+// but keeps only the render-local link ledger. It uses a sink that does not
+// publish assets because planning has already validated them.
+func buildStrictRenderGraph(index *model.VaultIndex) (*model.LinkGraph, error) {
+	resolved := make(map[string][]model.LinkRef, len(index.Notes))
+	for relPath, note := range index.Notes {
+		if note == nil {
+			continue
+		}
+		md, result := markdown.NewMarkdown(index, note, strictGraphAssetSink{}, nil)
+		if err := md.Convert(note.RawContent, io.Discard); err != nil {
+			return nil, fmt.Errorf("expand links for %q: %w", relPath, err)
+		}
+		resolved[relPath] = result.OutLinks()
+	}
+	return link.BuildGraph(index, resolved), nil
+}
+
+type strictGraphAssetSink struct{}
+
+func (strictGraphAssetSink) Register(value string) string {
+	return "assets/" + strings.TrimPrefix(value, "/")
 }
 
 func strictBacklinks(index *model.VaultIndex, graph *model.LinkGraph, article *model.Note) []*model.Note {
@@ -654,7 +705,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 	}
 	if plan.Config.RSS.Enabled {
 		var rss strings.Builder
-		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>%s</title><link>%s</link>`, strictXMLEscape(plan.Config.Title), strictXMLEscape(strings.TrimSuffix(plan.Config.BaseURL, "/")+"/"))
+		_, _ = fmt.Fprintf(&rss, `<?xml version="1.0" encoding="UTF-8"?><rss version="2.0" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:obsite="https://obsite.dev/ns/rss"><channel><title>%s</title><link>%s</link>`, strictXMLEscape(plan.Config.Title), strictXMLEscape(strings.TrimSuffix(plan.Config.BaseURL, "/")+"/"))
 		if plan.Config.Description != "" {
 			_, _ = fmt.Fprintf(&rss, `<description>%s</description>`, strictXMLEscape(plan.Config.Description))
 		}
@@ -680,25 +731,25 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 				_, _ = fmt.Fprintf(&rss, `<category>%s</category>`, strictXMLEscape(tag))
 			}
 			if !article.Frontmatter.Reviewed.IsZero() {
-				_, _ = fmt.Fprintf(&rss, `<reviewed>%s</reviewed>`, strictXMLEscape(article.Frontmatter.Reviewed.UTC().Format(time.RFC3339)))
+				_, _ = fmt.Fprintf(&rss, `<obsite:reviewed>%s</obsite:reviewed>`, strictXMLEscape(article.Frontmatter.Reviewed.UTC().Format(time.RFC3339)))
 			}
 			if article.Frontmatter.Status != "" {
-				_, _ = fmt.Fprintf(&rss, `<status>%s</status>`, strictXMLEscape(article.Frontmatter.Status))
+				_, _ = fmt.Fprintf(&rss, `<obsite:status>%s</obsite:status>`, strictXMLEscape(article.Frontmatter.Status))
 			}
 			if article.Frontmatter.Audience != "" {
-				_, _ = fmt.Fprintf(&rss, `<audience>%s</audience>`, strictXMLEscape(article.Frontmatter.Audience))
+				_, _ = fmt.Fprintf(&rss, `<obsite:audience>%s</obsite:audience>`, strictXMLEscape(article.Frontmatter.Audience))
 			}
 			if article.Frontmatter.ProductVersion != "" {
-				_, _ = fmt.Fprintf(&rss, `<productVersion>%s</productVersion>`, strictXMLEscape(article.Frontmatter.ProductVersion))
+				_, _ = fmt.Fprintf(&rss, `<obsite:productVersion>%s</obsite:productVersion>`, strictXMLEscape(article.Frontmatter.ProductVersion))
 			}
 			if article.Frontmatter.Series != "" {
-				_, _ = fmt.Fprintf(&rss, `<series>%s</series>`, strictXMLEscape(article.Frontmatter.Series))
+				_, _ = fmt.Fprintf(&rss, `<obsite:series>%s</obsite:series>`, strictXMLEscape(article.Frontmatter.Series))
 			}
 			if !article.Frontmatter.Date.IsZero() {
 				_, _ = fmt.Fprintf(&rss, `<pubDate>%s</pubDate>`, article.Frontmatter.Date.UTC().Format(time.RFC1123Z))
 			}
 			if !article.Frontmatter.Updated.IsZero() {
-				_, _ = fmt.Fprintf(&rss, `<lastBuildDate>%s</lastBuildDate>`, article.Frontmatter.Updated.UTC().Format(time.RFC1123Z))
+				_, _ = fmt.Fprintf(&rss, `<obsite:updated>%s</obsite:updated>`, article.Frontmatter.Updated.UTC().Format(time.RFC3339))
 			}
 			rss.WriteString(`</item>`)
 		}

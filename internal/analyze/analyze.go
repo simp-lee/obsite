@@ -30,7 +30,15 @@ func Analyze(vaultPath string) (Result, error) {
 		collector.Errorf(diagnostic.KindSchema, analyzeErrorLocation(vaultPath, err), "%v", err)
 		return Result{Diagnostics: collector.Diagnostics()}, err
 	}
-	return AnalyzeWithOutput(resolved, filepath.Join(resolved, "public"))
+	// Only a publication directory carrying Obsite's management marker is an
+	// output boundary. An unmanaged public/ tree remains vault input and is
+	// therefore validated instead of being silently ignored.
+	publicPath := filepath.Join(resolved, "public")
+	_, marker, _, markerErr := internalfsutil.ReadContainedRegularFile(resolved, filepath.Join(publicPath, ".obsite-output"))
+	if markerErr == nil && string(marker) == "managed by obsite\n" {
+		return AnalyzeWithOutput(resolved, publicPath)
+	}
+	return AnalyzeWithOutput(resolved, "")
 }
 
 // AnalyzeWithOutput uses the same strict plan for publication while excluding
@@ -56,7 +64,7 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 var (
 	analyzeErrorPathPattern   = regexp.MustCompile(`(?:config|article|section|frontmatter) "([^"]+)"`)
 	analyzeErrorLinePattern   = regexp.MustCompile(`\bline ([0-9]+)\b`)
-	analyzeErrorFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|\b([A-Za-z][A-Za-z0-9_.\[\]]*) (?:is|required|must)`)
+	analyzeErrorFieldPattern  = regexp.MustCompile(`(?:field|key) "([^"]+)"|\b([A-Za-z][A-Za-z0-9_.\[\]]*):|\b([A-Za-z][A-Za-z0-9_.\[\]]*) (?:is|required|must)`)
 	analyzeErrorTargetPattern = regexp.MustCompile(`(?:link|target|resource|asset) "([^"]+)"`)
 )
 

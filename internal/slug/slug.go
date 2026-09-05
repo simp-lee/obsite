@@ -199,6 +199,11 @@ func GenerateArticleSegment(explicit *string, relPath string) (string, error) {
 // NumericPrefix reports the leading decimal prefix including its separator
 // and whether the separator was one of the allowed filename separators.
 func NumericPrefix(value string) (prefix string, separator bool, err error) {
+	if strings.HasPrefix(value, "-") {
+		if _, separated, prefixErr := NumericPrefix(value[1:]); separated || prefixErr != nil {
+			return "", false, fmt.Errorf("%w: %q", ErrInvalidNumericPrefix, value)
+		}
+	}
 	index := 0
 	for index < len(value) && value[index] >= '0' && value[index] <= '9' {
 		index++

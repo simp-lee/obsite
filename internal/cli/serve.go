@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	internalanalyze "github.com/simp-lee/obsite/internal/analyze"
 	internalasset "github.com/simp-lee/obsite/internal/asset"
 	internalbuild "github.com/simp-lee/obsite/internal/build"
 	internalconfig "github.com/simp-lee/obsite/internal/config"
@@ -35,18 +36,20 @@ type fsnotifyWatcher struct {
 }
 
 type serveWatchLoop struct {
-	watcher          fileWatcher
-	vaultPath        string
-	outputPath       string
-	configPath       string
-	fixedWatchInputs []string
-	debounce         time.Duration
-	rebuild          func() error
-	notifyReload     func()
-	onError          func(error)
-	watchedDirs      map[string]struct{}
-	vaultWatchDirs   map[string]struct{}
-	fixedWatchDirs   map[string]struct{}
+	watcher               fileWatcher
+	vaultPath             string
+	outputPath            string
+	configPath            string
+	fixedWatchInputs      []string
+	relevantWatchFiles    map[string]struct{}
+	refreshRelevantInputs func() map[string]struct{}
+	debounce              time.Duration
+	rebuild               func() error
+	notifyReload          func()
+	onError               func(error)
+	watchedDirs           map[string]struct{}
+	vaultWatchDirs        map[string]struct{}
+	fixedWatchDirs        map[string]struct{}
 }
 
 func newServeCommand(deps commandDependencies) *cobra.Command {
@@ -118,13 +121,18 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedV
 	ctx, cancel := context.WithCancel(cmd.Context())
 	defer cancel()
 
+	refreshInputs := func() map[string]struct{} {
+		return plannedWatchFiles(normalizedVaultPath, resolvedOutputPath)
+	}
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:    watcher,
-		vaultPath:  normalizedVaultPath,
-		outputPath: resolvedOutputPath,
-		configPath: resolvedConfigPath,
-		debounce:   defaultWatchDebounce,
-		rebuild:    build,
+		watcher:               watcher,
+		vaultPath:             normalizedVaultPath,
+		outputPath:            resolvedOutputPath,
+		configPath:            resolvedConfigPath,
+		relevantWatchFiles:    refreshInputs(),
+		refreshRelevantInputs: refreshInputs,
+		debounce:              defaultWatchDebounce,
+		rebuild:               build,
 		notifyReload: func() {
 			if refresher, ok := srv.(interface{ RefreshBasePath() }); ok {
 				refresher.RefreshBasePath()
@@ -264,6 +272,9 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			if rebuildErr != nil {
 				loop.reportError(rebuildErr)
 				continue
+			}
+			if loop.refreshRelevantInputs != nil {
+				loop.relevantWatchFiles = loop.refreshRelevantInputs()
 			}
 			if loop.notifyReload != nil {
 				loop.notifyReload()
@@ -602,7 +613,20 @@ func (loop *serveWatchLoop) shouldTrigger(path string, op fsnotify.Op, wasWatche
 		return true
 	}
 
-	return isWatchableVaultFile(relPath)
+	if filepath.Clean(relPath) == filepath.Clean(filepath.Base(loop.configPath)) {
+		return true
+	}
+	if loop.relevantWatchFiles == nil {
+		return isWatchableVaultFile(relPath)
+	}
+	if op&fsnotify.Create != 0 {
+		return true
+	}
+	if strings.HasSuffix(strings.ToLower(relPath), ".md") {
+		return true
+	}
+	_, relevant := loop.relevantWatchFiles[filepath.Clean(cleanPath)]
+	return relevant
 }
 
 func (loop *serveWatchLoop) matchesFixedWatchInput(path string, op fsnotify.Op) bool {
@@ -790,6 +814,55 @@ func normalizeServeWatchInputs(inputs []string) []string {
 func fixedServeWatchInputs(vaultPath string) []string {
 	themeDir := filepath.Join(vaultPath, filepath.FromSlash(internalconfig.ThemeDirRelPath))
 	return []string{themeDir}
+}
+
+// plannedWatchFiles is the watch-side input signature. Markdown/config files
+// are always relevant, while ordinary resources are watched only when the
+// current planner/index says they participate in the publication.
+func plannedWatchFiles(vaultPath, outputPath string) map[string]struct{} {
+	files := make(map[string]struct{})
+	add := func(value string) {
+		if strings.TrimSpace(value) == "" {
+			return
+		}
+		if filepath.IsAbs(value) {
+			files[filepath.Clean(value)] = struct{}{}
+			return
+		}
+		files[filepath.Clean(filepath.Join(vaultPath, filepath.FromSlash(value)))] = struct{}{}
+	}
+	add(defaultConfigFilename)
+	add(filepath.Join(".obsidian", "app.json"))
+	result, err := internalanalyze.AnalyzeWithOutput(vaultPath, outputPath)
+	if result.Plan == nil {
+		return files
+	}
+	for _, relPath := range result.Plan.Scan.MarkdownFiles {
+		add(relPath)
+	}
+	if err != nil || result.Plan.Plan == nil {
+		return files
+	}
+	plan := result.Plan.Plan
+	add(plan.Config.CustomCSS)
+	add(plan.Config.DefaultImg)
+	for _, section := range plan.Sections {
+		if section != nil {
+			add(section.Banner)
+		}
+	}
+	for _, article := range plan.Articles {
+		if article != nil {
+			add(article.Frontmatter.Banner)
+			add(article.Frontmatter.Cover)
+		}
+	}
+	if result.Plan.Index != nil {
+		for source := range result.Plan.Index.Assets {
+			add(source)
+		}
+	}
+	return files
 }
 
 func (loop *serveWatchLoop) recursiveWatchDirs(root string) (map[string]struct{}, error) {

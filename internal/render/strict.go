@@ -532,8 +532,11 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	output.WriteString(`</header><main class="site-main" data-obsite-main>`)
 	if plan.Config.Sidebar.Enabled && hasPublishedSidebarEntries(strictSidebarRoot(plan, versionID)) {
 		output.WriteString(`<button type="button" class="sidebar-toggle-mobile sidebar-launch" data-sidebar-toggle hidden aria-expanded="false"><span class="sidebar-launch-icon" aria-hidden="true"></span>Open navigation</button><aside class="sidebar-shell" data-sidebar-shell><div class="sidebar-panel-head"><strong>Navigation</strong><button type="button" class="sidebar-close" data-sidebar-close>Close navigation</button></div><nav class="sidebar" aria-label="Sidebar" data-sidebar-root>`)
+		// The complete tree is fetched from shared sidebar.json. Keep only a
+		// compact top-level fallback here so the shell remains useful without
+		// JavaScript; the runtime replaces it after loading the shared payload.
 		output.WriteString(`<ul class="sidebar-list sidebar-list-root">`)
-		strictWriteSidebarHTML(&output, plan, strictSidebarRoot(plan, versionID), currentRoute)
+		strictWriteSidebarFallbackHTML(&output, plan, strictSidebarRoot(plan, versionID), currentRoute)
 		output.WriteString(`</ul></nav></aside><button type="button" class="sidebar-overlay" data-sidebar-overlay hidden aria-label="Close navigation"></button>`)
 	}
 	output.WriteString(`<div class="site-content"><nav class="breadcrumbs" aria-label="Breadcrumb"><ol>`)
@@ -620,6 +623,22 @@ func strictSidebarRoot(plan *model.SitePlan, versionID string) *model.Section {
 		}
 	}
 	return plan.Root
+}
+
+func strictWriteSidebarFallbackHTML(output *strings.Builder, plan *model.SitePlan, section *model.Section, currentRoute string) {
+	if output == nil || section == nil {
+		return
+	}
+	for _, child := range section.Children {
+		if child != nil && child.EffectivePublish {
+			_, _ = fmt.Fprintf(output, `<li><a class="sidebar-link sidebar-link-dir" href="%s"%s>%s</a></li>`, esc(strictSitePath(plan, child.Route)), strictCurrentARIA(child.Route, currentRoute), esc(child.Title))
+		}
+	}
+	for _, article := range section.Articles {
+		if article != nil {
+			_, _ = fmt.Fprintf(output, `<li><a class="sidebar-link" href="%s"%s>%s</a></li>`, esc(strictSitePath(plan, article.Route)), strictCurrentARIA(article.Route, currentRoute), esc(article.Frontmatter.Title))
+		}
+	}
 }
 
 func strictWriteSidebarHTML(output *strings.Builder, plan *model.SitePlan, section *model.Section, currentRoute string) {

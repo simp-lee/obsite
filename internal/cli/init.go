@@ -80,6 +80,12 @@ func prepareInitVault(rawPath string) (string, bool, error) {
 		return "", false, fmt.Errorf("inspect vault path %q: %w", absolute, err)
 	}
 
+	// A valid target may have more than one missing parent directory. Create
+	// the parent chain before resolving the vault so init does not require the
+	// immediate parent to exist already.
+	if err := os.MkdirAll(filepath.Dir(absolute), 0o755); err != nil {
+		return "", false, fmt.Errorf("create parent for vault path %q: %w", absolute, err)
+	}
 	parent, err := internalfsutil.ResolveVaultPath(filepath.Dir(absolute))
 	if err != nil {
 		return "", false, fmt.Errorf("resolve parent for vault path %q: %w", absolute, err)

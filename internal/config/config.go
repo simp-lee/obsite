@@ -140,14 +140,19 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 	if err != nil {
 		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
 	}
+	lines, err := configFieldLines(data)
+	if err != nil {
+		return model.SiteConfig{}, fmt.Errorf("parse config %q: %w", configPath, err)
+	}
 	if err := validateParsedFileConfig(parsed); err != nil {
-		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
+		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, configErrorWithLine(err, lines))
 	}
 
 	cfg := applyFileConfig(Defaults(), parsed)
+	cfg.FieldLines = lines
 	cfg, err = normalizeAndValidate(cfg)
 	if err != nil {
-		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, err)
+		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, configErrorWithLine(err, lines))
 	}
 
 	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
@@ -199,6 +204,52 @@ func parseFileConfig(data []byte) (fileConfig, error) {
 		return fileConfig{}, fmt.Errorf("multiple YAML documents are not supported")
 	}
 	return cfg, nil
+}
+
+func configFieldLines(data []byte) (map[string]int, error) {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return nil, err
+	}
+	lines := make(map[string]int)
+	var visit func(*yaml.Node, string)
+	visit = func(node *yaml.Node, field string) {
+		if field != "" {
+			lines[field] = node.Line
+		}
+		switch node.Kind {
+		case yaml.DocumentNode:
+			for _, child := range node.Content {
+				visit(child, field)
+			}
+		case yaml.MappingNode:
+			for i := 0; i+1 < len(node.Content); i += 2 {
+				name := node.Content[i].Value
+				if field != "" {
+					name = field + "." + name
+				}
+				visit(node.Content[i+1], name)
+			}
+		case yaml.SequenceNode:
+			for i, child := range node.Content {
+				visit(child, fmt.Sprintf("%s[%d]", field, i))
+			}
+		}
+	}
+	visit(&document, "")
+	return lines, nil
+}
+
+func configErrorWithLine(err error, lines map[string]int) error {
+	words := strings.Fields(err.Error())
+	if len(words) == 0 {
+		return err
+	}
+	field := strings.TrimSuffix(words[0], ":")
+	if line := lines[field]; line > 0 {
+		return fmt.Errorf("%w at line %d", err, line)
+	}
+	return err
 }
 
 func validateParsedFileConfig(parsed fileConfig) error {
@@ -524,7 +575,17 @@ func normalizeNavigation(items []model.NavigationItem) ([]model.NavigationItem, 
 
 func normalizeNavigationTarget(raw string) string {
 	parsed, err := url.Parse(raw)
-	if err != nil || !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
+	if err != nil {
+		return raw
+	}
+	if parsed.IsAbs() && parsed.Host != "" {
+		// DNS host names are case-insensitive; retain path/query/fragment
+		// spelling because those components can be case-sensitive.
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		parsed.Host = strings.ToLower(parsed.Host)
+		return parsed.String()
+	}
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") {
 		return raw
 	}
 	pathValue := parsed.Path
@@ -617,18 +678,33 @@ func normalizeSourceTemplate(raw string) (string, error) {
 	if !strings.Contains(pathText, ":path") {
 		return "", fmt.Errorf(":path must be in the URL path component")
 	}
-	for index := 0; index < len(raw); index++ {
-		if raw[index] != ':' || index+1 >= len(raw) || !isASCIIPlaceholderLetter(raw[index+1]) {
-			continue
+	// Inspect URL components other than the host. Colons in an IPv6 host
+	// (for example [2001:db8::1]) are ordinary URL syntax, not placeholders.
+	checkPlaceholders := func(component string, allowPath bool) error {
+		for index := 0; index < len(component); index++ {
+			if component[index] != ':' || index+1 >= len(component) || !isASCIIPlaceholderLetter(component[index+1]) {
+				continue
+			}
+			end := index + 2
+			for end < len(component) && (isASCIIPlaceholderLetter(component[end]) || component[end] >= '0' && component[end] <= '9' || component[end] == '_' || component[end] == '-') {
+				end++
+			}
+			placeholder := component[index:end]
+			if !allowPath || placeholder != ":path" {
+				return fmt.Errorf("unknown template placeholder %q", placeholder)
+			}
+			index = end - 1
 		}
-		end := index + 2
-		for end < len(raw) && (isASCIIPlaceholderLetter(raw[end]) || raw[end] >= '0' && raw[end] <= '9' || raw[end] == '_' || raw[end] == '-') {
-			end++
-		}
-		if raw[index:end] != ":path" {
-			return "", fmt.Errorf("unknown template placeholder %q", raw[index:end])
-		}
-		index = end - 1
+		return nil
+	}
+	if err := checkPlaceholders(pathText, true); err != nil {
+		return "", err
+	}
+	if err := checkPlaceholders(parsed.RawQuery, false); err != nil {
+		return "", err
+	}
+	if err := checkPlaceholders(parsed.Fragment, false); err != nil {
+		return "", err
 	}
 	return raw, nil
 }
