@@ -107,7 +107,7 @@ format_markers = {
     ('darwin', 'amd64'): ('Mach-O 64-bit', 'x86_64'),
     ('darwin', 'arm64'): ('Mach-O 64-bit', 'arm64'),
     ('windows', 'amd64'): ('PE32+', 'x86-64'),
-    ('windows', 'arm64'): ('PE32+', 'ARM64'),
+    ('windows', 'arm64'): ('PE32+', ('ARM64', 'Aarch64')),
 }
 for key, binary in sorted(raw_binaries.items()):
     os_name, arch = key
@@ -139,8 +139,9 @@ for key, binary in sorted(raw_binaries.items()):
     except (FileNotFoundError, subprocess.CalledProcessError) as error:
         raise SystemExit(f'{binary}: unable to inspect executable format: {error}')
     for marker in format_markers[key]:
-        if marker not in file_info:
-            raise SystemExit(f'{binary}: file format = {file_info.strip()!r}, missing {marker!r}')
+        alternatives = marker if isinstance(marker, tuple) else (marker,)
+        if not any(candidate in file_info for candidate in alternatives):
+            raise SystemExit(f'{binary}: file format = {file_info.strip()!r}, missing one of {alternatives!r}')
     if os_name == 'linux' and not re.search(r'(?:statically linked|not a dynamic executable)', file_info):
         raise SystemExit(f'{binary}: not statically linked: {file_info.strip()}')
 
