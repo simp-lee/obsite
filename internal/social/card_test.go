@@ -56,6 +56,20 @@ func TestGenerateSupportsEmbeddedCJKFallbackText(t *testing.T) {
 	}
 }
 
+func TestGenerateDistinguishesUnsupportedUnicodeTitles(t *testing.T) {
+	grinning, err := Generate(Input{CanonicalURL: "https://example.test/emoji/", SiteTitle: "Site", Title: "😀"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unicorn, err := Generate(Input{CanonicalURL: "https://example.test/emoji/", SiteTitle: "Site", Title: "🦄"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(grinning.PNG, unicorn.PNG) || grinning.PNGHash == unicorn.PNGHash {
+		t.Fatal("distinct unsupported Unicode titles produced the same PNG")
+	}
+}
+
 func TestGenerateUsesCoverAndRejectsInvalidCover(t *testing.T) {
 	cover := image.NewRGBA(image.Rect(0, 0, 10, 10))
 	for y := 0; y < 10; y++ {

@@ -231,6 +231,10 @@ func drawTextColorLines(dst *image.RGBA, x, y int, text string, size, maxWidth, 
 	}
 	face := &fallbackFontFace{primary: primaryFace, fallback: fallbackFace}
 	defer func() { _ = face.Close() }()
+	// x/image/font draws a font's .notdef glyph when the selected face lacks a
+	// rune. Replace unsupported grapheme clusters before measuring and drawing,
+	// so distinct valid input cannot silently become the same pixels.
+	text = replaceMissingGlyphs(text, face)
 	lines := wrapMeasured(text, maxWidth, maxLines, face)
 	for lineIndex, line := range lines {
 		if err := drawLineColor(dst, x, y+lineIndex*76, line, face, foreground); err != nil {
@@ -288,6 +292,40 @@ func truncateMeasured(value string, maxWidth int, face font.Face) string {
 	return result + ellipsis
 }
 
+func replaceMissingGlyphs(text string, face *fallbackFontFace) string {
+	iterator := uniseg.NewGraphemes(text)
+	var result strings.Builder
+	for iterator.Next() {
+		cluster := iterator.Str()
+		missing := false
+		for _, value := range cluster {
+			if face.faceFor(value) == nil {
+				missing = true
+				break
+			}
+		}
+		if !missing {
+			result.WriteString(cluster)
+			continue
+		}
+
+		// Keep the placeholder deterministic and specific to the original
+		// cluster. ASCII is present in the pinned primary font, unlike many
+		// Unicode replacement or symbol characters.
+		result.WriteByte('[')
+		first := true
+		for _, value := range cluster {
+			if !first {
+				result.WriteByte('-')
+			}
+			first = false
+			fmt.Fprintf(&result, "U+%X", value)
+		}
+		result.WriteByte(']')
+	}
+	return result.String()
+}
+
 type fallbackFontFace struct {
 	primary  font.Face
 	fallback font.Face
@@ -302,7 +340,12 @@ func (f *fallbackFontFace) faceFor(value rune) font.Face {
 			return f.primary
 		}
 	}
-	return f.fallback
+	if f.fallback != nil {
+		if _, ok := f.fallback.GlyphAdvance(value); ok {
+			return f.fallback
+		}
+	}
+	return nil
 }
 
 func (f *fallbackFontFace) Glyph(dot fixed.Point26_6, value rune) (image.Rectangle, image.Image, image.Point, fixed.Int26_6, bool) {
