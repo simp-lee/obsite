@@ -40,6 +40,19 @@ versions:
 	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
 		t.Fatal(err)
 	}
+	secondOutput := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, secondOutput, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	firstBytes, secondBytes := strictOutputBytes(t, output), strictOutputBytes(t, secondOutput)
+	if len(firstBytes) != len(secondBytes) {
+		t.Fatalf("version output file counts = %d and %d", len(firstBytes), len(secondBytes))
+	}
+	for name, data := range firstBytes {
+		if !bytes.Equal(data, secondBytes[name]) {
+			t.Fatalf("version output %q is not deterministic", name)
+		}
+	}
 	docs := readBuildOutputFile(t, output, "docs/index.html")
 	if !bytes.Contains(docs, []byte("Version 1")) || !bytes.Contains(docs, []byte("Version 2")) {
 		t.Fatalf("version entry points missing from docs landing:\n%s", docs)

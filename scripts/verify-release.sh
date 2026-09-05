@@ -34,7 +34,7 @@ EXPECTED_OUTPUT="obsite version=$EXPECTED_VERSION commit=$EXPECTED_COMMIT date=$
 
 python3 - "$ROOT" "$DIST" <<'PY'
 from pathlib import Path
-import hashlib, sys, tarfile, zipfile
+import hashlib, re, sys, tarfile, zipfile
 
 root, dist = map(Path, sys.argv[1:])
 archives = sorted(list(dist.glob('*.tar.gz')) + list(dist.glob('*.zip')))
@@ -54,6 +54,30 @@ notice_paths = {
     'internal/social/assets/DroidSansFallbackFull.LICENSE',
 }
 expected_matrix = {(os_name, arch) for os_name in ('linux', 'darwin', 'windows') for arch in ('amd64', 'arm64')}
+
+# Verify the audited source resources by their documented digest rather than
+# relying on a distinctive string that could survive a changed asset.
+notice_hashes = {}
+for line in (root / 'THIRD_PARTY.md').read_text(encoding='utf-8').splitlines():
+    match = re.match(r'^- `?([0-9a-f]{64})  ([^`]+)`?$', line)
+    if match:
+        notice_hashes[match.group(2)] = match.group(1)
+if not notice_hashes:
+    raise SystemExit('no documented third-party hashes found')
+for relative, expected in notice_hashes.items():
+    source = root / relative
+    if not source.is_file():
+        raise SystemExit(f'documented resource missing: {relative}')
+    actual = hashlib.sha256(source.read_bytes()).hexdigest()
+    if actual != expected:
+        raise SystemExit(f'{relative}: source hash {actual} != documented {expected}')
+embedded_resources = [
+    'internal/social/assets/DroidSansFallbackFull.ttf',
+    'internal/social/assets/KaTeX_Main-Regular.ttf',
+    'internal/render/vendor/katex/katex.min.js',
+    'internal/render/vendor/mermaid/mermaid.min.js',
+]
+embedded_bytes = {relative: (root / relative).read_bytes() for relative in embedded_resources}
 
 def matrix_key(name):
     lowered = name.lower()
@@ -130,9 +154,9 @@ for key, binary in sorted(raw_binaries.items()):
         window = (root / 'internal/recommend/chinese/data' / name).read_bytes()[:64]
         if data.count(window) != 1:
             raise SystemExit(f'{binary}: {name} resource count != 1')
-    for marker in (b'globalThis["mermaid"]', b'renderMathInElement', b'obsite.theme.v1:', b'KaTeX_Main-Regular.ttf', b'DroidSansFallbackFull.ttf'):
-        if marker not in data:
-            raise SystemExit(f'{binary}: embedded runtime/font marker missing: {marker!r}')
+    for relative, resource in embedded_bytes.items():
+        if data.count(resource) < 1:
+            raise SystemExit(f'{binary}: embedded resource bytes missing: {relative}')
     print(f'{binary.relative_to(dist)} {len(data)} bytes')
 PY
 

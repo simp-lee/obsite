@@ -146,6 +146,49 @@ test('strict section pages and article flow remain usable without JavaScript', a
   await context.close();
 });
 
+test('section banners, navigation activity, canonical URLs, and every social PNG are published', async ({browser}) => {
+  const {context, blocked} = await offlineContext(browser, {javaScriptEnabled: false});
+  const page = await context.newPage();
+  await page.goto(`${origin}/alpha/child/`);
+  await expect(page.locator('nav[aria-label="Global navigation"] a')).toHaveText(['Home', 'Child']);
+  await expect(page.locator('nav[aria-label="Global navigation"] a').nth(0)).toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('nav[aria-label="Global navigation"] a').nth(1)).toHaveAttribute('aria-current', 'page');
+  await expect(page.locator('img.page-banner')).toHaveAttribute('alt', 'Nested child banner');
+  const sectionBannerURL = new URL(await page.locator('img.page-banner').getAttribute('src'), page.url());
+  expect(sectionBannerURL.pathname).toMatch(/^\/alpha\/assets\/hero\.[a-f0-9]+\.png$/);
+  const sectionBannerResponse = await page.request.get(sectionBannerURL.href);
+  expect(sectionBannerResponse.status()).toBe(200);
+  expect(sectionBannerResponse.headers()['content-type']).toBe('image/png');
+  expect(await sectionBannerResponse.body()).toEqual(await fs.readFile(path.join(alphaVault, 'images', 'hero.png')));
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `${origin}/alpha/child/`);
+  await page.goto(`${origin}/alpha/child/child/`);
+  await expect(page.locator('nav[aria-label="Global navigation"] a').nth(0)).toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('nav[aria-label="Global navigation"] a').nth(1)).toHaveAttribute('aria-current', 'location');
+  await expect(page.locator('img.page-banner')).toHaveAttribute('alt', 'Child article banner');
+  const articleBannerURL = new URL(await page.locator('img.page-banner').getAttribute('src'), page.url());
+  expect(articleBannerURL.href).toBe(sectionBannerURL.href);
+  const articleBannerResponse = await page.request.get(articleBannerURL.href);
+  expect(articleBannerResponse.status()).toBe(200);
+  expect(articleBannerResponse.headers()['content-type']).toBe('image/png');
+  expect(await articleBannerResponse.body()).toEqual(await sectionBannerResponse.body());
+  await expect(page.locator('img.page-banner[alt="Nested child banner"]')).toHaveCount(0);
+  await expect(page.locator('link[rel="canonical"]')).toHaveAttribute('href', `${origin}/alpha/child/child/`);
+  const sitemap = await (await fetch(`${origin}/alpha/sitemap.xml`)).text();
+  expect(sitemap).toContain(`${origin}/alpha/child/`);
+  expect(sitemap).toContain(`${origin}/alpha/child/child/`);
+  const social = await glob(path.join(alphaVault, 'public', 'assets', 'social', '*', '*.png'));
+  expect(social.length).toBe(5);
+  for (const file of social) {
+    const assetPath = path.relative(path.join(alphaVault, 'public'), file).replaceAll(path.sep, '/');
+    const response = await page.request.get(`${origin}/alpha/${assetPath}`);
+    expect(response.status(), assetPath).toBe(200);
+    expect(response.headers()['content-type'], assetPath).toBe('image/png');
+    expect((await response.body()).subarray(0, 8), assetPath).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  }
+  expect(blocked).toEqual([]);
+  await context.close();
+});
+
 test('strict Markdown runtime stays local and social PNG is independently reachable', async ({browser}) => {
   const {context, blocked} = await offlineContext(browser);
   const page = await context.newPage();

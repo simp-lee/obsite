@@ -641,30 +641,6 @@ func strictWriteSidebarFallbackHTML(output *strings.Builder, plan *model.SitePla
 	}
 }
 
-func strictWriteSidebarHTML(output *strings.Builder, plan *model.SitePlan, section *model.Section, currentRoute string) {
-	if output == nil || section == nil {
-		return
-	}
-	for _, child := range section.Children {
-		if child == nil || !child.EffectivePublish {
-			continue
-		}
-		_, _ = fmt.Fprintf(output, `<li><a class="sidebar-link sidebar-link-dir" href="%s"%s>%s</a>`, esc(strictSitePath(plan, child.Route)), strictCurrentARIA(child.Route, currentRoute), esc(child.Title))
-		if len(child.Children) > 0 || len(child.Articles) > 0 {
-			output.WriteString(`<ul class="sidebar-list">`)
-			strictWriteSidebarHTML(output, plan, child, currentRoute)
-			output.WriteString(`</ul>`)
-		}
-		output.WriteString(`</li>`)
-	}
-	for _, article := range section.Articles {
-		if article == nil {
-			continue
-		}
-		_, _ = fmt.Fprintf(output, `<li><a class="sidebar-link" href="%s"%s>%s</a></li>`, esc(strictSitePath(plan, article.Route)), strictCurrentARIA(article.Route, currentRoute), esc(article.Frontmatter.Title))
-	}
-}
-
 func strictCurrentARIA(route, current string) string {
 	if route == current {
 		return ` aria-current="page"`

@@ -46,7 +46,7 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Race test
-        run: go test -race ./internal/analyze ./internal/cli ./internal/build ./internal/render ./internal/server ./internal/recommend/... ./internal/vault ./internal/link
+        run: go test -race ./internal/...
 
   browser:
     name: Fixed Chromium offline E2E
