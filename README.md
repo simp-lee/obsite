@@ -113,6 +113,8 @@ Empty means no default image. Local paths must be contained regular files and ca
 
 The fixed HTML shell is server-rendered and usable without JavaScript. It includes global navigation, section/version context, breadcrumbs, Sidebar data, source links, semantic landmarks, canonical URLs, descriptions, Open Graph/Twitter metadata, JSON-LD, RSS, Sitemap, robots, 404, and a shared offline runtime. Markdown supports the built-in wikilink, embed, callout, hashtag, heading/TOC, highlighting, raw-HTML, math, Mermaid, and attachment behavior; unresolved links and unsupported syntax become deterministic diagnostics without hiding authored content.
 
+YouTube/Vimeo URLs in Markdown image syntax remain image destinations; Obsite does not convert them into remote players. Use ordinary Markdown links for online videos. Authored external images and raw HTML can still initiate browser requests; fully offline content must use local resources.
+
 The optional article metadata fields are `date`, `updated`, `tags`, `aliases`, `slug`, `order`, `author`, `reviewed`, `status`, `audience`, `productVersion`, `series`, `cover`, `banner`, and `bannerAlt`. Dates are normalized to UTC. A banner requires a non-empty matching `bannerAlt`, is published once through the asset planner, and appears only in its owning section or article header. Banners use a responsive `16:5` display ratio with `object-fit: cover` and a 280px maximum height. Covers are local PNG, JPEG, or WebP files and are used only as social-card source images.
 
 `status: deprecated` emits an explicit text notice independent of color or JavaScript. Metadata is omitted when its optional source value is absent; no current time or filesystem fallback is inserted.

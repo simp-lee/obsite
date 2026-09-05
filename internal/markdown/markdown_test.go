@@ -503,33 +503,33 @@ func TestNewMarkdownEscapesCodeSpanQuotesInImageAltAttributes(t *testing.T) {
 	}
 }
 
-func TestNewMarkdownRendersSupportedVideoImageDestinationsAsResponsiveEmbeds(t *testing.T) {
+func TestNewMarkdownDoesNotSynthesizeRemoteVideoPlayers(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name         string
 		source       string
-		wantEmbedURL string
+		wantImageSrc string
 	}{
 		{
 			name:         "youtube watch url",
 			source:       "![Launch video](https://www.youtube.com/watch?v=dQw4w9WgXcQ&feature=shared)\n",
-			wantEmbedURL: "https://www.youtube.com/embed/dQw4w9WgXcQ",
+			wantImageSrc: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&amp;feature=shared",
 		},
 		{
 			name:         "youtube short url",
 			source:       "![Launch video](https://youtu.be/dQw4w9WgXcQ?t=43)\n",
-			wantEmbedURL: "https://www.youtube.com/embed/dQw4w9WgXcQ",
+			wantImageSrc: "https://youtu.be/dQw4w9WgXcQ?t=43",
 		},
 		{
 			name:         "vimeo url",
 			source:       "![Talk recording](https://vimeo.com/76979871)\n",
-			wantEmbedURL: "https://player.vimeo.com/video/76979871",
+			wantImageSrc: "https://vimeo.com/76979871",
 		},
 		{
 			name:         "vimeo player url",
 			source:       "![Talk recording](https://player.vimeo.com/video/76979871?autoplay=1)\n",
-			wantEmbedURL: "https://player.vimeo.com/video/76979871",
+			wantImageSrc: "https://player.vimeo.com/video/76979871?autoplay=1",
 		},
 	}
 
@@ -547,73 +547,14 @@ func TestNewMarkdownRendersSupportedVideoImageDestinationsAsResponsiveEmbeds(t *
 			}
 
 			html := buf.String()
-			if !strings.Contains(html, `class="video-embed"`) {
-				t.Fatalf("HTML = %q, want responsive video wrapper", html)
+			if strings.Contains(html, `<iframe`) || strings.Contains(html, `class="video-embed"`) {
+				t.Fatalf("HTML = %q, want no synthesized remote video player", html)
 			}
-			if !strings.Contains(html, `<iframe src="`+tt.wantEmbedURL+`"`) {
-				t.Fatalf("HTML = %q, want iframe src %q", html, tt.wantEmbedURL)
-			}
-			if !strings.Contains(html, `loading="lazy"`) {
-				t.Fatalf("HTML = %q, want lazy-loaded iframe", html)
-			}
-			if !strings.Contains(html, `allowfullscreen`) {
-				t.Fatalf("HTML = %q, want allowfullscreen iframe", html)
-			}
-			if strings.Contains(html, `<img `) {
-				t.Fatalf("HTML = %q, want video URL rendered without <img>", html)
+			if !strings.Contains(html, `<img src="`+tt.wantImageSrc+`"`) {
+				t.Fatalf("HTML = %q, want authored destination preserved as image %q", html, tt.wantImageSrc)
 			}
 		})
 	}
-}
-
-func TestNewMarkdownRendersVideoEmbedsOnlyForStandaloneImageBlocks(t *testing.T) {
-	t.Parallel()
-
-	t.Run("standalone image paragraph upgrades to embed without paragraph wrapper", func(t *testing.T) {
-		t.Parallel()
-
-		note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
-		md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
-
-		var buf bytes.Buffer
-		if err := md.Convert([]byte("![Launch video](https://youtu.be/dQw4w9WgXcQ)\n"), &buf); err != nil {
-			t.Fatalf("Convert() error = %v", err)
-		}
-
-		html := buf.String()
-		if !strings.Contains(html, `class="video-embed"`) {
-			t.Fatalf("HTML = %q, want standalone video image upgraded to embed", html)
-		}
-		if !strings.Contains(html, `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"`) {
-			t.Fatalf("HTML = %q, want standalone video image iframe", html)
-		}
-		if strings.Contains(html, `<p><div class="video-embed"`) || strings.Contains(html, `</div></p>`) {
-			t.Fatalf("HTML = %q, want standalone video embed emitted without invalid paragraph wrapper", html)
-		}
-	})
-
-	t.Run("inline image fallback stays a normal image inside paragraph text", func(t *testing.T) {
-		t.Parallel()
-
-		note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
-		md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
-
-		var buf bytes.Buffer
-		if err := md.Convert([]byte("Watch this ![Launch video](https://youtu.be/dQw4w9WgXcQ) now.\n"), &buf); err != nil {
-			t.Fatalf("Convert() error = %v", err)
-		}
-
-		html := buf.String()
-		if strings.Contains(html, `class="video-embed"`) {
-			t.Fatalf("HTML = %q, want inline video image to avoid block video wrapper", html)
-		}
-		if strings.Contains(html, `<iframe `) {
-			t.Fatalf("HTML = %q, want inline video image to avoid iframe output", html)
-		}
-		if !strings.Contains(html, `<p>Watch this <img src="https://youtu.be/dQw4w9WgXcQ" alt="Launch video"> now.</p>`) {
-			t.Fatalf("HTML = %q, want inline video image to fall back to normal image output inside paragraph", html)
-		}
-	})
 }
 
 func TestNewMarkdownFallsBackToImagesForMalformedYouTubeVideoDestinations(t *testing.T) {
@@ -717,43 +658,6 @@ func TestNewMarkdownFallsBackToImagesForUnsupportedVimeoVideoDestinations(t *tes
 				t.Fatalf("HTML = %q, want unsupported Vimeo URL to fall back to normal image %q", html, tt.wantImageSrc)
 			}
 		})
-	}
-}
-
-func TestNewMarkdownVideoEmbedsDoNotAlterNonVideoImageRewritePath(t *testing.T) {
-	t.Parallel()
-
-	sink := &recordingAssetSink{
-		paths: map[string]string{
-			"images/hero.png": "assets/hero.123.png",
-		},
-	}
-	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
-	idx := &model.VaultIndex{
-		Assets: map[string]*model.Asset{
-			"images/hero.png": {SrcPath: "images/hero.png"},
-		},
-	}
-	md, _ := NewMarkdown(idx, note, sink, diag.NewCollector())
-
-	var buf bytes.Buffer
-	source := []byte("![Launch video](https://youtu.be/dQw4w9WgXcQ)\n\n![Hero](../images/hero.png)\n")
-	if err := md.Convert(source, &buf); err != nil {
-		t.Fatalf("Convert() error = %v", err)
-	}
-
-	html := buf.String()
-	if !strings.Contains(html, `<iframe src="https://www.youtube.com/embed/dQw4w9WgXcQ"`) {
-		t.Fatalf("HTML = %q, want YouTube iframe embed", html)
-	}
-	if !strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero">`) {
-		t.Fatalf("HTML = %q, want normal asset rewrite for non-video image", html)
-	}
-	if strings.Contains(html, `<img src="../../assets/hero.123.png" alt="Hero" loading="lazy">`) {
-		t.Fatalf("HTML = %q, want first non-video image to remain eager-loaded", html)
-	}
-	if !reflect.DeepEqual(sink.registered, []string{"images/hero.png"}) {
-		t.Fatalf("registered = %#v, want %#v", sink.registered, []string{"images/hero.png"})
 	}
 }
 
