@@ -57,6 +57,17 @@ func EncodePath(value string) string {
 	return strings.Join(parts, "/")
 }
 
+// EncodeSourcePath percent-encodes a source path without changing its Unicode
+// spelling. Source links identify repository files, rather than generated
+// routes, so compatibility normalization would point at a different file.
+func EncodeSourcePath(value string) string {
+	parts := strings.Split(value, "/")
+	for index, part := range parts {
+		parts[index] = EncodeSegment(part)
+	}
+	return strings.Join(parts, "/")
+}
+
 // EncodeSegment percent-encodes one UTF-8 URL path segment.
 func EncodeSegment(value string) string {
 	const hex = "0123456789ABCDEF"

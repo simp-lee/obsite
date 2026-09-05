@@ -120,6 +120,9 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, "", fragment)
 	}
 	if lookup.Note == nil {
+		if rootRelative && fragment == "" && isGeneratedTagRoute(r.index, escapedTargetPath) {
+			return prefixRootRelativeDestination(r.outputNote, raw)
+		}
 		section := lookup.Section
 		if section == nil {
 			section = lookupSectionTarget(r.index, r.sourceNote, targetPath)
@@ -245,6 +248,18 @@ func sectionFragmentID(section *model.Section, fragment string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func isGeneratedTagRoute(index *model.VaultIndex, route string) bool {
+	if index == nil {
+		return false
+	}
+	for _, tag := range index.Tags {
+		if tag != nil && route == "/"+slug.EncodePath(tag.Slug)+"/" {
+			return true
+		}
+	}
+	return false
 }
 
 func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target string) *model.Section {

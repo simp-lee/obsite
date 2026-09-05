@@ -774,7 +774,7 @@ func strictAbsoluteURL(plan *model.SitePlan, route string) string {
 }
 
 func strictSourceURL(templateURL, sourcePath string) string {
-	return strings.Replace(templateURL, ":path", strictEncodePath(sourcePath), 1)
+	return strings.Replace(templateURL, ":path", slug.EncodeSourcePath(sourcePath), 1)
 }
 
 func strictEncodePath(value string) string {

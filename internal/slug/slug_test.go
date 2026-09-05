@@ -17,6 +17,14 @@ func frontmatterValue(value *string) string {
 	return *value
 }
 
+func TestEncodeSourcePathPreservesUnicodeSpelling(t *testing.T) {
+	t.Parallel()
+
+	if got, want := EncodeSourcePath("docs/Ａ.md"), "docs/%EF%BC%A1.md"; got != want {
+		t.Fatalf("EncodeSourcePath() = %q, want %q", got, want)
+	}
+}
+
 func TestGenerate(t *testing.T) {
 	t.Parallel()
 
