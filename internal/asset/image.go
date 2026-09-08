@@ -96,8 +96,7 @@ func normalizeDestination(rawDestination string) string {
 	return strings.ReplaceAll(strings.TrimSpace(baseDestination), "\\", "/")
 }
 
-func resolveVaultPath(note *model.Note, rawDestination string) string {
-	normalized := normalizeDestination(rawDestination)
+func resolveVaultPath(note *model.Note, normalized string) string {
 	if normalized == "" {
 		return ""
 	}

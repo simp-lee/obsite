@@ -296,7 +296,7 @@
       } catch (error) {
         report("warn", "Unable to decode a Sidebar path.", error);
       }
-      return value.replace(/^\/+|\/+$/g, "").trim();
+      return value.replace(/^\/+|\/+$/g, "");
     }
 
     function stableNodeKey(node) {
@@ -307,7 +307,7 @@
       if (typeof value !== "string") {
         return "";
       }
-      return value.replace(/^\/+|\/+$/g, "").trim();
+      return value.replace(/^\/+|\/+$/g, "");
     }
 
     function buildNodeHref(rawURL) {
@@ -334,7 +334,7 @@
       if (pathname.indexOf(cleanBase) === 0) {
         pathname = pathname.slice(cleanBase.length);
       }
-      pathname = normalizeSitePath(pathname);
+      pathname = encodedSitePath(pathname);
       if (pathname === "index.html") {
         return "";
       }
@@ -514,12 +514,18 @@
     }
 
     function resolvePopoverURL(link) {
-      var notePath = link ? (link.getAttribute("data-popover-path") || "").trim().replace(/^\/+|\/+$/g, "") : "";
+      var notePath = link ? (link.getAttribute("data-popover-path") || "").replace(/^\/+|\/+$/g, "") : "";
       if (!notePath || notePath.indexOf("\\") !== -1 || notePath.split("/").some(function (segment) { return !segment || segment === "." || segment === ".."; })) {
         return "";
       }
-      var encoded = notePath.split("/").map(encodeRFC3986Segment).join("/");
-      return new URL("_popover/" + encoded + ".json", servedSiteRootURL).href;
+      var encoded = notePath.split("/").map(encodeRFC3986SourceSegment).join("/");
+      return new URL("_popover/" + encoded + "/index.json", servedSiteRootURL).href;
+    }
+
+    function encodeRFC3986SourceSegment(value) {
+      return encodeURIComponent(value).replace(/[!'()*]/g, function (character) {
+        return "%" + character.charCodeAt(0).toString(16).toUpperCase();
+      });
     }
 
     function encodeRFC3986Segment(value) {

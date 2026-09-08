@@ -17,8 +17,8 @@ func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\norder: 0\n---\nHome\n")
 	writePlanFile(t, vault, "guide/_index.md", "---\ntitle: Guide\npublish: true\norder: 1\n---\nGuide\n")
-	writePlanFile(t, vault, "guide/01-First.md", "---\ntitle: First\npublish: true\ntype: doc\n---\nFirst\n")
-	writePlanFile(t, vault, "guide/02 second.md", "---\ntitle: Second\npublish: true\ntype: doc\n---\nSecond\n")
+	writePlanFile(t, vault, "guide/01-First.md", "---\ntitle: Zulu\npublish: true\ntype: doc\n---\nFirst\n")
+	writePlanFile(t, vault, "guide/02 second.md", "---\ntitle: Alpha\npublish: true\ntype: doc\n---\nSecond\n")
 
 	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/docs/", Navigation: []model.NavigationItem{{Name: "Guide", Section: "guide"}}}
 	result, err := BuildWithConfig(vault, cfg)
@@ -32,7 +32,7 @@ func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	if guide.Route != "/guide/" || guide.Banner != "" {
 		t.Fatalf("guide = %#v", guide)
 	}
-	if len(guide.Documents) != 2 || guide.Documents[0].Frontmatter.Title != "First" || guide.Documents[1].Frontmatter.Title != "Second" {
+	if len(guide.Documents) != 2 || guide.Documents[0].Frontmatter.Title != "Zulu" || guide.Documents[1].Frontmatter.Title != "Alpha" {
 		t.Fatalf("documents = %#v, want filename-prefix order", guide.Documents)
 	}
 	if result.Plan.Documents[0].Route != "/guide/First/" || result.Plan.Documents[1].Route != "/guide/second/" {
@@ -40,6 +40,69 @@ func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	}
 	if got := guide.Breadcrumbs; len(got) != 2 || got[0].URL != "/" || got[1].URL != "/guide/" {
 		t.Fatalf("breadcrumbs = %#v", got)
+	}
+}
+
+func TestBuildWithConfigTreatsNumericMarkdownStemsAsSlugs(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	for _, article := range []struct {
+		path  string
+		title string
+	}{
+		{path: "alpha.md", title: "Alpha"},
+		{path: "2147483648.md", title: "Huge"},
+		{path: "-1.md", title: "Negative"},
+		{path: "123.md", title: "Numeric"},
+	} {
+		writePlanFile(t, vault, article.path, "---\ntitle: "+article.title+"\npublish: true\ntype: doc\n---\n")
+	}
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err != nil {
+		t.Fatalf("BuildWithConfig() error = %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	wantTitles := []string{"Alpha", "Huge", "Negative", "Numeric"}
+	wantRoutes := []string{"/alpha/", "/2147483648/", "/-1/", "/123/"}
+	if len(result.Plan.Documents) != len(wantTitles) {
+		t.Fatalf("documents = %#v, want %d documents", result.Plan.Documents, len(wantTitles))
+	}
+	for i, note := range result.Plan.Documents {
+		if note.Frontmatter.Title != wantTitles[i] || note.Route != wantRoutes[i] {
+			t.Fatalf("documents[%d] = (%q, %q), want (%q, %q)", i, note.Frontmatter.Title, note.Route, wantTitles[i], wantRoutes[i])
+		}
+	}
+}
+
+func TestBuildWithConfigNFKCNormalizesExplicitSlugBeforeValidation(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\nslug: Ｃafe\u0301\n---\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err != nil {
+		t.Fatalf("BuildWithConfig() error = %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	if len(result.Plan.Articles) != 1 {
+		t.Fatalf("articles = %#v, want one article", result.Plan.Articles)
+	}
+	note := result.Plan.Articles[0]
+	if note.Frontmatter.Slug != "Café" || note.Slug != "Café" || note.Route != "/Caf%C3%A9/" {
+		t.Fatalf("article slug and route = (%q, %q, %q), want normalized Café route", note.Frontmatter.Slug, note.Slug, note.Route)
+	}
+}
+
+func TestBuildWithConfigRejectsNFKCDotSectionRoute(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "．/_index.md", "---\ntitle: Dot\npublish: true\n---\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil {
+		t.Fatalf("BuildWithConfig() error = nil, want invalid normalized dot route; diagnostics=%v", result.Diagnostics)
+	}
+	if joined := diagnosticMessages(result.Diagnostics); !strings.Contains(joined, "filesystem-invalid path segment") {
+		t.Fatalf("diagnostics = %q, want filesystem-invalid route error", joined)
 	}
 }
 
@@ -132,6 +195,18 @@ func TestBuildWithConfigRejectsCaseInsensitiveAndReservedPhysicalRoutes(t *testi
 	}
 	if !strings.Contains(diagnosticMessages(result.Diagnostics), "conflicts") {
 		t.Fatalf("diagnostics=%v, want case-insensitive route collision", result.Diagnostics)
+	}
+}
+
+func TestBuildWithConfigRejectsUnicodeCaseFoldedPhysicalRouteCollisions(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "upper.md", "---\ntitle: Upper\npublish: true\ntype: page\nslug: Ä\n---\n")
+	writePlanFile(t, vault, "lower.md", "---\ntitle: Lower\npublish: true\ntype: page\nslug: ä\n---\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil || !strings.Contains(diagnosticMessages(result.Diagnostics), "conflicts") {
+		t.Fatalf("BuildWithConfig() error=%v diagnostics=%v, want decoded case-insensitive route collision", err, result.Diagnostics)
 	}
 }
 

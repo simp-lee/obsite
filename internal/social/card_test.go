@@ -118,25 +118,36 @@ func TestGenerateIsDeterministicAndContentAddressed(t *testing.T) {
 }
 
 func TestGenerateSupportsEmbeddedCJKFallbackText(t *testing.T) {
-	result, err := Generate(Input{CanonicalURL: "https://example.test/cjk/", SiteTitle: "Obsite 站点", Title: "中文文档", Context: "指南"})
+	first, err := Generate(Input{CanonicalURL: "https://example.test/cjk/", SiteTitle: "Obsite", Title: "中文文档"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := png.Decode(bytes.NewReader(result.PNG))
+	second, err := Generate(Input{CanonicalURL: "https://example.test/cjk/", SiteTitle: "Obsite", Title: "汉字指南"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	backgroundPixel := decoded.At(100, 200)
-	drawn := 0
-	for y := 160; y < 390; y++ {
-		for x := 72; x < 696; x++ {
-			if decoded.At(x, y) != backgroundPixel {
-				drawn++
+	firstImage, err := png.Decode(bytes.NewReader(first.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondImage, err := png.Decode(bytes.NewReader(second.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Compare only the title area to exclude the fixed accent bar and other
+	// decorations. Different CJK titles must produce different drawn pixels.
+	different := false
+	for y := 160; y < 390 && !different; y++ {
+		for x := 96; x < 696; x++ {
+			if firstImage.At(x, y) != secondImage.At(x, y) {
+				different = true
+				break
 			}
 		}
 	}
-	if drawn == 0 {
-		t.Fatal("CJK title produced no visible pixels")
+	if !different {
+		t.Fatal("distinct CJK titles produced identical title pixels")
 	}
 }
 

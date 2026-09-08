@@ -422,6 +422,10 @@ samp {
   text-transform: uppercase;
 }
 
+.theme-toggle[hidden] {
+  display: none;
+}
+
 .theme-toggle:hover {
   transform: translateY(-1px);
   background: var(--theme-toggle-bg-hover);
@@ -564,6 +568,10 @@ samp {
   list-style: none;
   display: grid;
   gap: 0.18rem;
+}
+
+.sidebar-list[hidden] {
+  display: none;
 }
 
 .sidebar-list .sidebar-list {
@@ -1055,6 +1063,7 @@ samp {
 }
 
 .entry-content {
+  min-width: 0;
   max-width: var(--content-width);
   font-size: 1.08rem;
 }
@@ -1199,6 +1208,7 @@ samp {
 }
 
 .entry-content pre {
+  max-width: 100%;
   overflow-x: auto;
   padding: 1rem 1.1rem;
   border-radius: 1rem;
@@ -1214,10 +1224,12 @@ samp {
 }
 
 .entry-content table {
+  display: block;
   width: 100%;
+  max-width: 100%;
   border-collapse: collapse;
   font-size: 0.98rem;
-  overflow: hidden;
+  overflow-x: auto;
   border-radius: 0.9rem;
   box-shadow: var(--table-shadow);
 }

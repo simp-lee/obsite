@@ -26,11 +26,12 @@ type strictLinkExtender struct {
 	headingIDPrefix string
 	assetSink       AssetSink
 	diagnostics     *diag.Collector
+	linkResolver    *internalwikilink.VaultResolver
 }
 
 func (e strictLinkExtender) Extend(markdown goldmark.Markdown) {
 	markdown.Renderer().AddOptions(renderer.WithNodeRenderers(util.Prioritized(&strictLinkRenderer{
-		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, headingIDPrefix: e.headingIDPrefix, assetSink: e.assetSink, diagnostics: e.diagnostics,
+		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, headingIDPrefix: e.headingIDPrefix, assetSink: e.assetSink, diagnostics: e.diagnostics, linkResolver: e.linkResolver,
 	}, 499)))
 }
 
@@ -42,6 +43,7 @@ type strictLinkRenderer struct {
 	headingIDPrefix string
 	assetSink       AssetSink
 	diagnostics     *diag.Collector
+	linkResolver    *internalwikilink.VaultResolver
 }
 
 func (r *strictLinkRenderer) RegisterFuncs(register renderer.NodeRendererFuncRegisterer) {
@@ -55,16 +57,17 @@ func (r *strictLinkRenderer) renderLink(w util.BufWriter, source []byte, node ga
 		if r.sourceNote != nil && r.sourceNote.BodyStartLine > 1 {
 			line += r.sourceNote.BodyStartLine - 1
 		}
-		destination := r.rewriteDestination(strings.TrimSpace(string(link.Destination)), line)
+		rawDestination := strings.TrimSpace(string(link.Destination))
+		destination := r.rewriteDestination(NormalizeDestination(rawDestination), rawDestination, line)
 		_, _ = w.WriteString(`<a href="`)
-		escaped := escapeDestination(destination)
-		if r.Unsafe || !gmhtml.IsDangerousURL([]byte(escaped)) {
-			_, _ = w.Write(util.EscapeHTML([]byte(escaped)))
+		escaped := util.URLEscape([]byte(destination), false)
+		if r.Unsafe || !gmhtml.IsDangerousURL(escaped) {
+			_, _ = w.Write(util.EscapeHTML(escaped))
 		}
 		_ = w.WriteByte('"')
 		if len(link.Title) > 0 {
 			_, _ = w.WriteString(` title="`)
-			_, _ = w.Write(util.EscapeHTML(link.Title))
+			r.Writer.Write(w, link.Title)
 			_ = w.WriteByte('"')
 		}
 		_ = w.WriteByte('>')
@@ -74,23 +77,27 @@ func (r *strictLinkRenderer) renderLink(w util.BufWriter, source []byte, node ga
 	return gast.WalkContinue, nil
 }
 
-func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
+func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string, line int) string {
 	if r == nil || r.index == nil || r.sourceNote == nil || raw == "" {
 		return raw
 	}
+	sourceTarget = strings.TrimSpace(sourceTarget)
+	if sourceTarget == "" {
+		sourceTarget = raw
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		r.recordUnresolvedLocalAttachment(raw, line)
+		r.recordUnresolvedLocalAttachment(raw, sourceTarget, line)
 		return raw
 	}
 	if parsed.IsAbs() || parsed.Host != "" || strings.HasPrefix(raw, "//") {
-		r.recordUnresolvedLocalAttachment(raw, line)
+		r.recordUnresolvedLocalAttachment(raw, sourceTarget, line)
 		return raw
 	}
 	escapedTargetPath := parsed.EscapedPath()
 	targetPath, err := url.PathUnescape(escapedTargetPath)
 	if err != nil {
-		r.recordUnresolvedLocalAttachment(raw, line)
+		r.recordUnresolvedLocalAttachment(raw, sourceTarget, line)
 		return raw
 	}
 	fragment := parsed.Fragment
@@ -142,13 +149,13 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 				if id, ok := sectionFragmentID(section, fragment); ok {
 					fragment = id
 				} else if r.diagnostics != nil {
-					r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets a missing section heading", raw)})
+					r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q targets a missing section heading", sourceTarget)})
 				}
 				href += "#" + fragment
 			}
 			return href
 		}
-		resourceLookup := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, targetPath, r.index.LookupResourcePath)
+		resourceLookup := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, escapedTargetPath, r.index.LookupResourcePath)
 		if resource := resourceLookup.Path; resource != "" {
 			if resourcepath.IsResourceAllowedForNote(r.index, r.sourceNote, resource) {
 				destination := resource
@@ -161,13 +168,13 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 				if parsed.RawQuery != "" {
 					suffix += "?" + parsed.RawQuery
 				}
-				if fragment != "" {
-					suffix += "#" + fragment
+				if escapedFragment := parsed.EscapedFragment(); escapedFragment != "" {
+					suffix += "#" + escapedFragment
 				}
 				return relativeToNoteOutput(r.outputNote, destination) + suffix
 			}
 			if r.diagnostics != nil {
-				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q is outside the current version resource scope", raw)})
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown attachment %q is outside the current version resource scope", sourceTarget)})
 			}
 			if rootRelative {
 				return prefixRootRelativeDestination(r.outputNote, raw)
@@ -176,7 +183,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		}
 		if len(resourceLookup.Ambiguous) > 0 {
 			if r.diagnostics != nil {
-				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", raw, strings.Join(resourceLookup.Ambiguous, ", "))})
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown attachment %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", sourceTarget, strings.Join(resourceLookup.Ambiguous, ", "))})
 			}
 			if rootRelative {
 				return prefixRootRelativeDestination(r.outputNote, raw)
@@ -186,10 +193,10 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 		attachment := isMarkdownAttachmentTarget(targetPath)
 		if !attachment {
 			if r.diagnostics != nil {
-				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q could not be resolved", raw)})
+				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q could not be resolved", sourceTarget)})
 			}
 		} else if targetPath != "" && r.diagnostics != nil {
-			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown attachment %q could not be resolved", sourceTarget)})
 		}
 		if rootRelative {
 			return prefixRootRelativeDestination(r.outputNote, raw)
@@ -198,15 +205,18 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	}
 	if lookup.Unpublished {
 		if r.diagnostics != nil {
-			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets unpublished content", raw)})
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q targets unpublished content", sourceTarget)})
 		}
 		return prefixRootRelativeDestination(r.outputNote, raw)
 	}
 	if lookup.MissingFragment {
 		if r.diagnostics != nil {
-			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown link %q targets a missing fragment", raw)})
+			r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q targets a missing fragment", sourceTarget)})
 		}
 		return prefixRootRelativeDestination(r.outputNote, raw)
+	}
+	if r.linkResolver != nil {
+		r.linkResolver.MarkStandardLinkResolved(standardLinkLedgerTarget(sourceTarget), lookup.Note)
 	}
 	href := internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, r.headingIDPrefix)
 	if rootRelative {
@@ -225,11 +235,15 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, line int) string {
 	return href
 }
 
-func (r *strictLinkRenderer) recordUnresolvedLocalAttachment(raw string, line int) {
-	if r == nil || r.diagnostics == nil || !resourcepath.IsLocalTarget(raw) {
+func (r *strictLinkRenderer) recordUnresolvedLocalAttachment(destination string, sourceTarget string, line int) {
+	if r == nil || r.diagnostics == nil || !resourcepath.IsLocalTarget(destination) {
 		return
 	}
-	r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: raw, Message: fmt.Sprintf("markdown attachment %q could not be resolved", raw)})
+	r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown attachment %q could not be resolved", sourceTarget)})
+}
+
+func standardLinkLedgerTarget(raw string) string {
+	return strings.TrimSpace(raw)
 }
 
 func isMarkdownAttachmentTarget(targetPath string) bool {
@@ -300,30 +314,22 @@ func prefixRootRelativeDestination(note *model.Note, raw string) string {
 	return strings.TrimSuffix(note.BasePath, "/") + raw[:cut] + raw[cut:]
 }
 
-func escapeDestination(value string) string {
-	const hex = "0123456789ABCDEF"
-	var builder strings.Builder
-	for index := 0; index < len(value); index++ {
-		current := value[index]
-		if current == '%' && index+2 < len(value) && isHex(value[index+1]) && isHex(value[index+2]) {
-			builder.WriteByte('%')
-			builder.WriteByte(value[index+1])
-			builder.WriteByte(value[index+2])
-			index += 2
+// NormalizeDestination applies Goldmark's Markdown escape, entity, and URI
+// escaping rules before a destination is parsed or looked up.
+func NormalizeDestination(value string) string {
+	normalized := util.URLEscape([]byte(strings.TrimSpace(value)), true)
+	var escaped strings.Builder
+	for index := 0; index < len(normalized); index++ {
+		if normalized[index] != '%' || index+2 < len(normalized) && isHexDigit(normalized[index+1]) && isHexDigit(normalized[index+2]) {
+			escaped.WriteByte(normalized[index])
 			continue
 		}
-		if current >= 'A' && current <= 'Z' || current >= 'a' && current <= 'z' || current >= '0' && current <= '9' || strings.ContainsRune("-._~:/?#[]@!$&'()*+,;=", rune(current)) {
-			builder.WriteByte(current)
-			continue
-		}
-		builder.WriteByte('%')
-		builder.WriteByte(hex[current>>4])
-		builder.WriteByte(hex[current&0x0f])
+		escaped.WriteString("%25")
 	}
-	return builder.String()
+	return escaped.String()
 }
 
-func isHex(value byte) bool {
+func isHexDigit(value byte) bool {
 	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f' || value >= 'A' && value <= 'F'
 }
 

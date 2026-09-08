@@ -25,13 +25,14 @@ func TestRewriteCSSURLs(t *testing.T) {
 		{`a { background: image-set('logo.png' type('image/png') 1x, url(logo.png) 2x); }`, `a { background: image-set("logo.hash.png" type('image/png') 1x, url("logo.hash.png") 2x); }`},
 		{`/* url(missing.png) */ a::after { content: 'url(missing.png)'; }`, `/* url(missing.png) */ a::after { content: 'url(missing.png)'; }`},
 		{`a { mask: url(#local); background: url('data:image/png;base64,AA=='); }`, `a { mask: url(#local); background: url('data:image/png;base64,AA=='); }`},
+		{`a { background: url("" /* keep */); color: red; }`, `a { background: url("" /* keep */); color: red; }`},
 	} {
 		t.Run(test.input, func(t *testing.T) {
 			got, err := RewriteCSSURLs([]byte(test.input), func(raw string) (string, error) {
 				if raw == "logo.png" || strings.HasPrefix(raw, "logo.png?") {
 					return "logo.hash.png" + strings.TrimPrefix(raw, "logo.png"), nil
 				}
-				if raw == "#local" || strings.HasPrefix(raw, "data:") {
+				if raw == "" || raw == "#local" || strings.HasPrefix(raw, "data:") {
 					return raw, nil
 				}
 				return "", fmt.Errorf("unexpected resource: %q", raw)
@@ -40,5 +41,23 @@ func TestRewriteCSSURLs(t *testing.T) {
 				t.Fatalf("RewriteCSSURLs = %s, %v; want %s", got, err, test.want)
 			}
 		})
+	}
+}
+
+func TestRewriteCSSURLsDecodesQuotedReferenceOnce(t *testing.T) {
+	const input = `a { fill: url("\\23 gradient"); }`
+	var reference string
+	got, err := RewriteCSSURLs([]byte(input), func(raw string) (string, error) {
+		reference = raw
+		return raw, nil
+	})
+	if err != nil {
+		t.Fatalf("RewriteCSSURLs() error = %v", err)
+	}
+	if string(got) != input {
+		t.Fatalf("RewriteCSSURLs() = %q, want unchanged %q", got, input)
+	}
+	if reference != `\23 gradient` {
+		t.Fatalf("resolved reference = %q, want one level of CSS unescaping", reference)
 	}
 }

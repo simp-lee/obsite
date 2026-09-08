@@ -48,7 +48,7 @@ func Canonicalize(input string) string {
 }
 
 // EncodePath applies the shared RFC 3986 segment encoding used by generated
-// routes and output filenames while retaining slash separators.
+// URL paths while retaining slash separators.
 func EncodePath(value string) string {
 	parts := strings.Split(value, "/")
 	for index, part := range parts {

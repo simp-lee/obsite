@@ -72,6 +72,52 @@ func TestBuildSourceGraphResolvesRelativeGeneratedRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildSourceGraphResolvesMarkdownEntitiesInStandardPaths(t *testing.T) {
+	t.Parallel()
+
+	host := testNote("notes/host.md", "notes/host")
+	host.OutLinks = []model.LinkRef{{RawTarget: "child&amp;.md", Standard: true}}
+	child := testNote("notes/child&.md", "notes/child")
+
+	graph := BuildSourceGraph(buildIndex([]*model.Note{host, child}, nil))
+	if got, want := graph.Forward[host.RelPath], []string{child.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("graph.Forward[%q] = %#v, want entity-decoded target %#v", host.RelPath, got, want)
+	}
+}
+
+func TestBuildSourceGraphDerivesEntityDelimitersAfterNormalization(t *testing.T) {
+	t.Parallel()
+
+	host := testNote("notes/host.md", "notes/host")
+	host.OutLinks = []model.LinkRef{
+		{RawTarget: "child.md&#35;Section", Fragment: "35;Section", Standard: true},
+		{RawTarget: "child.md&num;Section", Fragment: "num;Section", Standard: true},
+	}
+	child := testNote("notes/child.md", "notes/child", withHeadings(model.Heading{Text: "Section", ID: "section"}))
+
+	graph := BuildSourceGraph(buildIndex([]*model.Note{host, child}, nil))
+	if got, want := graph.Forward[host.RelPath], []string{child.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("graph.Forward[%q] = %#v, want entity-delimited fragment target %#v", host.RelPath, got, want)
+	}
+}
+
+func TestBuildSourceGraphNormalizesEntitiesBeforeFragmentPercentDecoding(t *testing.T) {
+	t.Parallel()
+
+	host := testNote("notes/host.md", "notes/host")
+	host.OutLinks = []model.LinkRef{{
+		RawTarget: "child.md#a&percnt;20b",
+		Fragment:  "a&percnt;20b",
+		Standard:  true,
+	}}
+	child := testNote("notes/child.md", "notes/child", withHeadings(model.Heading{Text: "a b", ID: "a-b"}))
+
+	graph := BuildSourceGraph(buildIndex([]*model.Note{host, child}, nil))
+	if got, want := graph.Forward[host.RelPath], []string{child.RelPath}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("graph.Forward[%q] = %#v, want normalized fragment target %#v", host.RelPath, got, want)
+	}
+}
+
 func TestBuildGraphBuildsForwardAndBackwardMaps(t *testing.T) {
 	t.Parallel()
 

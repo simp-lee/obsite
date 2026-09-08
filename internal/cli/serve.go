@@ -269,12 +269,12 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			if err := loop.syncFixedWatchInputs(loop.fixedWatchInputs); err != nil {
 				loop.reportError(err)
 			}
+			if loop.refreshRelevantInputs != nil {
+				loop.relevantWatchFiles = loop.refreshRelevantInputs()
+			}
 			if rebuildErr != nil {
 				loop.reportError(rebuildErr)
 				continue
-			}
-			if loop.refreshRelevantInputs != nil {
-				loop.relevantWatchFiles = loop.refreshRelevantInputs()
 			}
 			if loop.notifyReload != nil {
 				loop.notifyReload()
@@ -341,9 +341,6 @@ func (loop *serveWatchLoop) syncFixedWatchInputs(inputs []string) error {
 	}
 
 	for watchDir := range nextWatchDirs {
-		if _, ok := loop.fixedWatchDirs[watchDir]; ok {
-			continue
-		}
 		if err := loop.addWatchDir(watchDir); err != nil {
 			return err
 		}
@@ -833,14 +830,16 @@ func plannedWatchFiles(vaultPath, outputPath string) map[string]struct{} {
 	}
 	add(defaultConfigFilename)
 	add(filepath.Join(".obsidian", "app.json"))
-	result, err := internalanalyze.AnalyzeWithOutput(vaultPath, outputPath)
+	// Failed analyses can still carry a partial plan whose asset references
+	// must remain watchable so repairing those assets can trigger a retry.
+	result, _ := internalanalyze.AnalyzeWithOutput(vaultPath, outputPath)
 	if result.Plan == nil {
 		return files
 	}
 	for _, relPath := range result.Plan.Scan.MarkdownFiles {
 		add(relPath)
 	}
-	if err != nil || result.Plan.Plan == nil {
+	if result.Plan.Plan == nil {
 		return files
 	}
 	plan := result.Plan.Plan

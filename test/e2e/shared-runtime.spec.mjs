@@ -53,6 +53,12 @@ async function serveOutput(req, res) {
   }
   const outputRoot = path.join(match[1] === 'alpha' ? alphaVault : betaVault, 'public');
   let relative = (match[2] || '/').replace(/^\/+/, '');
+  try {
+    relative = decodeURIComponent(relative);
+  } catch {
+    res.writeHead(400).end('bad path');
+    return;
+  }
   if (!relative || relative.endsWith('/')) relative += 'index.html';
   const filePath = path.resolve(outputRoot, relative);
   if (filePath !== outputRoot && !filePath.startsWith(outputRoot + path.sep)) {
@@ -75,6 +81,33 @@ async function copyAndBuild(name, basePath) {
   await fs.writeFile(configPath, config);
   execFileSync(binaryPath, ['build', '--vault', vault], {cwd: repoRoot, stdio: 'inherit'});
   return vault;
+}
+
+async function installEncodedSidebarFixture(vault) {
+  const publicRoot = path.join(vault, 'public');
+  const sourceHTML = await fs.readFile(path.join(publicRoot, 'child', 'child', 'index.html'), 'utf8');
+  for (const fixtureName of ['a%20b', ' note', 'note']) {
+    const fixturePath = path.join(publicRoot, fixtureName);
+    await fs.mkdir(fixturePath, {recursive: true});
+    await fs.writeFile(path.join(fixturePath, 'index.html'), sourceHTML);
+  }
+
+  const sidebarPath = path.join(publicRoot, 'assets', 'obsite', 'sidebar.json');
+  const sidebar = JSON.parse(await fs.readFile(sidebarPath, 'utf8'));
+  sidebar.default.push(
+    {name: 'Literal Percent', url: '/a%2520b/'},
+    {name: 'Space', url: '/a%20b/'},
+    {name: 'Leading Space', url: '/%20note/', source: ' note.md'},
+    {name: 'No Leading Space', url: '/note/'},
+    {name: 'Fullwidth Source', url: '/fullwidth-source/', source: 'Ａ.md'}
+  );
+  await fs.writeFile(sidebarPath, JSON.stringify(sidebar));
+
+  for (const [source, title] of [[' note.md', 'Leading-space popover'], ['Ａ.md', 'Fullwidth popover']]) {
+    const popoverPath = path.join(publicRoot, '_popover', source);
+    await fs.mkdir(popoverPath, {recursive: true});
+    await fs.writeFile(path.join(popoverPath, 'index.json'), JSON.stringify({title, summary: '', tags: []}));
+  }
 }
 
 async function offlineContext(browser, options = {}, allowedOrigin = origin) {
@@ -156,6 +189,7 @@ test.beforeAll(async () => {
   origin = `http://127.0.0.1:${port}`;
   alphaVault = await copyAndBuild('alpha-vault', '/alpha/');
   betaVault = await copyAndBuild('beta-vault', '/beta/');
+  await installEncodedSidebarFixture(alphaVault);
 });
 
 test.afterAll(async () => {
@@ -168,6 +202,7 @@ test('strict section pages and article flow remain usable without JavaScript', a
   const page = await context.newPage();
   await page.goto(`${origin}/alpha/child/`);
   await expect(page.getByRole('heading', {name: 'Nested Child'})).toBeVisible();
+  await expect(page.locator('[data-theme-toggle]')).toBeHidden();
   await expect(page.locator('nav[aria-label="Global navigation"] a')).toHaveCount(2);
   await expect(page.locator('.breadcrumbs')).toContainText('Nested Child');
   const collection = page.locator('.section-articles a');
@@ -197,6 +232,44 @@ test('strict section pages and article flow remain usable without JavaScript', a
   }
   await expect(page.locator('article > header h1')).toHaveText('Child Article');
   await expect(page.locator('.source-links')).toHaveCount(0);
+  expect(blocked).toEqual([]);
+  await context.close();
+});
+
+test('wide code and tables scroll locally on mobile viewports', async ({browser}) => {
+  const {context, blocked} = await offlineContext(browser, {
+    javaScriptEnabled: false,
+    viewport: {width: 390, height: 844}
+  });
+  const page = await context.newPage();
+  await page.goto(`${origin}/alpha/child/child/`);
+
+  const metrics = await page.evaluate(() => {
+    const documentRoot = document.documentElement;
+    const content = document.querySelector('.entry-content');
+    const pre = content.querySelector('pre');
+    const table = content.querySelector('table');
+    table.scrollLeft = 20;
+    return {
+      documentClientWidth: documentRoot.clientWidth,
+      documentScrollWidth: documentRoot.scrollWidth,
+      contentClientWidth: content.clientWidth,
+      preClientWidth: pre.clientWidth,
+      preScrollWidth: pre.scrollWidth,
+      tableClientWidth: table.clientWidth,
+      tableScrollWidth: table.scrollWidth,
+      tableScrollLeft: table.scrollLeft,
+      tableOverflowX: getComputedStyle(table).overflowX
+    };
+  });
+
+  expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.documentClientWidth);
+  expect(metrics.preClientWidth).toBeLessThanOrEqual(metrics.contentClientWidth);
+  expect(metrics.tableClientWidth).toBeLessThanOrEqual(metrics.contentClientWidth);
+  expect(metrics.preScrollWidth).toBeGreaterThan(metrics.preClientWidth);
+  expect(metrics.tableScrollWidth).toBeGreaterThan(metrics.tableClientWidth);
+  expect(metrics.tableScrollLeft).toBeGreaterThan(0);
+  expect(metrics.tableOverflowX).toBe('auto');
   expect(blocked).toEqual([]);
   await context.close();
 });
@@ -254,6 +327,14 @@ test('strict Markdown runtime stays local and social PNG is independently reacha
   await page.goto(`${origin}/alpha/child/child/`);
   await expect.poll(() => page.locator('[data-site-body]').getAttribute('data-sidebar-ready')).toBe('true');
   await expect(page.locator('[data-sidebar-root] a[aria-current="page"]')).toHaveText('Child Article');
+  const childDirectory = page.locator('[data-sidebar-root] .sidebar-node-dir').filter({hasText: 'Nested Child'}).first();
+  const childToggle = childDirectory.locator(':scope > .sidebar-item > .sidebar-toggle');
+  const childBranch = childDirectory.locator(':scope > .sidebar-list');
+  await expect(childBranch).toBeVisible();
+  await childToggle.click();
+  await expect(childBranch).toBeHidden();
+  await childToggle.click();
+  await expect(childBranch).toBeVisible();
   await expectHrefSubsetOrder(page.locator('[data-sidebar-root]'), childDocumentRoutes);
   for (const href of childDocumentRoutes) {
     await expect(page.locator(`[data-sidebar-root] a[href$="${href}"]`)).toBeVisible();
@@ -268,6 +349,27 @@ test('strict Markdown runtime stays local and social PNG is independently reacha
   expect(response.status()).toBe(200);
   expect(response.headers()['content-type']).toBe('image/png');
   expect((await response.body()).subarray(0, 8)).toEqual(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  expect(blocked).toEqual([]);
+  await context.close();
+});
+
+test('sidebar preserves encoded and whitespace-significant routes', async ({browser}) => {
+  const {context, blocked} = await offlineContext(browser);
+  const page = await context.newPage();
+  await page.goto(`${origin}/alpha/a%2520b/`);
+  await expect.poll(() => page.locator('[data-site-body]').getAttribute('data-sidebar-ready')).toBe('true');
+  await expect(page.locator('[data-sidebar-root] a[aria-current="page"]')).toHaveText('Literal Percent');
+  await expect(page.getByRole('link', {name: 'Space', exact: true})).not.toHaveAttribute('aria-current', 'page');
+
+  await page.goto(`${origin}/alpha/%20note/`);
+  await expect.poll(() => page.locator('[data-site-body]').getAttribute('data-sidebar-ready')).toBe('true');
+  await expect(page.locator('[data-sidebar-root] a[aria-current="page"]')).toHaveText('Leading Space');
+  await expect(page.getByRole('link', {name: 'No Leading Space', exact: true})).not.toHaveAttribute('aria-current', 'page');
+
+  await page.getByRole('link', {name: 'Leading Space', exact: true}).focus();
+  await expect(page.locator('[data-popover-card]')).toContainText('Leading-space popover');
+  await page.getByRole('link', {name: 'Fullwidth Source', exact: true}).focus();
+  await expect(page.locator('[data-popover-card]')).toContainText('Fullwidth popover');
   expect(blocked).toEqual([]);
   await context.close();
 });

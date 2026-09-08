@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	internalmarkdown "github.com/simp-lee/obsite/internal/markdown"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 )
@@ -88,7 +89,15 @@ func BuildSourceGraph(idx *model.VaultIndex) *model.LinkGraph {
 		outgoing := make(map[string]struct{})
 		if source != nil {
 			for _, ref := range source.OutLinks {
-				target, fragment := sourceLinkTarget(ref.RawTarget, ref.Fragment)
+				rawTarget := ref.RawTarget
+				fragment := ref.Fragment
+				if ref.Standard {
+					rawTarget = internalmarkdown.NormalizeDestination(rawTarget)
+					// Derive both semantic components after entity and escape
+					// normalization; the raw '#' may belong to an entity.
+					fragment = ""
+				}
+				target, fragment := sourceLinkTarget(rawTarget, fragment)
 				addResolvedSourceTarget(outgoing, idx, source, target, fragment, ref.Standard)
 			}
 			for _, embed := range source.Embeds {
@@ -131,7 +140,9 @@ func addResolvedSourceTarget(targets map[string]struct{}, idx *model.VaultIndex,
 		}
 		target = parsed.Path
 	}
-	pathTarget := standard && target != "" || !standard && target != "" && (strings.HasSuffix(strings.ToLower(target), ".md") || strings.HasPrefix(target, "./") || strings.HasPrefix(target, "../"))
+	// Only ordinary Markdown links are source-relative. Wikilinks and note
+	// embeds must retain LookupTarget's vault-path and basename semantics.
+	pathTarget := standard && target != ""
 	if pathTarget {
 		if standard && parseErr == nil && strings.HasPrefix(target, "/") {
 			routeLookup := internalwikilink.LookupRouteTarget(idx, source, parsed.EscapedPath(), strings.TrimSpace(fragment))

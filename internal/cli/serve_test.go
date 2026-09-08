@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"image"
+	"image/png"
 	"os"
 	"path/filepath"
 	"strings"
@@ -427,6 +429,146 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
 	waitForServeWatchSignal(t, reloadSignal, "config reload")
+}
+
+func TestStartServeWatchLoopRefreshesPartialPlanInputsAfterFailedRebuild(t *testing.T) {
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	articlePath := filepath.Join(vaultPath, "article.md")
+	bannerPath := filepath.Join(vaultPath, "images", "banner.png")
+	writeCLIConfig(t, vaultPath)
+	if err := os.WriteFile(filepath.Join(vaultPath, "_index.md"), []byte("---\ntitle: Home\npublish: true\n---\nHome\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initialWatchFiles := plannedWatchFiles(vaultPath, outputPath)
+	if _, ok := initialWatchFiles[bannerPath]; ok {
+		t.Fatalf("initial watch files unexpectedly contain %q", bannerPath)
+	}
+	if err := os.WriteFile(articlePath, []byte("---\ntitle: Article\npublish: true\ntype: page\nbanner: images/banner.png\nbannerAlt: Banner\n---\nArticle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(bannerPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bannerPath, []byte("not a png"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	rebuilds := make(chan int, 2)
+	refreshes := make(chan struct{}, 2)
+	reloads := make(chan struct{}, 1)
+	errorsSeen := make(chan error, 1)
+	attempt := 0
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:            watcher,
+		vaultPath:          vaultPath,
+		outputPath:         outputPath,
+		configPath:         configPath,
+		relevantWatchFiles: initialWatchFiles,
+		refreshRelevantInputs: func() map[string]struct{} {
+			files := plannedWatchFiles(vaultPath, outputPath)
+			refreshes <- struct{}{}
+			return files
+		},
+		debounce: 15 * time.Millisecond,
+		rebuild: func() error {
+			attempt++
+			rebuilds <- attempt
+			if attempt == 1 {
+				return errors.New("synthetic rebuild failure")
+			}
+			return nil
+		},
+		notifyReload: func() {
+			reloads <- struct{}{}
+		},
+		onError: func(err error) {
+			errorsSeen <- err
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	watcher.send(fsnotify.Event{Name: articlePath, Op: fsnotify.Write})
+	select {
+	case got := <-rebuilds:
+		if got != 1 {
+			t.Fatalf("first rebuild attempt = %d, want 1", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for failed rebuild")
+	}
+	waitForServeWatchSignalWithin(t, refreshes, "failed rebuild input refresh", 2*time.Second)
+	waitForServeWatchErrorContains(t, errorsSeen, "synthetic rebuild failure")
+	select {
+	case <-reloads:
+		t.Fatal("failed rebuild notified reload")
+	default:
+	}
+
+	var imageData bytes.Buffer
+	if err := png.Encode(&imageData, image.NewRGBA(image.Rect(0, 0, 1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bannerPath, imageData.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	watcher.send(fsnotify.Event{Name: bannerPath, Op: fsnotify.Write})
+	select {
+	case got := <-rebuilds:
+		if got != 2 {
+			t.Fatalf("rebuild after banner repair = %d, want 2", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("repaired banner did not trigger rebuild")
+	}
+	waitForServeWatchSignalWithin(t, reloads, "reload after banner repair", 2*time.Second)
+}
+
+func TestSyncFixedWatchInputsReaddsInvalidatedDirectory(t *testing.T) {
+	vaultPath := t.TempDir()
+	themeDir := filepath.Join(vaultPath, ".obsite", "theme")
+	iconsDir := filepath.Join(themeDir, "assets", "icons")
+	if err := os.MkdirAll(iconsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	watcher := newFakeFileWatcher()
+	loop := serveWatchLoop{
+		watcher:        watcher,
+		vaultPath:      vaultPath,
+		outputPath:     filepath.Join(vaultPath, "public"),
+		watchedDirs:    make(map[string]struct{}),
+		vaultWatchDirs: make(map[string]struct{}),
+		fixedWatchDirs: make(map[string]struct{}),
+	}
+	inputs := fixedServeWatchInputs(vaultPath)
+	if err := loop.syncFixedWatchInputs(inputs); err != nil {
+		t.Fatal(err)
+	}
+	if got := watcher.countAddCalls(iconsDir); got != 1 {
+		t.Fatalf("initial watcher.Add(%q) calls = %d, want 1", iconsDir, got)
+	}
+
+	if err := os.RemoveAll(iconsDir); err != nil {
+		t.Fatal(err)
+	}
+	loop.removeWatchedDirSubtree(iconsDir)
+	if err := os.MkdirAll(iconsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := loop.syncFixedWatchInputs(inputs); err != nil {
+		t.Fatal(err)
+	}
+	if got := watcher.countAddCalls(iconsDir); got != 2 {
+		t.Fatalf("watcher.Add(%q) calls after replacement = %d, want 2", iconsDir, got)
+	}
 }
 
 func TestStartServeWatchLoopReaddsRemovedOrRenamedDirectories(t *testing.T) {

@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	internalslug "github.com/simp-lee/obsite/internal/slug"
@@ -22,72 +21,6 @@ import (
 const outputDirPrefix = "assets"
 
 var errUnsupportedAssetSource = errors.New("asset source must be a regular non-symlink file inside the vault")
-
-// CopyAssetsWithReservedPaths copies merged assets while preserving reserved output destinations for non-asset writers.
-func CopyAssetsWithReservedPaths(vaultRoot string, outputRoot string, assets map[string]*model.Asset, diagCollector *diag.Collector, reservedOutputPaths []string) error {
-	if len(assets) == 0 {
-		return nil
-	}
-
-	reservedOutputKeys := normalizeReservedOutputKeys(reservedOutputPaths)
-	assigned := planAssetDestinations(vaultRoot, assets, reservedOutputKeys)
-	lookup := make(map[string]*model.Asset, len(assets))
-	ordered := make([]string, 0, len(assets))
-	for key, asset := range assets {
-		srcPath := normalizeAssetSource(key, asset)
-		if srcPath == "" {
-			continue
-		}
-		lookup[srcPath] = asset
-		ordered = append(ordered, srcPath)
-	}
-	sort.Strings(ordered)
-
-	written := make(map[string]string, len(ordered))
-	for _, srcPath := range ordered {
-		asset := lookup[srcPath]
-		if asset == nil {
-			continue
-		}
-
-		dstPath := assigned[srcPath]
-		if dstPath == "" {
-			dstPath = outputSitePath(asset.DstPath)
-			if isReservedOutputKey(outputSiteKey(dstPath), reservedOutputKeys) {
-				dstPath = ""
-			}
-		}
-		if dstPath != "" {
-			asset.DstPath = dstPath
-		}
-		if dstPath == "" {
-			continue
-		}
-		dstKey := outputSiteKey(dstPath)
-		if dstKey == "" {
-			continue
-		}
-
-		existingHash, destinationExists := written[dstKey]
-		hashValue, duplicate, err := copyContainedAsset(vaultRoot, srcPath, outputRoot, dstPath, existingHash, destinationExists)
-		if err != nil {
-			if errors.Is(err, os.ErrNotExist) || errors.Is(err, errUnsupportedAssetSource) {
-				recordUnavailableAsset(diagCollector, srcPath, dstPath)
-				continue
-			}
-			return fmt.Errorf("copy asset %q -> %q: %w", srcPath, dstPath, err)
-		}
-		if duplicate {
-			continue
-		}
-
-		written[dstKey] = hashValue
-		asset.SrcPath = srcPath
-		asset.DstPath = dstPath
-	}
-
-	return nil
-}
 
 func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, reservedOutputKeys map[string]struct{}) map[string]string {
 	grouped := make(map[string][]string)
@@ -138,6 +71,9 @@ func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map
 
 	planned := make(map[string]string, len(sources))
 	baseName := path.Base(groupKey)
+	if decoded, err := url.PathUnescape(baseName); err == nil {
+		baseName = decoded
+	}
 	for _, srcPath := range sources {
 		planned[srcPath] = hashedAssetPathForBase(baseName, hashes[srcPath])
 	}
@@ -228,9 +164,6 @@ func hashedAssetPath(srcPath string, suffix string) string {
 
 func hashedAssetPathForBase(baseName string, suffix string) string {
 	baseName = path.Base(strings.TrimSpace(strings.ReplaceAll(baseName, "\\", "/")))
-	if decoded, err := url.PathUnescape(baseName); err == nil {
-		baseName = decoded
-	}
 	baseName = strings.ToLower(baseName)
 	if baseName == "" || baseName == "." || baseName == "/" {
 		baseName = "asset"
@@ -336,15 +269,6 @@ func normalizeReservedOutputKeys(reservedOutputPaths []string) map[string]struct
 	return reserved
 }
 
-func isReservedOutputKey(outputKey string, reservedOutputKeys map[string]struct{}) bool {
-	if outputKey == "" || len(reservedOutputKeys) == 0 {
-		return false
-	}
-
-	_, ok := reservedOutputKeys[outputKey]
-	return ok
-}
-
 func plainAssetKey(srcPath string) string {
 	return outputSiteKey(plainAssetPath(srcPath))
 }
@@ -440,74 +364,10 @@ func openAssetSource(vaultRoot string, srcPath string) (string, *os.File, os.Fil
 	return resolvedPath, file, info, nil
 }
 
-func copyContainedAsset(vaultRoot string, srcPath string, outputRoot string, dstPath string, existingHash string, destinationExists bool) (hashHex string, duplicate bool, err error) {
-	_, source, info, err := openAssetSource(vaultRoot, srcPath)
-	if err != nil {
-		return "", false, err
-	}
-	defer func() {
-		err = errors.Join(err, source.Close())
-	}()
-
-	hashHex, err = fileHashHex(source)
-	if err != nil {
-		return "", false, fmt.Errorf("hash source: %w", err)
-	}
-	if destinationExists {
-		if existingHash == hashHex {
-			return hashHex, true, nil
-		}
-		return "", false, fmt.Errorf("asset destination conflict for %q", dstPath)
-	}
-
-	dstAbsPath := filepath.Join(outputRoot, filepath.FromSlash(dstPath))
-	if err := os.MkdirAll(filepath.Dir(dstAbsPath), 0o755); err != nil {
-		return "", false, fmt.Errorf("mkdir destination: %w", err)
-	}
-	if _, err := source.Seek(0, io.SeekStart); err != nil {
-		return "", false, fmt.Errorf("rewind source: %w", err)
-	}
-	if err := copyFile(source, dstAbsPath, info.Mode().Perm()); err != nil {
-		return "", false, err
-	}
-	return hashHex, false, nil
-}
-
 func fileHashHex(reader io.Reader) (string, error) {
 	hasher := sha256.New()
 	if _, err := io.Copy(hasher, reader); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hasher.Sum(nil)), nil
-}
-
-func copyFile(source io.Reader, dstPath string, perm os.FileMode) (err error) {
-	if perm == 0 {
-		perm = 0o644
-	}
-
-	dstFile, err := os.OpenFile(dstPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		err = errors.Join(err, dstFile.Close())
-	}()
-
-	_, err = io.Copy(dstFile, source)
-	return err
-}
-
-func recordUnavailableAsset(diagCollector *diag.Collector, srcPath string, dstPath string) {
-	if diagCollector == nil {
-		return
-	}
-
-	diagCollector.Warningf(
-		diag.KindUnresolvedAsset,
-		diag.Location{Path: srcPath},
-		"asset %q could not be copied to %q because the source file is missing or not a regular vault file",
-		srcPath,
-		dstPath,
-	)
 }

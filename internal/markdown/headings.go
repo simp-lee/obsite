@@ -1,7 +1,6 @@
 package markdown
 
 import (
-	"html"
 	"io"
 	"strconv"
 	"strings"
@@ -110,6 +109,8 @@ func appendVisibleHeadingInlineText(collector *headingTextCollector, node gast.N
 		}
 	case *gast.CodeSpan:
 		collector.appendCodeSpanText(current, source)
+	case *gast.AutoLink:
+		collector.appendText(string(current.Label(source)))
 	case *gmhashtag.Node:
 		collector.appendText("#" + string(current.Tag))
 	case *gmwikilink.Node:
@@ -202,14 +203,14 @@ func (c *headingTextCollector) String() string {
 }
 
 func (c *headingTextCollector) space() {
-	if c == nil || c.builder.Len() == 0 {
+	if c == nil || c.builder.Len() == 0 || c.inInvisibleRawHTML() {
 		return
 	}
 	c.pendingSpace = true
 }
 
 func (c *headingTextCollector) appendText(value string) {
-	if c == nil || value == "" {
+	if c == nil || value == "" || c.inInvisibleRawHTML() {
 		return
 	}
 	if c.pendingSpace && c.builder.Len() > 0 {
@@ -223,7 +224,7 @@ func (c *headingTextCollector) appendSourceText(value string) {
 	if c == nil || value == "" || c.inInvisibleRawHTML() {
 		return
 	}
-	c.appendText(html.UnescapeString(value))
+	c.appendText(resolveMarkdownText([]byte(value)))
 }
 
 func (c *headingTextCollector) appendCodeSpanText(node *gast.CodeSpan, source []byte) {

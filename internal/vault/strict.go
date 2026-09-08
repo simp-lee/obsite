@@ -27,7 +27,6 @@ var (
 
 var (
 	strictDatePattern      = regexp.MustCompile(`^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2}))$`)
-	strictSlugPattern      = regexp.MustCompile(`^[\p{L}\p{N}_~-]+$`)
 	strictOrderPattern     = regexp.MustCompile(`^[0-9]+$`)
 	frontmatterLinePattern = regexp.MustCompile(`\bline ([0-9]+)\b`)
 )
@@ -553,8 +552,9 @@ func strictArticleSlug(node *yaml.Node) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if !strictSlugPattern.MatchString(value) {
+	normalized, err := slug.GenerateArticleSegment(&value, "")
+	if err != nil {
 		return "", fmt.Errorf("slug at line %d must be one non-empty Unicode path segment containing only letters, numbers, '-', '_' or '~'", node.Line)
 	}
-	return value, nil
+	return normalized, nil
 }

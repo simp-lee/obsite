@@ -3,6 +3,8 @@ package vault
 import (
 	"strings"
 	"testing"
+
+	"github.com/simp-lee/obsite/internal/diag"
 )
 
 func TestParseStrictFrontmatterSeparatesSectionsAndRequiresExplicitArticleFields(t *testing.T) {
@@ -65,6 +67,36 @@ func TestParseStrictFrontmatterKeepsQuotedNullAsString(t *testing.T) {
 	}
 	if result.Sections[0].Frontmatter.Title != "null" {
 		t.Fatalf("title = %q", result.Sections[0].Frontmatter.Title)
+	}
+}
+
+func TestBuildStrictIndexResolvesMarkdownEntitiesBeforeAssetLookup(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writeVaultFile(t, vaultPath, "article.md", "---\ntitle: Article\npublish: true\ntype: doc\n---\n![image](A&amp;B.png)\n\n[file](A&amp;B.pdf)\n\n![remote](https&colon;//example.test/a&Tab;b.png)\n")
+	writeVaultFile(t, vaultPath, "A&B.png", "png")
+	writeVaultFile(t, vaultPath, "A&B.pdf", "pdf")
+
+	scan, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sources, err := ParseStrictFrontmatter(scan)
+	if err != nil {
+		t.Fatalf("ParseStrictFrontmatter() error = %v", err)
+	}
+	collector := diag.NewCollector()
+	result, err := BuildStrictIndex(scan, sources, sources.Articles, nil, collector, BuildIndexOptions{Concurrency: 1})
+	if err != nil {
+		t.Fatalf("BuildStrictIndex() error = %v", err)
+	}
+	for _, resource := range []string{"A&B.png", "A&B.pdf"} {
+		if result.Index.Assets[resource] == nil {
+			t.Fatalf("Index.Assets[%q] = nil, want Markdown entity destination resolved", resource)
+		}
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
 	}
 }
 

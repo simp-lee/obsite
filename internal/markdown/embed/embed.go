@@ -95,12 +95,264 @@ func ScopeNoteToFragment(note *model.Note, fragmentID string) *model.Note {
 }
 
 func (e *extender) Extend(md goldmark.Markdown) {
-	md.Parser().AddOptions(parser.WithParagraphTransformers(
-		util.Prioritized(newImageEmbedFigureParagraphTransformer(e.renderer.currentNote, e.renderer.index), 119),
-	))
+	md.Parser().AddOptions(
+		parser.WithParagraphTransformers(
+			util.Prioritized(newImageEmbedFigureParagraphTransformer(e.renderer.currentNote, e.renderer.index), 119),
+			util.Prioritized(newNoteEmbedBlockParagraphTransformer(e.renderer), 121),
+		),
+		parser.WithASTTransformers(
+			// Passthrough rewriting runs at priority 0 and can synthesize line-less
+			// paragraphs, while callout rewriting at the same priority can synthesize
+			// ordinary paragraphs. Split once on each side of those transforms.
+			util.Prioritized(newNoteEmbedBlockASTTransformer(e.renderer, false), -1),
+			util.Prioritized(newNoteEmbedBlockASTTransformer(e.renderer, true), 1),
+		),
+	)
 	md.Renderer().AddOptions(renderer.WithNodeRenderers(
 		util.Prioritized(e.renderer, 198),
 	))
+}
+
+type noteEmbedBlockParagraphTransformer struct {
+	renderer *wikilinkHTMLRenderer
+}
+
+func newNoteEmbedBlockParagraphTransformer(renderer *wikilinkHTMLRenderer) parser.ParagraphTransformer {
+	return &noteEmbedBlockParagraphTransformer{renderer: renderer}
+}
+
+func (t *noteEmbedBlockParagraphTransformer) Transform(node *gast.Paragraph, reader text.Reader, _ parser.Context) {
+	if node == nil || node.Parent() == nil || node.Lines().Len() != 1 {
+		return
+	}
+
+	segment := node.Lines().At(0)
+	wikilink, ok := parseStandaloneNoteEmbed(segment.Value(reader.Source()))
+	if !ok || !t.renderer.rendersNoteEmbedAsBlock(wikilink) {
+		return
+	}
+
+	// Paragraph transformers run before Goldmark's paragraph Close method, so
+	// preserve its whitespace trimming when changing the transparent container.
+	segment = segment.TrimLeftSpace(reader.Source())
+	segment = segment.TrimRightSpace(reader.Source())
+	block := gast.NewTextBlock()
+	block.SetBlankPreviousLines(node.HasBlankPreviousLines())
+	block.Lines().Append(segment)
+	parent := node.Parent()
+	parent.ReplaceChild(parent, node, block)
+}
+
+func parseStandaloneNoteEmbed(line []byte) (*gmwikilink.Node, bool) {
+	trimmed := bytes.TrimSpace(line)
+	if len(trimmed) == 0 {
+		return nil, false
+	}
+
+	reader := text.NewReader(trimmed)
+	parsed := (&gmwikilink.Parser{}).Parse(nil, reader, nil)
+	node, ok := parsed.(*gmwikilink.Node)
+	if !ok || !node.Embed {
+		return nil, false
+	}
+	remaining, _ := reader.PeekLine()
+	if len(remaining) != 0 {
+		return nil, false
+	}
+	return node, true
+}
+
+type noteEmbedBlockASTTransformer struct {
+	renderer    *wikilinkHTMLRenderer
+	splitInline bool
+}
+
+func newNoteEmbedBlockASTTransformer(renderer *wikilinkHTMLRenderer, splitInline bool) parser.ASTTransformer {
+	return &noteEmbedBlockASTTransformer{renderer: renderer, splitInline: splitInline}
+}
+
+func (t *noteEmbedBlockASTTransformer) Transform(document *gast.Document, reader text.Reader, _ parser.Context) {
+	paragraphs := make([]*gast.Paragraph, 0)
+	_ = gast.Walk(document, func(node gast.Node, entering bool) (gast.WalkStatus, error) {
+		if paragraph, ok := node.(*gast.Paragraph); entering && ok && paragraph.Parent() != nil {
+			paragraphs = append(paragraphs, paragraph)
+		}
+		return gast.WalkContinue, nil
+	})
+	for _, paragraph := range paragraphs {
+		if paragraph.Parent() != nil {
+			t.splitStandaloneNoteEmbedLines(paragraph, reader.Source())
+		}
+	}
+}
+
+func (t *noteEmbedBlockASTTransformer) splitStandaloneNoteEmbedLines(paragraph *gast.Paragraph, source []byte) bool {
+	if t.splitInline && t.splitParagraphAroundNoteEmbedChildren(paragraph, source) {
+		return true
+	}
+
+	lines := paragraph.Lines()
+	if lines.Len() == 0 {
+		if paragraphContainsOnlyWhitespace(paragraph, source) {
+			paragraph.Parent().RemoveChild(paragraph.Parent(), paragraph)
+			return true
+		}
+		return false
+	}
+
+	embedLines := make(map[int]struct{})
+	childrenByLine := make([][]gast.Node, lines.Len())
+	lineIndex := 0
+	for child := paragraph.FirstChild(); child != nil; child = child.NextSibling() {
+		position := child.Pos()
+		for lineIndex+1 < lines.Len() && position >= lines.At(lineIndex+1).Start {
+			lineIndex++
+		}
+		childrenByLine[lineIndex] = append(childrenByLine[lineIndex], child)
+	}
+	for index := 0; index < lines.Len(); index++ {
+		segment := lines.At(index)
+		parsed, standalone := parseStandaloneNoteEmbed(segment.Value(source))
+		if !standalone || !t.renderer.rendersNoteEmbedAsBlock(parsed) {
+			continue
+		}
+		for _, child := range childrenByLine[index] {
+			if wikilink, ok := child.(*gmwikilink.Node); ok && wikilink.Embed {
+				embedLines[index] = struct{}{}
+				break
+			}
+		}
+	}
+	if len(embedLines) == 0 {
+		return false
+	}
+
+	parent := paragraph.Parent()
+	firstReplacement := true
+	for start := 0; start < lines.Len(); {
+		_, embedLine := embedLines[start]
+		end := start + 1
+		if !embedLine {
+			for end < lines.Len() {
+				if _, isEmbed := embedLines[end]; isEmbed {
+					break
+				}
+				end++
+			}
+		}
+
+		var replacement gast.Node
+		if embedLine {
+			replacement = gast.NewTextBlock()
+		} else {
+			replacement = gast.NewParagraph()
+		}
+		replacement.SetBlankPreviousLines(firstReplacement && paragraph.HasBlankPreviousLines())
+		firstReplacement = false
+		for index := start; index < end; index++ {
+			replacement.Lines().Append(lines.At(index))
+			for _, child := range childrenByLine[index] {
+				paragraph.RemoveChild(paragraph, child)
+				replacement.AppendChild(replacement, child)
+			}
+		}
+		parent.InsertBefore(parent, paragraph, replacement)
+		start = end
+	}
+	parent.RemoveChild(parent, paragraph)
+	return true
+}
+
+func (t *noteEmbedBlockASTTransformer) splitParagraphAroundNoteEmbedChildren(paragraph *gast.Paragraph, source []byte) bool {
+	children := make([]gast.Node, 0)
+	hasBlockEmbed := false
+	for child := paragraph.FirstChild(); child != nil; child = child.NextSibling() {
+		children = append(children, child)
+		if wikilink, ok := child.(*gmwikilink.Node); ok && t.renderer.rendersNoteEmbedAsBlock(wikilink) {
+			hasBlockEmbed = true
+		}
+	}
+	if !hasBlockEmbed {
+		return false
+	}
+
+	parent := paragraph.Parent()
+	firstReplacement := true
+	for start := 0; start < len(children); {
+		wikilink, embed := children[start].(*gmwikilink.Node)
+		embed = embed && t.renderer.rendersNoteEmbedAsBlock(wikilink)
+		end := start + 1
+		if !embed {
+			for end < len(children) {
+				next, ok := children[end].(*gmwikilink.Node)
+				if ok && t.renderer.rendersNoteEmbedAsBlock(next) {
+					break
+				}
+				end++
+			}
+		}
+
+		if !embed && inlineNodesContainOnlyWhitespace(children[start:end], source) {
+			for _, child := range children[start:end] {
+				paragraph.RemoveChild(paragraph, child)
+			}
+			start = end
+			continue
+		}
+
+		var replacement gast.Node
+		if embed {
+			replacement = gast.NewTextBlock()
+		} else {
+			replacement = gast.NewParagraph()
+		}
+		replacement.SetBlankPreviousLines(firstReplacement && paragraph.HasBlankPreviousLines())
+		firstReplacement = false
+		for _, child := range children[start:end] {
+			paragraph.RemoveChild(paragraph, child)
+			replacement.AppendChild(replacement, child)
+		}
+		parent.InsertBefore(parent, paragraph, replacement)
+		start = end
+	}
+	parent.RemoveChild(parent, paragraph)
+	return true
+}
+
+func inlineNodesContainOnlyWhitespace(nodes []gast.Node, source []byte) bool {
+	for _, node := range nodes {
+		switch current := node.(type) {
+		case *gast.Text:
+			if len(bytes.TrimSpace(current.Value(source))) != 0 {
+				return false
+			}
+		case *gast.String:
+			if len(bytes.TrimSpace(current.Value)) != 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+func paragraphContainsOnlyWhitespace(paragraph *gast.Paragraph, source []byte) bool {
+	for child := paragraph.FirstChild(); child != nil; child = child.NextSibling() {
+		switch current := child.(type) {
+		case *gast.Text:
+			if len(bytes.TrimSpace(current.Value(source))) != 0 {
+				return false
+			}
+		case *gast.String:
+			if len(bytes.TrimSpace(current.Value)) != 0 {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 type imageEmbedFigureParagraphTransformer struct {
@@ -286,6 +538,9 @@ func (r *wikilinkHTMLRenderer) renderEmbed(
 		r.recordCycle(ref, rawTarget, lookup.Note, lookup.FragmentID)
 		return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
 	default:
+		if _, blockParent := node.Parent().(*gast.TextBlock); !blockParent {
+			return r.renderPlainTextEmbedFallback(w, ref, rawTarget)
+		}
 		embeddedSource := selectEmbedSource(lookup.Note, lookup.FragmentID)
 		if len(embeddedSource) == 0 {
 			r.recordMissingFragment(ref, rawTarget, lookup.Note, fragment)
@@ -435,6 +690,28 @@ func (r *wikilinkHTMLRenderer) isVisited(note *model.Note, fragmentID string) bo
 	}
 	_, ok := r.visited[key]
 	return ok
+}
+
+func (r *wikilinkHTMLRenderer) rendersNoteEmbedAsBlock(node *gmwikilink.Node) bool {
+	if r == nil || node == nil || !node.Embed {
+		return false
+	}
+
+	target := strings.TrimSpace(string(node.Target))
+	fragment := strings.TrimSpace(string(node.Fragment))
+	if strings.HasPrefix(fragment, "^") || r.depth >= maxDepth {
+		return false
+	}
+	assetLookup := r.lookupImageAssetPath(target)
+	if assetLookup.Path != "" || len(assetLookup.Ambiguous) > 0 {
+		return false
+	}
+
+	lookup := internalwikilink.LookupTarget(r.index, r.currentNote, target, fragment)
+	if lookup.Note == nil || lookup.Unpublished || lookup.MissingFragment || r.isVisited(lookup.Note, lookup.FragmentID) {
+		return false
+	}
+	return len(selectEmbedSource(lookup.Note, lookup.FragmentID)) > 0
 }
 
 func (r *wikilinkHTMLRenderer) recordDeadEmbed(ref *model.EmbedRef, rawTarget string) {

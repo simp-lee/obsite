@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -27,6 +26,7 @@ type stagedOutputPublisher struct {
 	backupPath           string
 	createdParentDirs    []string
 	initialOutput        managedOutputDirState
+	publishedMode        os.FileMode
 	committed            bool
 	publicationAttempted bool
 	publicationSource    os.FileInfo
@@ -95,9 +95,9 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	if registry == nil {
 		return fmt.Errorf("output registry is required")
 	}
-	cleaned := strings.Trim(strings.ReplaceAll(relPath, `\\`, "/"), "/")
-	if cleaned == "" || cleaned == "." || strings.HasPrefix(cleaned, "../") {
-		return fmt.Errorf("invalid output path %q", relPath)
+	cleaned, _, err := resolveOutputWritePath(outputRoot, relPath)
+	if err != nil {
+		return err
 	}
 	if existing, ok := registry.claims[cleaned]; ok {
 		return fmt.Errorf("output path %q claimed by %q and written again by %q", cleaned, existing, owner)
@@ -106,7 +106,10 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	writeContent := content
 	hash := sha256.Sum256(content)
 	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.OutputHash == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
-		previousPath := filepath.Join(registry.previousRoot, filepath.FromSlash(cleaned))
+		_, previousPath, pathErr := resolveOutputWritePath(registry.previousRoot, cleaned)
+		if pathErr != nil {
+			return pathErr
+		}
 		if previousContent, err := os.ReadFile(previousPath); err == nil {
 			previousHash := sha256.Sum256(previousContent)
 			if fmt.Sprintf("%x", previousHash) == previous.OutputHash {
@@ -175,9 +178,14 @@ func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedO
 		return nil, err
 	}
 
+	publishedMode := os.FileMode(0o755)
+	if state.exists && state.info != nil {
+		publishedMode = state.info.Mode().Perm()
+	}
 	publisher := &stagedOutputPublisher{
 		outputPath:    outputPath,
 		initialOutput: state,
+		publishedMode: publishedMode,
 	}
 	stagingParent, err := nearestExistingOutputAncestor(outputPath)
 	if err != nil {
@@ -313,16 +321,39 @@ func (publisher *stagedOutputPublisher) publish() error {
 	if err := stagedOutputRename(publisher.stagingPath, publisher.outputPath); err != nil {
 		return fmt.Errorf("publish staged output %q -> %q: %w", publisher.stagingPath, publisher.outputPath, err)
 	}
+	if err := os.Chmod(publisher.outputPath, publisher.publishedMode); err != nil {
+		return fmt.Errorf("set published output permissions for %q: %w", publisher.outputPath, err)
+	}
 	publisher.stagingPath = ""
 	publisher.createdParentDirs = nil
+	publisher.committed = true
 	if publisher.backupPath != "" {
-		if err := stagedOutputRemoveAll(publisher.backupPath); err != nil {
-			return fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
+		if err := removeOutputBackup(publisher.backupPath); err != nil {
+			publisher.cleanupErr = fmt.Errorf("remove previous output backup %q: %w", publisher.backupPath, err)
+			return nil
 		}
 		publisher.backupPath = ""
 	}
-	publisher.committed = true
 	return nil
+}
+
+func removeOutputBackup(backupPath string) error {
+	if err := filepath.WalkDir(backupPath, func(currentPath string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		return os.Chmod(currentPath, info.Mode().Perm()|0o700)
+	}); err != nil {
+		return err
+	}
+	return stagedOutputRemoveAll(backupPath)
 }
 
 func (publisher *stagedOutputPublisher) revalidateOutput() error {
@@ -547,25 +578,5 @@ func writeOutputFile(outputRoot string, relPath string, content []byte) error {
 }
 
 func resolveOutputWritePath(outputRoot string, relPath string) (string, string, error) {
-	cleanRelPath := strings.TrimSpace(strings.ReplaceAll(relPath, `\`, "/"))
-	if cleanRelPath == "" || strings.HasPrefix(cleanRelPath, "/") {
-		return "", "", fmt.Errorf("output path %q must be relative", relPath)
-	}
-	cleanRelPath = path.Clean(cleanRelPath)
-	if cleanRelPath == "." || cleanRelPath == ".." || strings.HasPrefix(cleanRelPath, "../") {
-		return "", "", fmt.Errorf("output path %q must stay within output root", relPath)
-	}
-	absOutputRoot, err := filepath.Abs(outputRoot)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve output root %q: %w", outputRoot, err)
-	}
-	absPath := filepath.Join(absOutputRoot, filepath.FromSlash(cleanRelPath))
-	relToRoot, err := filepath.Rel(absOutputRoot, absPath)
-	if err != nil {
-		return "", "", fmt.Errorf("resolve output path %q: %w", cleanRelPath, err)
-	}
-	if relToRoot == ".." || strings.HasPrefix(relToRoot, ".."+string(filepath.Separator)) {
-		return "", "", fmt.Errorf("output path %q must stay within output root", cleanRelPath)
-	}
-	return cleanRelPath, absPath, nil
+	return internalfsutil.ResolveOutputURLPath(outputRoot, relPath)
 }

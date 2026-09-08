@@ -57,8 +57,8 @@ versions:
 	if !bytes.Contains(docs, []byte("Version 1")) || !bytes.Contains(docs, []byte("Version 2")) {
 		t.Fatalf("version entry points missing from docs landing:\n%s", docs)
 	}
-	v1 := readBuildOutputFile(t, output, "docs/v1/Start%20Here/index.html")
-	v2 := readBuildOutputFile(t, output, "docs/v2/Start%20Here/index.html")
+	v1 := readBuildOutputFile(t, output, "docs/v1/Start Here/index.html")
+	v2 := readBuildOutputFile(t, output, "docs/v2/Start Here/index.html")
 	for _, page := range [][]byte{v1, v2} {
 		if !bytes.Contains(page, []byte("version-selector")) || !bytes.Contains(page, []byte("Edit this page")) || !bytes.Contains(page, []byte("View source")) {
 			t.Fatalf("version/source metadata missing:\n%s", page)

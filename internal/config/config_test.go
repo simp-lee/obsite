@@ -82,6 +82,17 @@ func TestNormalizeSiteConfigPreservesEncodedBasePathTrailingSlash(t *testing.T) 
 	}
 }
 
+func TestNormalizeSiteConfigRejectsEmptyBaseURLQueryOrFragment(t *testing.T) {
+	t.Parallel()
+
+	for _, baseURL := range []string{"https://example.test/docs/?", "https://example.test/docs/#"} {
+		_, err := NormalizeSiteConfig(model.SiteConfig{Title: "Site", BaseURL: baseURL})
+		if err == nil || !strings.Contains(err.Error(), "must not include query or fragment") {
+			t.Fatalf("NormalizeSiteConfig(%q) error = %v, want query or fragment validation error", baseURL, err)
+		}
+	}
+}
+
 func TestNormalizeSiteConfigValidatesStrictURLAndVersionRules(t *testing.T) {
 	for _, value := range []string{
 		"https://example.test/a%2Fb",

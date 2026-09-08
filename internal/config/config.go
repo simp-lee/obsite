@@ -820,7 +820,7 @@ func normalizeBaseURL(raw string) (string, error) {
 	if parsed.User != nil {
 		return "", fmt.Errorf("baseURL must not include user info")
 	}
-	if parsed.RawQuery != "" || parsed.Fragment != "" {
+	if parsed.ForceQuery || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(raw, "#") {
 		return "", fmt.Errorf("baseURL must not include query or fragment")
 	}
 

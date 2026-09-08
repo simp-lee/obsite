@@ -1,6 +1,7 @@
 package markdown
 
 import (
+	"bufio"
 	"bytes"
 	"fmt"
 	"html"
@@ -16,8 +17,11 @@ import (
 	"github.com/yuin/goldmark"
 	highlighting "github.com/yuin/goldmark-highlighting/v2"
 	gast "github.com/yuin/goldmark/ast"
+	extensionast "github.com/yuin/goldmark/extension/ast"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
 	gmhtml "github.com/yuin/goldmark/renderer/html"
+	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
 
@@ -93,12 +97,12 @@ func (r *imageHTMLRenderer) renderImage(
 
 	n := node.(*gast.Image)
 	imageIndex := r.nextImageIndex()
-	rewritten := r.rewriteDestination(string(n.Destination))
+	rewritten := r.rewriteDestination(NormalizeDestination(string(n.Destination)))
 
 	_, _ = w.WriteString("<img src=\"")
-	escapedDestination := escapeDestination(rewritten)
-	if r.Unsafe || !gmhtml.IsDangerousURL([]byte(escapedDestination)) {
-		_, _ = w.Write(util.EscapeHTML([]byte(escapedDestination)))
+	escapedDestination := util.URLEscape([]byte(rewritten), false)
+	if r.Unsafe || !gmhtml.IsDangerousURL(escapedDestination) {
+		_, _ = w.Write(util.EscapeHTML(escapedDestination))
 	}
 	_, _ = w.WriteString(`" alt="`)
 	r.writeAltText(w, source, n)
@@ -160,16 +164,35 @@ func appendPlainAltText(builder *strings.Builder, source []byte, node gast.Node)
 	for child := node.FirstChild(); child != nil; child = child.NextSibling() {
 		switch current := child.(type) {
 		case *gast.Text:
-			_, _ = builder.Write(bytes.TrimRight(current.Value(source), "\r\n"))
-			if current.SoftLineBreak() || current.HardLineBreak() {
+			value := current.Value(source)
+			hasLineBreak := len(value) > 0 && (value[len(value)-1] == '\r' || value[len(value)-1] == '\n')
+			value = bytes.TrimRight(value, "\r\n")
+			if current.IsRaw() {
+				_, _ = builder.Write(value)
+			} else {
+				_, _ = builder.WriteString(resolveMarkdownText(value))
+			}
+			if hasLineBreak || current.SoftLineBreak() || current.HardLineBreak() {
 				_ = builder.WriteByte(' ')
 			}
 		case *gast.String:
-			_, _ = builder.Write(current.Value)
+			if current.IsRaw() || current.IsCode() {
+				_, _ = builder.Write(current.Value)
+			} else {
+				_, _ = builder.WriteString(resolveMarkdownText(current.Value))
+			}
 		default:
 			appendPlainAltText(builder, source, child)
 		}
 	}
+}
+
+func resolveMarkdownText(value []byte) string {
+	var escaped bytes.Buffer
+	writer := bufio.NewWriter(&escaped)
+	gmhtml.DefaultWriter.Write(writer, value)
+	_ = writer.Flush()
+	return html.UnescapeString(escaped.String())
 }
 
 func (r *imageHTMLRenderer) rewriteDestination(rawDestination string) string {
@@ -220,15 +243,100 @@ func newMathTrackingExtender(note *model.Note) goldmark.Extender {
 }
 
 func (e *mathTrackingExtender) Extend(md goldmark.Markdown) {
+	mathRenderer := newMathTrackingHTMLRenderer(e.note)
+	md.Parser().AddOptions(
+		parser.WithParagraphTransformers(
+			// Footnote blocks are consolidated while block parsing closes, so save
+			// each source paragraph's original container chain before that happens.
+			util.Prioritized(&displayMathParagraphContainerTransformer{renderer: mathRenderer}, 499),
+		),
+		parser.WithASTTransformers(
+			util.Prioritized(&displayMathContainerTransformer{renderer: mathRenderer}, 998),
+		),
+	)
 	md.Renderer().AddOptions(renderer.WithNodeRenderers(
-		util.Prioritized(newMathTrackingHTMLRenderer(e.note), 50),
+		util.Prioritized(mathRenderer, 50),
 	))
 }
 
-type mathTrackingHTMLRenderer struct{ note *model.Note }
+type displayMathSourceRange struct {
+	start      int
+	stop       int
+	containers []displayMathSourceContainer
+}
+
+type mathTrackingHTMLRenderer struct {
+	note                  *model.Note
+	paragraphSourceRanges []displayMathSourceRange
+	sourceContainers      map[*passthrough.PassthroughBlock][]displayMathSourceContainer
+}
 
 func newMathTrackingHTMLRenderer(note *model.Note) *mathTrackingHTMLRenderer {
-	return &mathTrackingHTMLRenderer{note: note}
+	return &mathTrackingHTMLRenderer{
+		note:             note,
+		sourceContainers: make(map[*passthrough.PassthroughBlock][]displayMathSourceContainer),
+	}
+}
+
+type displayMathParagraphContainerTransformer struct {
+	renderer *mathTrackingHTMLRenderer
+}
+
+var displayMathContainerCaptureKey = parser.NewContextKey()
+
+func (t *displayMathParagraphContainerTransformer) Transform(node *gast.Paragraph, _ text.Reader, context parser.Context) {
+	if t == nil || t.renderer == nil {
+		return
+	}
+	if context.Get(displayMathContainerCaptureKey) == nil {
+		t.renderer.paragraphSourceRanges = t.renderer.paragraphSourceRanges[:0]
+		t.renderer.sourceContainers = make(map[*passthrough.PassthroughBlock][]displayMathSourceContainer)
+		context.Set(displayMathContainerCaptureKey, true)
+	}
+	if node == nil || node.Parent() == nil || node.Lines().Len() == 0 {
+		return
+	}
+	first := node.Lines().At(0)
+	last := node.Lines().At(node.Lines().Len() - 1)
+	t.renderer.paragraphSourceRanges = append(t.renderer.paragraphSourceRanges, displayMathSourceRange{
+		start:      first.Start,
+		stop:       last.Stop,
+		containers: displayMathSourceContainers(node),
+	})
+}
+
+func (r *mathTrackingHTMLRenderer) capturedSourceContainers(position int) ([]displayMathSourceContainer, bool) {
+	if r == nil {
+		return nil, false
+	}
+	for _, sourceRange := range r.paragraphSourceRanges {
+		if position >= sourceRange.start && position < sourceRange.stop {
+			return sourceRange.containers, true
+		}
+	}
+	return nil, false
+}
+
+type displayMathContainerTransformer struct {
+	renderer *mathTrackingHTMLRenderer
+}
+
+func (t *displayMathContainerTransformer) Transform(document *gast.Document, _ text.Reader, _ parser.Context) {
+	if t == nil || t.renderer == nil {
+		return
+	}
+	_ = gast.Walk(document, func(node gast.Node, entering bool) (gast.WalkStatus, error) {
+		block, ok := node.(*passthrough.PassthroughBlock)
+		if entering && ok {
+			containers, captured := t.renderer.capturedSourceContainers(block.Pos())
+			if !captured {
+				containers = displayMathSourceContainers(block)
+			}
+			t.renderer.sourceContainers[block] = containers
+			return gast.WalkSkipChildren, nil
+		}
+		return gast.WalkContinue, nil
+	})
 }
 
 func (r *mathTrackingHTMLRenderer) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
@@ -258,29 +366,121 @@ func (r *mathTrackingHTMLRenderer) renderDisplayMath(w util.BufWriter, source []
 		r.note.HasMath = true
 	}
 	_, _ = w.WriteString(`<div data-obsite-math-source="display">`)
-	inCallout := node.Parent() != nil && node.Parent().Kind() == callout.KindCallout
+	block := node.(*passthrough.PassthroughBlock)
+	containers := r.sourceContainers[block]
+	if containers == nil {
+		containers = displayMathSourceContainers(block)
+	}
 	for i := 0; i < node.Lines().Len(); i++ {
 		segment := node.Lines().At(i)
-		line := string(segment.Value(source))
-		if inCallout {
-			line = stripCalloutQuoteMarkers(line)
-		}
+		line := stripDisplayMathContainerMarkers(string(segment.Value(source)), containers)
 		_, _ = w.WriteString(html.EscapeString(line))
 	}
 	_, _ = w.WriteString("\n</div>")
 	return gast.WalkSkipChildren, nil
 }
 
-func stripCalloutQuoteMarkers(source string) string {
-	lines := strings.SplitAfter(source, "\n")
-	for i := range lines {
-		if i == 0 {
-			continue
+type displayMathSourceContainer struct {
+	quote  bool
+	indent int
+}
+
+func displayMathSourceContainers(node gast.Node) []displayMathSourceContainer {
+	var reversed []displayMathSourceContainer
+	for ancestor := node.Parent(); ancestor != nil; ancestor = ancestor.Parent() {
+		switch current := ancestor.(type) {
+		case *gast.ListItem:
+			reversed = append(reversed, displayMathSourceContainer{indent: current.Offset})
+		case *extensionast.Footnote:
+			reversed = append(reversed, displayMathSourceContainer{indent: 4})
+		default:
+			if ancestor.Kind() == gast.KindBlockquote || ancestor.Kind() == callout.KindCallout {
+				reversed = append(reversed, displayMathSourceContainer{quote: true})
+			}
 		}
-		lines[i] = strings.TrimPrefix(lines[i], ">")
-		lines[i] = strings.TrimPrefix(lines[i], " ")
+	}
+	for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+		reversed[left], reversed[right] = reversed[right], reversed[left]
+	}
+	return reversed
+}
+
+func stripDisplayMathContainerMarkers(source string, containers []displayMathSourceContainer) string {
+	if len(containers) == 0 {
+		return source
+	}
+
+	lines := strings.SplitAfter(source, "\n")
+	for i := 1; i < len(lines); i++ {
+		line := lines[i]
+		lineOffset := 0
+		for _, container := range containers {
+			var ok bool
+			if container.quote {
+				line, lineOffset, ok = stripQuoteContainerMarker(line, lineOffset)
+			} else {
+				line, lineOffset, ok = stripListContainerIndent(line, lineOffset, container.indent)
+			}
+			if !ok {
+				break
+			}
+		}
+		lines[i] = preserveLeadingTabWidths(line, lineOffset)
 	}
 	return strings.Join(lines, "")
+}
+
+func preserveLeadingTabWidths(line string, lineOffset int) string {
+	leadingEnd := 0
+	for leadingEnd < len(line) && (line[leadingEnd] == ' ' || line[leadingEnd] == '\t') {
+		leadingEnd++
+	}
+	if !strings.Contains(line[:leadingEnd], "\t") {
+		return line
+	}
+
+	var normalized strings.Builder
+	for index := 0; index < leadingEnd; index++ {
+		if line[index] == ' ' {
+			normalized.WriteByte(' ')
+			lineOffset++
+			continue
+		}
+		width := util.TabWidth(lineOffset)
+		normalized.WriteString(strings.Repeat(" ", width))
+		lineOffset += width
+	}
+	normalized.WriteString(line[leadingEnd:])
+	return normalized.String()
+}
+
+func stripQuoteContainerMarker(line string, lineOffset int) (string, int, bool) {
+	indent, marker := util.IndentWidth([]byte(line), lineOffset)
+	if marker == len(line) || line[marker] != '>' || indent > 3 {
+		return line, lineOffset, false
+	}
+
+	lineOffset += indent + 1
+	line = line[marker+1:]
+	if strings.HasPrefix(line, " ") {
+		return line[1:], lineOffset + 1, true
+	}
+	if strings.HasPrefix(line, "\t") {
+		padding := util.TabWidth(lineOffset) - 1
+		return strings.Repeat(" ", padding) + line[1:], lineOffset + 1, true
+	}
+	return line, lineOffset, true
+}
+
+func stripListContainerIndent(line string, lineOffset int, want int) (string, int, bool) {
+	if want <= 0 {
+		return line, lineOffset, true
+	}
+	position, padding := util.IndentPosition([]byte(line), lineOffset, want)
+	if position < 0 {
+		return line, lineOffset, false
+	}
+	return strings.Repeat(" ", padding) + line[position:], lineOffset + want, true
 }
 
 func newCodeBlockExtender(note *model.Note, diagCollector *diag.Collector) goldmark.Extender {

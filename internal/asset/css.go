@@ -12,9 +12,13 @@ import (
 	"github.com/tdewolff/parse/v2/css"
 )
 
-// RewriteCSSURLs rewrites URL tokens, imports, and image-set URL strings without
+// RewriteCSSURLs rewrites URL tokens, imports, and CSS image URL strings without
 // changing comments, ordinary strings, or URLs the resolver leaves unchanged.
 func RewriteCSSURLs(data []byte, resolve func(string) (string, error)) ([]byte, error) {
+	return rewriteCSSURLs(data, resolve, nil)
+}
+
+func rewriteCSSURLs(data []byte, resolve func(string) (string, error), inspect func(css.TokenType, []byte) error) ([]byte, error) {
 	input := parse.NewInputBytes(data)
 	defer input.Restore()
 	lexer := css.NewLexer(input)
@@ -31,17 +35,21 @@ func RewriteCSSURLs(data []byte, resolve func(string) (string, error)) ([]byte, 
 			return output.Bytes(), nil
 		}
 		rawURL := ""
-		if candidate, end, ok := quotedURLArgument(input.Bytes()[start:]); ok &&
-			(kind == css.BadURLToken || kind == css.URLToken || kind == css.FunctionToken && strings.EqualFold(unescapeCSS(strings.TrimSuffix(string(token), "(")), "url")) {
-			input.Move(start + end - input.Offset())
-			input.Skip()
-			kind = css.URLToken
-			token = input.Bytes()[start : start+end]
-			rawURL = candidate
+		hasQuotedURL := false
+		isURLFunction := kind == css.FunctionToken && strings.EqualFold(unescapeCSS(strings.TrimSuffix(string(token), "(")), "url")
+		if kind == css.BadURLToken || kind == css.URLToken || isURLFunction {
+			if candidate, end, ok := quotedURLArgument(input.Bytes()[start:]); ok {
+				input.Move(start + end - input.Offset())
+				input.Skip()
+				kind = css.URLToken
+				token = input.Bytes()[start : start+end]
+				rawURL = candidate
+				hasQuotedURL = true
+			}
 		}
 		// The lexer exposes hex-escaped spellings such as u\\72l(...) as
 		// ordinary functions. Consume their argument as one URL token too.
-		if rawURL == "" && kind == css.FunctionToken && strings.EqualFold(unescapeCSS(string(token[:len(token)-1])), "url") {
+		if !hasQuotedURL && kind == css.FunctionToken && isURLFunction {
 			// Scan raw URL bytes: unlike general CSS tokens, /* is literal
 			// URL content here, not the start of a comment.
 			quote := byte(0)
@@ -60,16 +68,22 @@ func RewriteCSSURLs(data []byte, resolve func(string) (string, error)) ([]byte, 
 					break
 				}
 			}
-			kind, token = css.URLToken, append(bytes.Clone(token), input.Shift()...)
+			token = append(bytes.Clone(token), input.Shift()...)
+			kind = classifyURLToken(token)
+		}
+		if inspect != nil {
+			if err := inspect(kind, token); err != nil {
+				return nil, err
+			}
 		}
 		isURL := kind == css.URLToken
 		isStringURL := kind == css.StringToken && (importURL || len(imageSet) > 0 && imageSet[len(imageSet)-1])
 		if isURL || isStringURL {
 			raw := rawURL
-			if raw == "" {
+			if !hasQuotedURL {
 				raw = string(token)
 			}
-			if isURL && rawURL == "" {
+			if isURL && !hasQuotedURL {
 				raw = strings.TrimSpace(strings.TrimSuffix(raw[strings.IndexByte(raw, '(')+1:], ")"))
 			}
 			if len(raw) >= 2 && (raw[0] == '\'' || raw[0] == '"') && raw[len(raw)-1] == raw[0] {
@@ -99,7 +113,7 @@ func RewriteCSSURLs(data []byte, resolve func(string) (string, error)) ([]byte, 
 		switch kind {
 		case css.FunctionToken:
 			name := unescapeCSS(string(token[:len(token)-1]))
-			imageSet = append(imageSet, strings.EqualFold(name, "image-set") || strings.EqualFold(name, "-webkit-image-set"))
+			imageSet = append(imageSet, strings.EqualFold(name, "image") || strings.EqualFold(name, "image-set") || strings.EqualFold(name, "-webkit-image-set"))
 		case css.LeftParenthesisToken:
 			imageSet = append(imageSet, false)
 		case css.RightParenthesisToken:
@@ -108,6 +122,24 @@ func RewriteCSSURLs(data []byte, resolve func(string) (string, error)) ([]byte, 
 			}
 		}
 	}
+}
+
+func classifyURLToken(token []byte) css.TokenType {
+	open := bytes.IndexByte(token, '(')
+	if open < 0 {
+		return css.BadURLToken
+	}
+
+	normalized := make([]byte, 3+len(token)-open)
+	copy(normalized, "url")
+	copy(normalized[3:], token[open:])
+	input := parse.NewInputBytes(normalized)
+	defer input.Restore()
+	kind, _ := css.NewLexer(input).Next()
+	if kind == css.URLToken {
+		return kind
+	}
+	return css.BadURLToken
 }
 
 func quotedURLArgument(data []byte) (string, int, bool) {
@@ -131,7 +163,7 @@ func quotedURLArgument(data []byte) (string, int, bool) {
 			continue
 		}
 		if data[i] == quote {
-			raw := unescapeCSS(string(data[start:i]))
+			raw := string(data[start:i])
 			i++
 			for {
 				for i < len(data) && (data[i] == ' ' || data[i] == '\t' || data[i] == '\r' || data[i] == '\n' || data[i] == '\f') {

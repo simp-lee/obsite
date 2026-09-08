@@ -173,6 +173,7 @@ func TestServerRedirectsNonCanonicalPathsToCleanURLs(t *testing.T) {
 	t.Parallel()
 
 	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "index.html", "<html><body>home page</body></html>")
 	writeServerTestFile(t, outputPath, "alpha/index.html", "<html><body>alpha page</body></html>")
 	writeServerTestFile(t, outputPath, "style.css", "body { color: black; }")
 
@@ -210,6 +211,21 @@ func TestServerRedirectsNonCanonicalPathsToCleanURLs(t *testing.T) {
 			name:         "file trailing slash redirects to file path",
 			requestPath:  "/style.css/",
 			wantLocation: "/style.css",
+		},
+		{
+			name:         "encoded unreserved segment redirects to canonical path",
+			requestPath:  "/%61lpha/",
+			wantLocation: "/alpha/",
+		},
+		{
+			name:         "encoded dot segment redirects to canonical path",
+			requestPath:  "/%2E/alpha/",
+			wantLocation: "/alpha/",
+		},
+		{
+			name:         "encoded root dot redirects to canonical root",
+			requestPath:  "/%2E/",
+			wantLocation: "/",
 		},
 	}
 
@@ -309,13 +325,13 @@ func TestServerRejectsSymlinkedPathsEscapingOutputRoot(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		requestPath  string
+		requestPaths []string
 		wantLeakText string
 		setup        func(t *testing.T, outputPath string, outsideRoot string)
 	}{
 		{
 			name:         "file symlink",
-			requestPath:  "/escape.txt",
+			requestPaths: []string{"/escape.txt"},
 			wantLeakText: "outside secret file",
 			setup: func(t *testing.T, outputPath string, outsideRoot string) {
 				t.Helper()
@@ -333,7 +349,7 @@ func TestServerRejectsSymlinkedPathsEscapingOutputRoot(t *testing.T) {
 		},
 		{
 			name:         "directory symlink",
-			requestPath:  "/escape-dir/",
+			requestPaths: []string{"/escape-dir/"},
 			wantLeakText: "outside directory index",
 			setup: func(t *testing.T, outputPath string, outsideRoot string) {
 				t.Helper()
@@ -347,6 +363,27 @@ func TestServerRejectsSymlinkedPathsEscapingOutputRoot(t *testing.T) {
 				linkPath := filepath.Join(outputPath, "escape-dir")
 				if err := os.Symlink(targetDir, linkPath); err != nil {
 					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetDir, linkPath, err)
+				}
+			},
+		},
+		{
+			name:         "index file symlink",
+			requestPaths: []string{"/escape-index/", "/escape-index/index.html"},
+			wantLeakText: "outside index file",
+			setup: func(t *testing.T, outputPath string, outsideRoot string) {
+				t.Helper()
+
+				targetPath := filepath.Join(outsideRoot, "index.html")
+				if err := os.WriteFile(targetPath, []byte("outside index file"), 0o644); err != nil {
+					t.Fatalf("os.WriteFile(%q) error = %v", targetPath, err)
+				}
+				indexDir := filepath.Join(outputPath, "escape-index")
+				if err := os.MkdirAll(indexDir, 0o755); err != nil {
+					t.Fatalf("os.MkdirAll(%q) error = %v", indexDir, err)
+				}
+				linkPath := filepath.Join(indexDir, "index.html")
+				if err := os.Symlink(targetPath, linkPath); err != nil {
+					t.Skipf("os.Symlink(%q, %q) unsupported: %v", targetPath, linkPath, err)
 				}
 			},
 		},
@@ -367,18 +404,22 @@ func TestServerRejectsSymlinkedPathsEscapingOutputRoot(t *testing.T) {
 			ts := httptest.NewServer(srv)
 			t.Cleanup(ts.Close)
 
-			resp, err := ts.Client().Get(ts.URL + tt.requestPath)
-			if err != nil {
-				t.Fatalf("GET %s error = %v", tt.requestPath, err)
-			}
-			defer closeServerResponseBody(t, resp)
+			for _, requestPath := range tt.requestPaths {
+				resp, err := ts.Client().Get(ts.URL + requestPath)
+				if err != nil {
+					t.Fatalf("GET %s error = %v", requestPath, err)
+				}
 
-			if resp.StatusCode != http.StatusNotFound {
-				t.Fatalf("GET %s status = %d, want %d", tt.requestPath, resp.StatusCode, http.StatusNotFound)
-			}
+				if resp.StatusCode != http.StatusNotFound {
+					_ = resp.Body.Close()
+					t.Fatalf("GET %s status = %d, want %d", requestPath, resp.StatusCode, http.StatusNotFound)
+				}
 
-			if body := readServerResponseBody(t, resp); strings.Contains(body, tt.wantLeakText) {
-				t.Fatalf("GET %s body = %q, do not want leaked target content", tt.requestPath, body)
+				body := readServerResponseBody(t, resp)
+				closeServerResponseBody(t, resp)
+				if strings.Contains(body, tt.wantLeakText) {
+					t.Fatalf("GET %s body = %q, do not want leaked target content", requestPath, body)
+				}
 			}
 		})
 	}
@@ -493,8 +534,8 @@ func TestServerNestedMissingPathResolvesPopoverPayloadFromInjectedBase(t *testin
 	popoverRoot := mustMatchServerTestAttribute(t, body, `<aside[^>]*data-popover-root="([^"]+)"`)
 	notePath := mustMatchServerTestAttribute(t, body, `<a[^>]*data-popover-path="([^"]+)"`)
 
-	if got := resolveServerPreviewHref(t, "/missing/path", baseHref, popoverRoot+notePath+".json"); got != "/_popover/alpha.json" {
-		t.Fatalf("popover payload path = %q, want %q", got, "/_popover/alpha.json")
+	if got := resolveServerPreviewHref(t, "/missing/path", baseHref, popoverRoot+notePath+"/index.json"); got != "/_popover/alpha/index.json" {
+		t.Fatalf("popover payload path = %q, want %q", got, "/_popover/alpha/index.json")
 	}
 }
 
@@ -527,6 +568,16 @@ func TestInjectPreviewBaseHrefReplacesOnlyActualBaseElement(t *testing.T) {
 	}
 	if strings.Contains(got, `<base href="/blog/">`) {
 		t.Fatalf("injectPreviewBaseHref() kept original base tag instead of rewriting it\n%s", got)
+	}
+}
+
+func TestInjectPreviewBaseHrefEscapesDecodedBasePath(t *testing.T) {
+	t.Parallel()
+
+	body := []byte(`<html><head></head><body>missing</body></html>`)
+	got := string(injectPreviewBaseHrefAt(body, "/a&copy;/"))
+	if !strings.Contains(got, `<base href="/a&amp;copy;/">`) {
+		t.Fatalf("injectPreviewBaseHrefAt() = %q, want escaped literal base path", got)
 	}
 }
 
@@ -1127,6 +1178,36 @@ func TestServerServesGeneratedBasePath(t *testing.T) {
 	t.Cleanup(ts.Close)
 
 	for _, target := range []string{"/docs/", "/docs/style.css"} {
+		resp, err := ts.Client().Get(ts.URL + target)
+		if err != nil {
+			t.Fatalf("GET %s error = %v", target, err)
+		}
+		if resp.StatusCode != http.StatusOK {
+			closeServerResponseBody(t, resp)
+			t.Fatalf("GET %s status = %d, want 200", target, resp.StatusCode)
+		}
+		closeServerResponseBody(t, resp)
+	}
+}
+
+func TestServerServesHTMLEntityDecodedBasePath(t *testing.T) {
+	t.Parallel()
+
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "index.html", `<html data-obsite-base-path="/a&amp;b/"><body>home</body></html>`)
+	writeServerTestFile(t, outputPath, "style.css", "body{}")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if got := srv.currentBasePath(); got != "/a&b/" {
+		t.Fatalf("currentBasePath() = %q, want %q", got, "/a&b/")
+	}
+
+	ts := httptest.NewServer(srv)
+	t.Cleanup(ts.Close)
+	for _, target := range []string{"/a&b/", "/a&b/style.css"} {
 		resp, err := ts.Client().Get(ts.URL + target)
 		if err != nil {
 			t.Fatalf("GET %s error = %v", target, err)

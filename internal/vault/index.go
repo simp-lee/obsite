@@ -12,7 +12,6 @@ import (
 	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown"
-	"github.com/simp-lee/obsite/internal/markdown/comment"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
@@ -249,7 +248,7 @@ func buildIndexedNoteResult(
 		defer options.onNoteDone(note)
 	}
 
-	note.RawContent = cloneBytes(comment.Strip(note.RawContent))
+	note.RawContent = cloneBytes(note.RawContent)
 	note.HTMLContent = ""
 	note.Summary = ""
 	note.Headings = nil
@@ -364,7 +363,8 @@ func extractNoteMetadata(
 		case *gast.Link:
 			if ref := extractStandardLinkRef(current, source, lineStarts, lineOffset); ref.RawTarget != "" || ref.Fragment != "" {
 				note.OutLinks = append(note.OutLinks, ref)
-				resource := resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, ref.RawTarget, scanResult.LookupResourcePath)
+				resourceTarget := markdown.NormalizeDestination(ref.RawTarget)
+				resource := resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, resourceTarget, scanResult.LookupResourcePath)
 				if resource.Path != "" && resourceVersionAllowed(note, resourceVersions, resource.Path) {
 					registerAsset(assets, resource.Path)
 				}
@@ -388,7 +388,7 @@ func extractNoteMetadata(
 			imageRef := extractImageRef(current, lineStarts, lineOffset)
 			note.ImageRefs = append(note.ImageRefs, imageRef)
 			rawDestination := imageRef.RawTarget
-			lookup := lookupImageAssetPath(note, scanResult, rawDestination)
+			lookup := lookupImageAssetPath(note, scanResult, markdown.NormalizeDestination(rawDestination))
 			if lookup.Path != "" && resourceVersionAllowed(note, resourceVersions, lookup.Path) {
 				registerAsset(assets, lookup.Path)
 			} else if len(lookup.Ambiguous) > 0 {
@@ -429,13 +429,13 @@ func extractStandardLinkRef(node *gast.Link, source []byte, lineStarts []int, li
 	if node == nil {
 		return model.LinkRef{}
 	}
-	target := strings.TrimSpace(string(node.Destination))
+	rawTarget := strings.TrimSpace(string(node.Destination))
 	fragment := ""
-	if before, after, ok := strings.Cut(target, "#"); ok {
-		target, fragment = before, after
+	if _, after, ok := strings.Cut(markdown.NormalizeDestination(rawTarget), "#"); ok {
+		fragment = strings.TrimSpace(after)
 	}
 	offset, _ := nodeStartOffset(node)
-	return model.LinkRef{RawTarget: composeRawTarget(target, fragment), Display: normalizeInlineText(wikilinkNodeText(source, node)), Fragment: strings.TrimSpace(fragment), Standard: true, Line: lineNumberForNode(node, lineStarts, lineOffset), Offset: offset}
+	return model.LinkRef{RawTarget: rawTarget, Display: normalizeInlineText(wikilinkNodeText(source, node)), Fragment: fragment, Standard: true, Line: lineNumberForNode(node, lineStarts, lineOffset), Offset: offset}
 }
 
 func extractImageRef(node *gast.Image, lineStarts []int, lineOffset int) model.ImageRef {
@@ -645,7 +645,7 @@ func recordUnresolvedMarkdownImage(
 	lineStarts []int,
 	lineOffset int,
 ) {
-	if diagCollector == nil || note == nil || !resourcepath.IsLocalTarget(rawTarget) {
+	if diagCollector == nil || note == nil || !resourcepath.IsLocalTarget(markdown.NormalizeDestination(rawTarget)) {
 		return
 	}
 

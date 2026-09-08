@@ -17,6 +17,7 @@ type AssetCollector struct {
 	mu                 sync.Mutex
 	vaultRoot          string
 	assets             map[string]*model.Asset
+	registeredByGroup  map[string][]string
 	planned            map[string]string
 	reservedOutputKeys map[string]struct{}
 	seededByGroup      map[string][]string
@@ -36,6 +37,7 @@ func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.A
 	collector := &AssetCollector{
 		vaultRoot:          vaultRoot,
 		assets:             make(map[string]*model.Asset),
+		registeredByGroup:  make(map[string][]string),
 		planned:            make(map[string]string),
 		reservedOutputKeys: normalizeReservedOutputKeys(reservedOutputPaths),
 		seededByGroup:      make(map[string][]string),
@@ -87,6 +89,10 @@ func (c *AssetCollector) Register(vaultRelPath string) string {
 	if asset == nil {
 		asset = &model.Asset{SrcPath: srcPath}
 		c.assets[srcPath] = asset
+		groupKey := plainAssetKey(srcPath)
+		if groupKey != "" {
+			c.registeredByGroup[groupKey] = append(c.registeredByGroup[groupKey], srcPath)
+		}
 	}
 	asset.RefCount++
 	if asset.DstPath != "" {
@@ -129,8 +135,9 @@ func (c *AssetCollector) PlanDestinations(assets map[string]*model.Asset) map[st
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	expanded := make(map[string]*model.Asset)
+	expanded := make(map[string]*model.Asset, len(assets))
 	requested := make(map[string]struct{}, len(assets))
+	requestedGroups := make(map[string]struct{})
 	for key, asset := range assets {
 		srcPath := normalizeAssetSource(key, asset)
 		if srcPath == "" {
@@ -138,20 +145,12 @@ func (c *AssetCollector) PlanDestinations(assets map[string]*model.Asset) map[st
 		}
 
 		requested[srcPath] = struct{}{}
-		for _, candidate := range c.groupSourcesLocked(plainAssetKey(srcPath), srcPath) {
-			existing := expanded[candidate]
-			if existing == nil {
-				existing = &model.Asset{SrcPath: candidate}
-				if dstPath := c.planned[candidate]; dstPath != "" {
-					existing.DstPath = dstPath
-				}
-				expanded[candidate] = existing
-			}
+		if groupKey := plainAssetKey(srcPath); groupKey != "" {
+			requestedGroups[groupKey] = struct{}{}
 		}
-
 		existing := expanded[srcPath]
 		if existing == nil {
-			existing = &model.Asset{SrcPath: srcPath}
+			existing = &model.Asset{SrcPath: srcPath, DstPath: c.planned[srcPath]}
 			expanded[srcPath] = existing
 		}
 		if asset != nil {
@@ -159,6 +158,14 @@ func (c *AssetCollector) PlanDestinations(assets map[string]*model.Asset) map[st
 			if dstPath := outputSitePath(asset.DstPath); dstPath != "" {
 				existing.DstPath = dstPath
 			}
+		}
+	}
+	for groupKey := range requestedGroups {
+		for _, candidate := range c.groupSourcesLocked(groupKey, "") {
+			if expanded[candidate] != nil {
+				continue
+			}
+			expanded[candidate] = &model.Asset{SrcPath: candidate, DstPath: c.planned[candidate]}
 		}
 	}
 	if len(expanded) == 0 {
@@ -249,17 +256,17 @@ func (c *AssetCollector) planGroupLocked(srcPath string) {
 }
 
 func (c *AssetCollector) groupSourcesLocked(groupKey string, srcPath string) []string {
+	registered := c.registeredByGroup[groupKey]
+	seeded := c.seededByGroup[groupKey]
 	inventory := c.inventoryByGroup[groupKey]
-	sources := make(map[string]struct{}, 1+len(c.assets)+len(c.seededByGroup[groupKey])+len(inventory))
+	sources := make(map[string]struct{}, 1+len(registered)+len(seeded)+len(inventory))
 	if srcPath != "" {
 		sources[srcPath] = struct{}{}
 	}
-	for candidate := range c.assets {
-		if plainAssetKey(candidate) == groupKey {
-			sources[candidate] = struct{}{}
-		}
+	for _, candidate := range registered {
+		sources[candidate] = struct{}{}
 	}
-	for _, candidate := range c.seededByGroup[groupKey] {
+	for _, candidate := range seeded {
 		sources[candidate] = struct{}{}
 	}
 	for _, candidate := range inventory {

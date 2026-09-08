@@ -187,6 +187,70 @@ func TestNewParserAssignsHeadingIDsFromVisibleText(t *testing.T) {
 	}
 }
 
+func TestNewParserHeadingTextMatchesRenderedAutolinksHiddenInlinesAndEscapes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		source      string
+		wantVisible string
+		wantID      string
+	}{
+		{
+			name:        "URL autolink",
+			source:      "# <https://example.test/path>\n",
+			wantVisible: "https://example.test/path",
+			wantID:      "https-example-test-path",
+		},
+		{
+			name:        "email autolink",
+			source:      "# <person@example.test>\n",
+			wantVisible: "person@example.test",
+			wantID:      "person-example-test",
+		},
+		{
+			name:        "custom inlines inside hidden HTML",
+			source:      "# Seen <span hidden>[[Target|Ghost]] #secret <https://hidden.test></span> End\n",
+			wantVisible: "Seen End",
+			wantID:      "seen-end",
+		},
+		{
+			name:        "escaped entity opener",
+			source:      "# \\&amp;\n",
+			wantVisible: "&amp;",
+			wantID:      "amp",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			md := NewParser(diag.NewCollector())
+			source := []byte(tt.source)
+			doc := md.Parser().Parse(text.NewReader(source))
+			headings := collectHeadings(t, doc)
+			if len(headings) != 1 {
+				t.Fatalf("heading count = %d, want 1", len(headings))
+			}
+			if got := VisibleHeadingText(headings[0], source); got != tt.wantVisible {
+				t.Fatalf("VisibleHeadingText() = %q, want %q", got, tt.wantVisible)
+			}
+			id, ok := headings[0].AttributeString("id")
+			if !ok {
+				t.Fatal("heading missing id attribute")
+			}
+			idBytes, ok := id.([]byte)
+			if !ok {
+				t.Fatalf("heading id type = %T, want []byte", id)
+			}
+			if got := string(idBytes); got != tt.wantID {
+				t.Fatalf("heading id = %q, want %q", got, tt.wantID)
+			}
+		})
+	}
+}
+
 func TestNewParserPass1HeadingIDsIgnoreInvisibleRawHTMLAndPreserveEntities(t *testing.T) {
 	t.Parallel()
 
@@ -404,12 +468,71 @@ func TestNewMarkdownRendersLeadingCalloutDisplayMathAndTracksHasMath(t *testing.
 	}
 }
 
-func TestStripCalloutQuoteMarkersPreservesFormulaGreaterThan(t *testing.T) {
+func TestStripQuoteContainerMarkersPreservesFormulaGreaterThan(t *testing.T) {
 	t.Parallel()
 
 	const source = "$$\n> >0\n> $$"
-	if got, want := stripCalloutQuoteMarkers(source), "$$\n>0\n$$"; got != want {
-		t.Fatalf("stripCalloutQuoteMarkers() = %q, want %q", got, want)
+	containers := []displayMathSourceContainer{{quote: true}}
+	if got, want := stripDisplayMathContainerMarkers(source, containers), "$$\n>0\n$$"; got != want {
+		t.Fatalf("stripDisplayMathContainerMarkers() = %q, want %q", got, want)
+	}
+}
+
+func TestNewMarkdownStripsContainerMarkersFromDisplayMath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		source   string
+		wantMath string
+	}{
+		{name: "blockquote", source: "> $$\n> x^2 > y\n> $$\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "nested callout", source: "> [!note] Outer\n> > [!tip] Inner\n> > $$\n> > x^2 > y\n> > $$\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "blockquote in nested list", source: "- outer\n  - > $$\n    > x^2 > y\n    > $$\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "list in blockquote", source: "> - $$\n>   x^2 > y\n>   $$\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "list in callout", source: "> [!note]\n> - $$\n>   x^2 > y\n>   $$\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "blockquote tab padding", source: "> $$\n>\tx\n> $$\n", wantMath: "$$\n  x\n$$"},
+		{name: "blockquote residual tab width", source: "> $$\n>  \tx\n> $$\n", wantMath: "$$\n  x\n$$"},
+		{name: "list tab padding", source: "- $$\n\tx\n\t$$\n", wantMath: "$$\n  x\n  $$"},
+		{name: "list residual tab width", source: "- $$\n  \tx\n  $$\n", wantMath: "$$\n  x\n$$"},
+		{name: "blockquote in footnote", source: "[^1]:\n    > $$\n    > x^2 > y\n    > $$\n\nref[^1]\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "blockquote in tab-indented footnote", source: "[^1]:\n\t> $$\n\t> x^2 > y\n\t> $$\n\nref[^1]\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "list and blockquote in footnote", source: "[^1]:\n    - > $$\n      > x^2 > y\n      > $$\n\nref[^1]\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "footnote in blockquote", source: "> [^1]:\n>     $$\n>     x^2 > y\n>     $$\n\nref[^1]\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "footnote in list", source: "- [^1]:\n      $$\n      x^2 > y\n      $$\n\nref[^1]\n", wantMath: "$$\nx^2 > y\n$$"},
+		{name: "lazy blockquote continuation", source: "> $$\n    >0\n> $$\n", wantMath: "$$\n    >0\n$$"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			note := &model.Note{Slug: "guide", RelPath: "notes/guide.md"}
+			md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+			var buf bytes.Buffer
+			if err := md.Convert([]byte(tt.source), &buf); err != nil {
+				t.Fatalf("Convert() error = %v", err)
+			}
+			if decoded := stdhtml.UnescapeString(buf.String()); !strings.Contains(decoded, tt.wantMath) {
+				t.Fatalf("decoded HTML = %q, want math source %q", decoded, tt.wantMath)
+			}
+		})
+	}
+}
+
+func TestNewMarkdownPreservesDistinctFootnoteMathContainers(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "current", RelPath: "current.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+	source := []byte("> [^1]:\n>     $$\n>     one\n>     $$\n\n- [^2]:\n      $$\n      two\n      $$\n\nrefs[^1][^2]\n")
+
+	var output bytes.Buffer
+	if err := md.Convert(source, &output); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	decoded := stdhtml.UnescapeString(output.String())
+	for _, formula := range []string{"$$\none\n$$", "$$\ntwo\n$$"} {
+		if !strings.Contains(decoded, formula) {
+			t.Fatalf("decoded HTML = %q, want formula %q with its own original source containers removed", decoded, formula)
+		}
 	}
 }
 
@@ -500,6 +623,134 @@ func TestNewMarkdownEscapesCodeSpanQuotesInImageAltAttributes(t *testing.T) {
 	}
 	if strings.Contains(html, `alt="code " onerror=`) {
 		t.Fatalf("HTML = %q, want quoted payload to remain inside escaped alt text", html)
+	}
+}
+
+func TestNewMarkdownResolvesEntitiesOnceInCustomLinkAndImageAttributes(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{Slug: "posts/guide", RelPath: "notes/guide.md"}
+	md, _ := NewMarkdown(nil, note, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("[x](https://example.test/?a=1&amp;b=2 \"Link &amp; Title\")\n\n[tab](https://example.test/a&Tab;b)\n\n![Alt &amp; \\&amp; \\*literal\\* `&amp;`](https://example.test/image.png?a=1&amp;b=2 \"Image &amp; Title\")\n\n![tab](https://example.test/a&Tab;b.png)\n\n![partial](partial%2G.png)\n\n![`foo\nbar`](multiline.png)\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	for _, want := range []string{
+		`href="https://example.test/?a=1&amp;b=2" title="Link &amp; Title"`,
+		`href="https://example.test/a%09b"`,
+		`src="https://example.test/image.png?a=1&amp;b=2" alt="Alt &amp; &amp;amp; *literal* &amp;amp;" title="Image &amp; Title"`,
+		`src="https://example.test/a%09b.png" alt="tab"`,
+		`src="partial%252G.png" alt="partial"`,
+		`src="multiline.png" alt="foo bar"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML = %q, want fragment %q", html, want)
+		}
+	}
+	if strings.Contains(html, "a=1&amp;amp;b=2") {
+		t.Fatalf("HTML = %q, want Markdown entities resolved before HTML escaping", html)
+	}
+}
+
+func TestNewMarkdownDecodesStandardLinkPathsOnce(t *testing.T) {
+	t.Parallel()
+
+	host := &model.Note{RelPath: "notes/host.md", Slug: "host", Route: "/host/"}
+	literalPercent := &model.Note{RelPath: "notes/percent%20name.md", Slug: "literal-percent", Route: "/literal-percent/"}
+	partialEscape := &model.Note{RelPath: "notes/percent%2Gname.md", Slug: "partial-escape", Route: "/partial-escape/"}
+	space := &model.Note{RelPath: "notes/percent name.md", Slug: "space", Route: "/space/"}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			host.RelPath:           host,
+			literalPercent.RelPath: literalPercent,
+			partialEscape.RelPath:  partialEscape,
+			space.RelPath:          space,
+		},
+	}
+	md, _ := NewMarkdown(idx, host, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("[target](percent%2520name.md)\n\n[partial](percent%2Gname.md)\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	html := buf.String()
+	for _, want := range []string{`<a href="../literal-percent/">target</a>`, `<a href="../partial-escape/">partial</a>`} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML = %q, want resolved percent filename link %q", html, want)
+		}
+	}
+}
+
+func TestNewMarkdownResolvesEntityLinkWithoutChangingLedgerIdentity(t *testing.T) {
+	t.Parallel()
+
+	host := &model.Note{
+		RelPath:  "notes/host.md",
+		Slug:     "host",
+		Route:    "/host/",
+		OutLinks: []model.LinkRef{{RawTarget: "child&amp;.md", Standard: true, Line: 1}},
+	}
+	child := &model.Note{RelPath: "notes/child&.md", Slug: "child", Route: "/child/"}
+	idx := &model.VaultIndex{Notes: map[string]*model.Note{host.RelPath: host, child.RelPath: child}}
+	md, result := NewMarkdown(idx, host, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("[child](child&amp;.md)\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+	if html := buf.String(); !strings.Contains(html, `<a href="../child/">child</a>`) {
+		t.Fatalf("HTML = %q, want resolved entity link", html)
+	}
+	links := result.OutLinks()
+	if len(links) != 1 || links[0].ResolvedRelPath != child.RelPath {
+		t.Fatalf("result.OutLinks() = %#v, want resolved child ledger entry", links)
+	}
+}
+
+func TestNewMarkdownDecodesStandardAttachmentPathsOnce(t *testing.T) {
+	t.Parallel()
+
+	host := &model.Note{RelPath: "notes/host.md", Slug: "host", Route: "/host/"}
+	idx := &model.VaultIndex{}
+	idx.SetResources([]string{
+		"notes/diagram#v1.pdf",
+		"notes/file%20name.pdf",
+		"notes/file name.pdf",
+		"notes/manual.pdf",
+		"notes/partial%2G.pdf",
+	})
+	sink := &recordingAssetSink{paths: map[string]string{
+		"notes/diagram#v1.pdf":  "assets/diagram.pdf",
+		"notes/file%20name.pdf": "assets/literal-percent.pdf",
+		"notes/manual.pdf":      "assets/manual.pdf",
+		"notes/partial%2G.pdf":  "assets/partial.pdf",
+	}}
+	md, _ := NewMarkdown(idx, host, sink, diag.NewCollector())
+
+	var buf bytes.Buffer
+	source := []byte("[diagram](diagram%23v1.pdf)\n\n[file](file%2520name.pdf)\n\n[fragment](manual.pdf#section%2520name)\n\n[partial](partial%2G.pdf)\n")
+	if err := md.Convert(source, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	for _, want := range []string{
+		`<a href="../assets/diagram.pdf">diagram</a>`,
+		`<a href="../assets/literal-percent.pdf">file</a>`,
+		`<a href="../assets/manual.pdf#section%2520name">fragment</a>`,
+		`<a href="../assets/partial.pdf">partial</a>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("HTML = %q, want fragment %q", html, want)
+		}
+	}
+	wantRegistered := []string{"notes/diagram#v1.pdf", "notes/file%20name.pdf", "notes/manual.pdf", "notes/partial%2G.pdf"}
+	if !reflect.DeepEqual(sink.registered, wantRegistered) {
+		t.Fatalf("registered = %#v, want %#v", sink.registered, wantRegistered)
 	}
 }
 
@@ -1657,7 +1908,7 @@ func TestNewMarkdownRendersNoteEmbeds(t *testing.T) {
 	target := &model.Note{
 		Slug:       "guides/guide",
 		RelPath:    "guides/guide.md",
-		RawContent: []byte("# Embedded Title\n\nBody paragraph.\n"),
+		RawContent: []byte("Child paragraph.\n"),
 	}
 	idx := &model.VaultIndex{
 		Notes: map[string]*model.Note{
@@ -1683,11 +1934,12 @@ func TestNewMarkdownRendersNoteEmbeds(t *testing.T) {
 	}
 
 	html := buf.String()
-	if !strings.Contains(html, `<h1 id="embed-1-embedded-title">Embedded Title</h1>`) {
-		t.Fatalf("HTML = %q, want embedded note heading rendered inline", html)
+	wantHTML := "<p>Child paragraph.</p>\n"
+	if html != wantHTML {
+		t.Fatalf("HTML = %q, want complete block structure %q", html, wantHTML)
 	}
-	if !strings.Contains(html, `<p>Body paragraph.</p>`) {
-		t.Fatalf("HTML = %q, want embedded note paragraph rendered inline", html)
+	if strings.Contains(html, "<p><p>") {
+		t.Fatalf("HTML = %q, want no nested paragraph around note embed", html)
 	}
 	if got := collector.Diagnostics(); len(got) != 0 {
 		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
@@ -1701,6 +1953,114 @@ func TestNewMarkdownRendersNoteEmbeds(t *testing.T) {
 	}
 	if gotOutLinks[0].ResolvedRelPath != target.RelPath {
 		t.Fatalf("renderResult.OutLinks()[0].ResolvedRelPath = %q, want %q", gotOutLinks[0].ResolvedRelPath, target.RelPath)
+	}
+
+	listMarkdown, _ := NewMarkdown(idx, current, nil, diag.NewCollector())
+	var listOutput bytes.Buffer
+	if err := listMarkdown.Convert([]byte("- Intro\n\n  ![[Guide]]\n"), &listOutput); err != nil {
+		t.Fatalf("Convert(loose list) error = %v", err)
+	}
+	listHTML := listOutput.String()
+	if !strings.Contains(listHTML, "<li>\n<p>Intro</p>\n<p>Child paragraph.</p>\n</li>") {
+		t.Fatalf("loose-list HTML = %q, want neighboring paragraph wrappers preserved", listHTML)
+	}
+
+	calloutMarkdown, _ := NewMarkdown(idx, current, nil, diag.NewCollector())
+	var calloutOutput bytes.Buffer
+	calloutSource := []byte("> [!note]\n> ![[Guide]]\n> Tail paragraph.\n>\n> ![[Guide]]\n> Final paragraph.\n")
+	if err := calloutMarkdown.Convert(calloutSource, &calloutOutput); err != nil {
+		t.Fatalf("Convert(callout) error = %v", err)
+	}
+	calloutHTML := calloutOutput.String()
+	if !strings.Contains(calloutHTML, "<div class=\"callout-title\">Note</div>\n<p>Child paragraph.</p>") || !strings.Contains(calloutHTML, "<p>Tail paragraph.</p>") || !strings.Contains(calloutHTML, "<p>Final paragraph.</p>") || strings.Contains(calloutHTML, "<p><p>") {
+		t.Fatalf("callout HTML = %q, want sibling block-level note embeds and adjacent paragraphs without nested paragraphs", calloutHTML)
+	}
+	if count := strings.Count(calloutHTML, "<p>Child paragraph.</p>"); count != 2 {
+		t.Fatalf("callout embedded paragraph count = %d, want 2: %s", count, calloutHTML)
+	}
+
+	mathMarkdown, _ := NewMarkdown(idx, current, nil, diag.NewCollector())
+	var mathOutput bytes.Buffer
+	mathSource := []byte("$$\nx^2\n$$\n![[Guide]]\n")
+	if err := mathMarkdown.Convert(mathSource, &mathOutput); err != nil {
+		t.Fatalf("Convert(display math adjacency) error = %v", err)
+	}
+	mathHTML := mathOutput.String()
+	if !strings.Contains(mathHTML, `data-obsite-math-source="display"`) || !strings.Contains(mathHTML, "<p>Child paragraph.</p>") || strings.Contains(mathHTML, "<p>\n</p>") || strings.Contains(mathHTML, "<p><p>") {
+		t.Fatalf("display-math adjacency HTML = %q, want sibling display math and block-level note embed", mathHTML)
+	}
+
+	inlineMarkdown, _ := NewMarkdown(idx, current, nil, diag.NewCollector())
+	var inlineOutput bytes.Buffer
+	if err := inlineMarkdown.Convert([]byte("Before ![[Guide]] after.\n"), &inlineOutput); err != nil {
+		t.Fatalf("Convert(inline note embed) error = %v", err)
+	}
+	inlineHTML := inlineOutput.String()
+	for _, want := range []string{"<p>Before </p>", "<p>Child paragraph.</p>", "<p> after.</p>"} {
+		if !strings.Contains(inlineHTML, want) {
+			t.Fatalf("inline note embed HTML = %q, want sibling block %q", inlineHTML, want)
+		}
+	}
+	if strings.Contains(inlineHTML, "<p><p>") {
+		t.Fatalf("inline note embed HTML = %q, want no nested paragraphs", inlineHTML)
+	}
+
+	nestedMarkdown, _ := NewMarkdown(idx, current, nil, diag.NewCollector())
+	var nestedOutput bytes.Buffer
+	if err := nestedMarkdown.Convert([]byte("*Before ![[Guide]] after.*\n"), &nestedOutput); err != nil {
+		t.Fatalf("Convert(nested inline note embed) error = %v", err)
+	}
+	if nestedHTML := nestedOutput.String(); !strings.Contains(nestedHTML, "<em>Before Guide after.</em>") || strings.Contains(nestedHTML, "<em><p>") {
+		t.Fatalf("nested inline note embed HTML = %q, want inline-safe fallback", nestedHTML)
+	}
+}
+
+func TestNewMarkdownNamespacesEmbeddedFootnoteIDs(t *testing.T) {
+	t.Parallel()
+
+	host := &model.Note{
+		Slug:       "notes/host",
+		RelPath:    "notes/host.md",
+		RawContent: []byte("Host footnote.[^1]\n\n![[Guide]]\n\n[^1]: Host body.\n"),
+		Embeds:     []model.EmbedRef{{Target: "Guide", Line: 3}},
+	}
+	guide := &model.Note{
+		Slug:       "guides/guide",
+		RelPath:    "guides/guide.md",
+		RawContent: []byte("Embedded footnote.[^1]\n\n[^1]: Embedded body.\n"),
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			host.RelPath:  host,
+			guide.RelPath: guide,
+		},
+		NoteBySlug: map[string]*model.Note{
+			host.Slug:  host,
+			guide.Slug: guide,
+		},
+		NoteByName: map[string][]*model.Note{
+			"host":  {host},
+			"guide": {guide},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	md, _ := NewMarkdown(idx, host, nil, diag.NewCollector())
+
+	var buf bytes.Buffer
+	if err := md.Convert(host.RawContent, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	for _, id := range []string{"fnref:1", "fn:1", "embed-1-fnref:1", "embed-1-fn:1"} {
+		if count := strings.Count(html, `id="`+id+`"`); count != 1 {
+			t.Fatalf("HTML id %q count = %d, want 1: %s", id, count, html)
+		}
+	}
+	for _, target := range []string{"fn:1", "fnref:1", "embed-1-fn:1", "embed-1-fnref:1"} {
+		if count := strings.Count(html, `href="#`+target+`"`); count != 1 {
+			t.Fatalf("HTML href target %q count = %d, want 1: %s", target, count, html)
+		}
 	}
 }
 
@@ -2070,6 +2430,24 @@ func TestNewMarkdownAllowsSameNoteSectionEmbeds(t *testing.T) {
 	}
 	if got := collector.Diagnostics(); len(got) != 0 {
 		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+}
+
+func TestRewriteEmbeddedOutLinksPreservesEmptySelfFragmentTarget(t *testing.T) {
+	t.Parallel()
+
+	source := &model.Note{RelPath: "notes/child.md"}
+	output := &model.Note{RelPath: "notes/host.md"}
+	links := []model.LinkRef{
+		{RawTarget: "child.md#", ResolvedRelPath: source.RelPath, Standard: true},
+		{RawTarget: "child.md#%20", Fragment: "%20", ResolvedRelPath: source.RelPath, Standard: true},
+	}
+
+	rewritten := rewriteEmbeddedOutLinks(source, output, links)
+	for index, link := range rewritten {
+		if link.ResolvedRelPath != source.RelPath {
+			t.Fatalf("rewritten[%d].ResolvedRelPath = %q, want empty-fragment target %q preserved", index, link.ResolvedRelPath, source.RelPath)
+		}
 	}
 }
 

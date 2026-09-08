@@ -59,23 +59,20 @@ func (m *hmmModel) viterbi(observations []rune) []byte {
 	}
 
 	states := [...]byte{'B', 'M', 'E', 'S'}
-	probabilities := make([]map[byte]float64, len(observations))
-	probabilities[0] = make(map[byte]float64, len(states))
-	paths := make(map[byte][]byte, len(states))
-	for _, state := range states {
-		probabilities[0][state] = m.emission(state, observations[0]) + hmmStartProbability(state)
-		paths[state] = []byte{state}
+	var probabilities [len(states)]float64
+	for stateIndex, state := range states {
+		probabilities[stateIndex] = m.emission(state, observations[0]) + hmmStartProbability(state)
 	}
 
+	predecessors := make([][len(states)]byte, len(observations))
 	for index := 1; index < len(observations); index++ {
-		probabilities[index] = make(map[byte]float64, len(states))
-		nextPaths := make(map[byte][]byte, len(states))
-		for _, state := range states {
+		var nextProbabilities [len(states)]float64
+		for stateIndex, state := range states {
 			bestProbability := 0.0
 			var bestPrevious byte
 			found := false
 			for _, previous := range hmmPreviousStates(state) {
-				candidate := probabilities[index-1][previous] + hmmTransitionProbability(previous, state) + m.emission(state, observations[index])
+				candidate := probabilities[hmmStateIndex(previous)] + hmmTransitionProbability(previous, state) + m.emission(state, observations[index])
 				if !found || candidate > bestProbability || (candidate == bestProbability && previous > bestPrevious) {
 					bestProbability = candidate
 					bestPrevious = previous
@@ -83,20 +80,38 @@ func (m *hmmModel) viterbi(observations []rune) []byte {
 				}
 			}
 
-			probabilities[index][state] = bestProbability
-			path := make([]byte, len(paths[bestPrevious]), len(paths[bestPrevious])+1)
-			copy(path, paths[bestPrevious])
-			nextPaths[state] = append(path, state)
+			nextProbabilities[stateIndex] = bestProbability
+			predecessors[index][stateIndex] = bestPrevious
 		}
-		paths = nextPaths
+		probabilities = nextProbabilities
 	}
 
-	last := len(observations) - 1
 	endState := byte('E')
-	if probabilities[last]['S'] >= probabilities[last]['E'] {
+	if probabilities[hmmStateIndex('S')] >= probabilities[hmmStateIndex('E')] {
 		endState = 'S'
 	}
-	return paths[endState]
+	path := make([]byte, len(observations))
+	for index := len(path) - 1; index > 0; index-- {
+		path[index] = endState
+		endState = predecessors[index][hmmStateIndex(endState)]
+	}
+	path[0] = endState
+	return path
+}
+
+func hmmStateIndex(state byte) byte {
+	switch state {
+	case 'B':
+		return 0
+	case 'M':
+		return 1
+	case 'E':
+		return 2
+	case 'S':
+		return 3
+	default:
+		return 0
+	}
 }
 
 func (m *hmmModel) emission(state byte, observation rune) float64 {

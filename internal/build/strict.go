@@ -102,6 +102,10 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	}
 	applyStrictPlannedDestinations(assets, assetCollector.PlanDestinations(assets))
 	applyStrictAssetURLs(plan, assets)
+	lookupDigests, err := strictCacheLookupDigests(planned.Index)
+	if err != nil {
+		return result, err
+	}
 	if plan.Config.Sidebar.Enabled {
 		payload := strictSidebarPayload{Default: strictSidebar(plan, ""), Versions: make(map[string][]model.SidebarNode)}
 		for _, version := range plan.Versions {
@@ -130,7 +134,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			return result, fmt.Errorf("render section %q: %w", section.RelPath, renderErr)
 		}
 		owner := "section:" + section.SourcePath
-		if dependencyErr := outputs.dependency(owner, section.SourcePath, strictCacheSectionPageInput(plan, section, planned.Index, pageAssets.destinations)); dependencyErr != nil {
+		if dependencyErr := outputs.dependency(owner, section.SourcePath, strictCacheSectionPageInput(plan, section, lookupDigests.forEmbeds(len(section.Embeds) > 0), pageAssets.destinations)); dependencyErr != nil {
 			return result, dependencyErr
 		}
 		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(section.Route), owner, data); writeErr != nil {
@@ -180,7 +184,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			return result, fmt.Errorf("render article %q: %w", article.RelPath, renderErr)
 		}
 		owner := "article:" + article.RelPath
-		if dependencyErr := outputs.dependency(owner, article.RelPath, strictCacheArticlePageInput(plan, article, section, previous, next, position, total, backlinks, related, planned.Index, pageAssets.destinations)); dependencyErr != nil {
+		if dependencyErr := outputs.dependency(owner, article.RelPath, strictCacheArticlePageInput(plan, article, section, previous, next, position, total, backlinks, related, lookupDigests.forEmbeds(len(article.Embeds) > 0), pageAssets.destinations)); dependencyErr != nil {
 			return result, dependencyErr
 		}
 		if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(article.Route), owner, data); writeErr != nil {
@@ -409,6 +413,18 @@ type strictCacheLookupEntry struct {
 	Content   []byte            `json:"content,omitempty"`
 }
 
+type strictCacheLookupDigest struct {
+	base     string
+	embedded string
+}
+
+func (digest strictCacheLookupDigest) forEmbeds(includeContent bool) string {
+	if includeContent {
+		return digest.embedded
+	}
+	return digest.base
+}
+
 type strictCacheSectionInput struct {
 	RelPath       string                 `json:"relPath"`
 	SourcePath    string                 `json:"sourcePath"`
@@ -462,7 +478,7 @@ type strictCacheHTMLInput struct {
 	Backlinks      []strictCachePageEntry    `json:"backlinks,omitempty"`
 	Related        []strictCachePageEntry    `json:"related,omitempty"`
 	MarkdownAssets map[string]string         `json:"markdownAssets,omitempty"`
-	Lookup         []strictCacheLookupEntry  `json:"lookup,omitempty"`
+	LookupDigest   string                    `json:"lookupDigest,omitempty"`
 }
 
 func strictCacheHTMLBase(plan *model.SitePlan, route, title, description, sourcePath, versionID string) strictCacheHTMLInput {
@@ -530,47 +546,65 @@ func strictCacheNoteEntry(note *model.Note) *strictCachePageEntry {
 	return &strictCachePageEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID}
 }
 
-func strictCacheLookup(index *model.VaultIndex, includeContent bool) []strictCacheLookupEntry {
-	if index == nil {
-		return nil
+// strictCacheLookupDigests hashes the shared lookup once per build. The base
+// digest excludes embed-only content so pages retain their existing dependency
+// granularity without copying and serializing the full lookup per page.
+func strictCacheLookupDigests(index *model.VaultIndex) (strictCacheLookupDigest, error) {
+	baseHash := sha256.New()
+	embeddedHash := sha256.New()
+	baseEncoder := json.NewEncoder(baseHash)
+	embeddedEncoder := json.NewEncoder(embeddedHash)
+	type digestEntry struct {
+		Kind  string                 `json:"kind"`
+		Entry strictCacheLookupEntry `json:"entry"`
 	}
-	paths := make([]string, 0, len(index.Notes))
-	for relPath := range index.Notes {
-		paths = append(paths, relPath)
-	}
-	sort.Strings(paths)
-	entries := make([]strictCacheLookupEntry, 0, len(paths)+len(index.Sections))
-	for _, relPath := range paths {
-		note := index.Notes[relPath]
-		if note == nil {
-			continue
+	encode := func(kind string, base, embedded strictCacheLookupEntry) error {
+		if err := baseEncoder.Encode(digestEntry{Kind: kind, Entry: base}); err != nil {
+			return err
 		}
-		entry := strictCacheLookupEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID, Aliases: append([]string(nil), note.Aliases...), Headings: append([]model.Heading(nil), note.Headings...)}
-		if includeContent {
-			entry.Metadata = note.Frontmatter
-			entry.Content = append([]byte(nil), note.RawContent...)
+		return embeddedEncoder.Encode(digestEntry{Kind: kind, Entry: embedded})
+	}
+	if index != nil {
+		paths := make([]string, 0, len(index.Notes))
+		for relPath := range index.Notes {
+			paths = append(paths, relPath)
 		}
-		entries = append(entries, entry)
-	}
-	sectionPaths := make([]string, 0, len(index.Sections))
-	for relPath := range index.Sections {
-		sectionPaths = append(sectionPaths, relPath)
-	}
-	sort.Strings(sectionPaths)
-	for _, relPath := range sectionPaths {
-		section := index.Sections[relPath]
-		if section != nil {
-			entry := strictCacheLookupEntry{RelPath: section.SourcePath, Route: section.Route, Title: section.Title, VersionID: section.VersionID, Headings: append([]model.Heading(nil), section.Headings...)}
-			if includeContent {
-				entry.Content = append([]byte(nil), section.RawContent...)
+		sort.Strings(paths)
+		for _, relPath := range paths {
+			note := index.Notes[relPath]
+			if note == nil {
+				continue
 			}
-			entries = append(entries, entry)
+			base := strictCacheLookupEntry{RelPath: note.RelPath, Route: note.Route, Title: note.Frontmatter.Title, VersionID: note.VersionID, Aliases: note.Aliases, Headings: note.Headings}
+			embedded := base
+			embedded.Metadata = note.Frontmatter
+			embedded.Content = note.RawContent
+			if err := encode("note", base, embedded); err != nil {
+				return strictCacheLookupDigest{}, fmt.Errorf("hash cache note lookup %q: %w", relPath, err)
+			}
+		}
+		sectionPaths := make([]string, 0, len(index.Sections))
+		for relPath := range index.Sections {
+			sectionPaths = append(sectionPaths, relPath)
+		}
+		sort.Strings(sectionPaths)
+		for _, relPath := range sectionPaths {
+			section := index.Sections[relPath]
+			if section == nil {
+				continue
+			}
+			base := strictCacheLookupEntry{RelPath: section.SourcePath, Route: section.Route, Title: section.Title, VersionID: section.VersionID, Headings: section.Headings}
+			embedded := base
+			embedded.Content = section.RawContent
+			if err := encode("section", base, embedded); err != nil {
+				return strictCacheLookupDigest{}, fmt.Errorf("hash cache section lookup %q: %w", relPath, err)
+			}
 		}
 	}
-	return entries
+	return strictCacheLookupDigest{base: fmt.Sprintf("%x", baseHash.Sum(nil)), embedded: fmt.Sprintf("%x", embeddedHash.Sum(nil))}, nil
 }
 
-func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, index *model.VaultIndex, markdownAssets map[string]string) strictCacheHTMLInput {
+func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
 	input := strictCacheHTMLBase(plan, section.Route, section.Title, section.Description, section.SourcePath, section.VersionID)
 	input.Section = &strictCacheSectionInput{
 		RelPath: section.RelPath, SourcePath: section.SourcePath, Route: section.Route,
@@ -581,11 +615,11 @@ func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, i
 		VersionRoutes: section.VersionRoutes, Breadcrumbs: section.Breadcrumbs,
 	}
 	input.MarkdownAssets = markdownAssets
-	input.Lookup = strictCacheLookup(index, len(section.Embeds) > 0)
+	input.LookupDigest = lookupDigest
 	return input
 }
 
-func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, section *model.Section, previous, next *model.Note, position, total int, backlinks, related []*model.Note, index *model.VaultIndex, markdownAssets map[string]string) strictCacheHTMLInput {
+func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, section *model.Section, previous, next *model.Note, position, total int, backlinks, related []*model.Note, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
 	input := strictCacheHTMLBase(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, article.RelPath, article.VersionID)
 	input.Article = &strictCacheArticleInput{
 		RelPath: article.RelPath, Route: article.Route, SectionPath: article.SectionPath,
@@ -608,7 +642,7 @@ func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, sect
 	input.Backlinks = strictCachePageEntries(backlinks)
 	input.Related = strictCachePageEntries(related)
 	input.MarkdownAssets = markdownAssets
-	input.Lookup = strictCacheLookup(index, len(article.Embeds) > 0)
+	input.LookupDigest = lookupDigest
 	return input
 }
 
@@ -627,48 +661,54 @@ func buildStrictRelations(planned *siteplan.Result, concurrency int) (*model.Lin
 	if planned == nil || planned.Plan == nil || planned.Index == nil {
 		return &model.LinkGraph{Forward: map[string][]string{}, Backward: map[string][]string{}}, related, nil
 	}
-	// Recommendations intentionally use only source-declared edges. Backlinks,
-	// however, describe visible page content and must include links contributed
-	// by embeds, so build that graph from the render-local pass-2 results.
+	if planned.Plan.Config.Related.Enabled {
+		// Recommendations intentionally use only source-declared edges and consume
+		// their semantic owner before the render-equivalent backlinks pass.
+		recommendationGraph := link.BuildSourceGraph(planned.Index)
+		groups := make(map[string][]model.RelatedSemanticDocument)
+		for index := range planned.RelatedSemantic {
+			semantic := planned.RelatedSemantic[index]
+			versionID := ""
+			if note := planned.Index.Notes[semantic.RelPath]; note != nil {
+				versionID = note.VersionID
+			}
+			groups[versionID] = append(groups[versionID], semantic)
+			planned.RelatedSemantic[index] = model.RelatedSemanticDocument{}
+		}
+		planned.RelatedSemantic = nil
+		groupKeys := make([]string, 0, len(groups))
+		for key := range groups {
+			groupKeys = append(groupKeys, key)
+		}
+		sort.Strings(groupKeys)
+		for _, key := range groupKeys {
+			semanticOwner := groups[key]
+			delete(groups, key)
+			engine, err := recommend.BuildEngineFromSemanticOwner(&semanticOwner, planned.Index, recommendationGraph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, concurrency))
+			if err != nil {
+				return nil, nil, fmt.Errorf("build related articles: %w", err)
+			}
+			for _, document := range engine.Documents {
+				items := make([]*model.Note, 0, len(document.Related))
+				for _, candidate := range document.Related {
+					if candidate.DocID < 0 || candidate.DocID >= len(engine.Documents) {
+						continue
+					}
+					target := planned.Index.Notes[engine.Documents[candidate.DocID].RelPath]
+					if target != nil {
+						items = append(items, target)
+					}
+				}
+				related[document.RelPath] = items
+			}
+		}
+	}
+
+	// Backlinks describe visible page content and therefore include links
+	// contributed by embeds from the render-local pass-2 results.
 	graph, err := buildStrictRenderGraph(planned.Index)
 	if err != nil {
 		return nil, nil, err
-	}
-	recommendationGraph := link.BuildSourceGraph(planned.Index)
-	if !planned.Plan.Config.Related.Enabled {
-		return graph, related, nil
-	}
-	groups := make(map[string][]model.RelatedSemanticDocument)
-	for _, semantic := range planned.RelatedSemantic {
-		versionID := ""
-		if note := planned.Index.Notes[semantic.RelPath]; note != nil {
-			versionID = note.VersionID
-		}
-		groups[versionID] = append(groups[versionID], semantic)
-	}
-	groupKeys := make([]string, 0, len(groups))
-	for key := range groups {
-		groupKeys = append(groupKeys, key)
-	}
-	sort.Strings(groupKeys)
-	for _, key := range groupKeys {
-		engine, err := recommend.BuildEngine(groups[key], planned.Index, recommendationGraph, recommend.ProductionEngineParameters(planned.Plan.Config.Related.Count, concurrency))
-		if err != nil {
-			return nil, nil, fmt.Errorf("build related articles: %w", err)
-		}
-		for _, document := range engine.Documents {
-			items := make([]*model.Note, 0, len(document.Related))
-			for _, candidate := range document.Related {
-				if candidate.DocID < 0 || candidate.DocID >= len(engine.Documents) {
-					continue
-				}
-				target := planned.Index.Notes[engine.Documents[candidate.DocID].RelPath]
-				if target != nil {
-					items = append(items, target)
-				}
-			}
-			related[document.RelPath] = items
-		}
 	}
 	return graph, related, nil
 }
@@ -741,7 +781,7 @@ func writeStrictPopoverPayloads(outputRoot string, index *model.VaultIndex, outp
 		}{note.Frontmatter, note.Tags}); err != nil {
 			return err
 		}
-		if err := outputs.write(outputRoot, path.Join("_popover", slug.EncodePath(relPath)+".json"), "popover:"+relPath, data); err != nil {
+		if err := outputs.write(outputRoot, path.Join("_popover", slug.EncodeSourcePath(relPath), "index.json"), "popover:"+relPath, data); err != nil {
 			return err
 		}
 	}

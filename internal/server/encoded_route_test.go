@@ -10,7 +10,7 @@ import (
 
 func TestServerServesPercentEncodedGeneratedRoute(t *testing.T) {
 	output := t.TempDir()
-	page := filepath.Join(output, "Start%20Here", "index.html")
+	page := filepath.Join(output, "Start Here", "index.html")
 	if err := os.MkdirAll(filepath.Dir(page), 0o755); err != nil {
 		t.Fatal(err)
 	}

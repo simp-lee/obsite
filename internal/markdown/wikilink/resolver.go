@@ -76,7 +76,7 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 	}
 
 	rawTarget := composeRawTarget(string(node.Target), string(node.Fragment))
-	sourceRef := r.consumeOutLink(node.Embed, rawTarget)
+	sourceRef := r.consumeOutLink(node.Embed, rawTarget, false)
 
 	target := strings.TrimSpace(string(node.Target))
 	fragment := strings.TrimSpace(string(node.Fragment))
@@ -180,9 +180,6 @@ func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string,
 	resolver := &VaultResolver{Index: idx, CurrentNote: current}
 	target = strings.TrimSpace(target)
 	fragment = strings.TrimSpace(fragment)
-	if decoded, err := url.PathUnescape(target); err == nil {
-		target = decoded
-	}
 	if note := resolver.exactPublicPathMatch(target); note != nil && inVersionScope(current, note) {
 		return finalizeLookup(resolutionResult{note: note}, fragment)
 	}
@@ -748,14 +745,20 @@ func lookupCanvasResource(idx *model.VaultIndex, current *model.Note, target str
 	return idx.LookupResourceBaseName(normalized)
 }
 
-func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string) *model.LinkRef {
+// MarkStandardLinkResolved records a successfully resolved ordinary Markdown
+// link on this resolver's render-local link ledger.
+func (r *VaultResolver) MarkStandardLinkResolved(rawTarget string, note *model.Note) {
+	r.markResolved(r.consumeOutLink(false, rawTarget, true), note)
+}
+
+func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string, standard bool) *model.LinkRef {
 	if r == nil || embed || r.CurrentNote == nil {
 		return nil
 	}
 
 	normalized := strings.TrimSpace(rawTarget)
 	for i := r.nextOutLink; i < len(r.outLinks); i++ {
-		if !strings.EqualFold(strings.TrimSpace(r.outLinks[i].RawTarget), normalized) {
+		if r.outLinks[i].Standard != standard || !strings.EqualFold(strings.TrimSpace(r.outLinks[i].RawTarget), normalized) {
 			continue
 		}
 		r.nextOutLink = i + 1

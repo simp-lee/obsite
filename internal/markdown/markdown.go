@@ -2,6 +2,7 @@ package markdown
 
 import (
 	"io"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -85,7 +86,7 @@ func NewParser(_ *diag.Collector) goldmark.Markdown {
 			goldmark.WithParserOptions(
 				newParserOptions(nil, "")...,
 			),
-			goldmark.WithExtensions(newCoreExtensions(noopWikilinkResolver{}, nil)...),
+			goldmark.WithExtensions(newCoreExtensions(noopWikilinkResolver{}, nil, "")...),
 		)
 	})
 
@@ -130,8 +131,8 @@ func newMarkdownWithState(
 	}
 	hashtagResolver := newRenderHashtagResolver(idx, outputNote)
 	extensions := append(
-		newCoreExtensions(resolver, hashtagResolver),
-		strictLinkExtender{index: idx, sourceNote: sourceNote, outputNote: outputNote, headingIDPrefix: headingIDPrefix, assetSink: assetSink, diagnostics: diagCollector},
+		newCoreExtensions(resolver, hashtagResolver, headingIDPrefix),
+		strictLinkExtender{index: idx, sourceNote: sourceNote, outputNote: outputNote, headingIDPrefix: headingIDPrefix, assetSink: assetSink, diagnostics: diagCollector, linkResolver: resolverState},
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
@@ -207,10 +208,10 @@ func newParserOptions(note *model.Note, headingIDPrefix string) []parser.Option 
 	}
 }
 
-func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmhashtag.Resolver) []goldmark.Extender {
+func newCoreExtensions(wikilinkResolver gmwikilink.Resolver, hashtagResolver gmhashtag.Resolver, footnoteIDPrefix string) []goldmark.Extender {
 	return []goldmark.Extender{
 		extension.GFM,
-		extension.Footnote,
+		extension.NewFootnote(extension.WithFootnoteIDPrefix(footnoteIDPrefix)),
 		&gmhashtag.Extender{Variant: gmhashtag.ObsidianVariant, Resolver: hashtagResolver},
 		&gmwikilink.Extender{Resolver: wikilinkResolver},
 		callout.New(),
@@ -311,10 +312,13 @@ func rewriteEmbeddedOutLinks(sourceNote *model.Note, outputNote *model.Note, lin
 }
 
 func linkRefHasFragment(ref model.LinkRef) bool {
+	if ref.Standard {
+		parsed, err := url.Parse(NormalizeDestination(ref.RawTarget))
+		return err == nil && strings.TrimSpace(parsed.Fragment) != ""
+	}
 	if strings.TrimSpace(ref.Fragment) != "" {
 		return true
 	}
-
-	rawTarget := strings.TrimSpace(ref.RawTarget)
-	return strings.Contains(rawTarget, "#")
+	_, fragment, found := strings.Cut(strings.TrimSpace(ref.RawTarget), "#")
+	return found && strings.TrimSpace(fragment) != ""
 }

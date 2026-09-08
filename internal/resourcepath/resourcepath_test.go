@@ -45,6 +45,17 @@ func TestCandidatePathsIncludeAttachmentFolderFallback(t *testing.T) {
 	}
 }
 
+func TestCandidatePathsDecodeEscapedFilenameDelimitersOnce(t *testing.T) {
+	t.Parallel()
+
+	note := &model.Note{RelPath: "notes/current.md"}
+	got := CandidatePathsWithAttachmentFolder(note, "", "./diagram%23v1.png")
+	want := []string{"notes/diagram#v1.png"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("CandidatePathsWithAttachmentFolder() = %#v, want %#v", got, want)
+	}
+}
+
 func TestResolveIndexedAssetPathSupportsDecodedAndAttachmentFolderTargets(t *testing.T) {
 	t.Parallel()
 

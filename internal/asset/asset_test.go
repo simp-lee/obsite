@@ -2,13 +2,13 @@ package asset
 
 import (
 	"errors"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
-	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/model"
 )
 
@@ -95,8 +95,20 @@ func mergeAssetsIntoTestMap(dst map[string]*model.Asset, src map[string]*model.A
 	}
 }
 
-func copyAssetsForTest(vaultRoot string, outputRoot string, assets map[string]*model.Asset, diagCollector *diag.Collector) error {
-	return CopyAssetsWithReservedPaths(vaultRoot, outputRoot, assets, diagCollector, nil)
+func TestPlanDataEscapesLiteralPercentTriplets(t *testing.T) {
+	t.Parallel()
+
+	planned := PlanData(".obsite/theme/assets/icon%2Fmark.png", []byte("icon"))
+	if !strings.HasPrefix(planned.DstPath, "assets/icon%252fmark.") {
+		t.Fatalf("PlanData().DstPath = %q, want literal percent escaped for the URL", planned.DstPath)
+	}
+	decoded, err := url.PathUnescape(planned.DstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathDir := filepath.ToSlash(filepath.Dir(decoded)); pathDir != "assets" {
+		t.Fatalf("decoded output directory = %q, want assets", pathDir)
+	}
 }
 
 func TestHasImageExtensionRecognizesEscapedSuffix(t *testing.T) {
@@ -680,46 +692,10 @@ func TestMergeAssetsRestoresPlainPathAfterReservedOutputIsReleased(t *testing.T)
 	}
 }
 
-func TestCopyAssetsCopiesMergedAssets(t *testing.T) {
-	t.Parallel()
-
-	vaultRoot := t.TempDir()
-	outputRoot := t.TempDir()
-	writeAssetFile(t, vaultRoot, "images/hero.png", "hero-bytes")
-
-	collector := mustNewCollector(t, vaultRoot, nil)
-	registered := collector.Register("images/hero.png")
-	wantRegistered := expectedHashedAssetPath(t, vaultRoot, "images/hero.png")
-	if registered != wantRegistered {
-		t.Fatalf("Register() = %q, want %q", registered, wantRegistered)
-	}
-	merged := mergeAssetsForTest(vaultRoot, nil, collector)
-	collectorDiag := diag.NewCollector()
-
-	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
-		t.Fatalf("CopyAssets() error = %v", err)
-	}
-	if collectorDiag.Len() != 0 {
-		t.Fatalf("collectorDiag.Diagnostics() = %#v, want no diagnostics", collectorDiag.Diagnostics())
-	}
-
-	got, err := os.ReadFile(filepath.Join(outputRoot, filepath.FromSlash(registered)))
-	if err != nil {
-		t.Fatalf("ReadFile(output asset) error = %v", err)
-	}
-	if string(got) != "hero-bytes" {
-		t.Fatalf("copied asset contents = %q, want %q", string(got), "hero-bytes")
-	}
-	if asset := merged["images/hero.png"]; asset == nil || asset.DstPath != registered {
-		t.Fatalf("merged[images/hero.png] = %#v, want populated DstPath", asset)
-	}
-}
-
 func TestMergeAssetsRewritesNonAssetDestinationUnderAssets(t *testing.T) {
 	t.Parallel()
 
 	vaultRoot := t.TempDir()
-	outputRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "images/hero.png", "hero-bytes")
 
 	indexed := map[string]*model.Asset{
@@ -733,52 +709,6 @@ func TestMergeAssetsRewritesNonAssetDestinationUnderAssets(t *testing.T) {
 	}
 	if asset.DstPath != expectedHashedAssetPath(t, vaultRoot, "images/hero.png") {
 		t.Fatalf("asset.DstPath = %q, want content-addressed path", asset.DstPath)
-	}
-
-	collectorDiag := diag.NewCollector()
-	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
-		t.Fatalf("CopyAssets() error = %v", err)
-	}
-	if collectorDiag.Len() != 0 {
-		t.Fatalf("collectorDiag.Diagnostics() = %#v, want no diagnostics", collectorDiag.Diagnostics())
-	}
-
-	if _, err := os.Stat(filepath.Join(outputRoot, "notes", "hero.png")); !os.IsNotExist(err) {
-		t.Fatalf("Stat(non-asset destination) error = %v, want not-exist", err)
-	}
-	got, err := os.ReadFile(filepath.Join(outputRoot, filepath.FromSlash(asset.DstPath)))
-	if err != nil {
-		t.Fatalf("ReadFile(output asset) error = %v", err)
-	}
-	if string(got) != "hero-bytes" {
-		t.Fatalf("copied asset contents = %q, want %q", string(got), "hero-bytes")
-	}
-}
-
-func TestCopyAssetsRecordsMissingAssetDiagnostics(t *testing.T) {
-	t.Parallel()
-
-	vaultRoot := t.TempDir()
-	outputRoot := t.TempDir()
-
-	collector := mustNewCollector(t, vaultRoot, nil)
-	collector.Register("images/missing.png")
-	merged := mergeAssetsForTest(vaultRoot, nil, collector)
-	collectorDiag := diag.NewCollector()
-
-	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
-		t.Fatalf("CopyAssets() error = %v", err)
-	}
-
-	diagnostics := collectorDiag.Diagnostics()
-	if len(diagnostics) != 1 {
-		t.Fatalf("len(collectorDiag.Diagnostics()) = %d, want 1", len(diagnostics))
-	}
-	if got := diagnostics[0]; got.Kind != diag.KindUnresolvedAsset || got.Location.Path != "images/missing.png" {
-		t.Fatalf("collectorDiag.Diagnostics()[0] = %#v, want unresolved_asset for missing source", got)
-	}
-	if _, err := os.Stat(filepath.Join(outputRoot, "assets", "missing.png")); !os.IsNotExist(err) {
-		t.Fatalf("Stat(output missing asset) error = %v, want not-exist", err)
 	}
 }
 
@@ -841,65 +771,6 @@ func TestAssetCollectorRegisterTreatsSymlinkedSourceAsMissing(t *testing.T) {
 	}
 }
 
-func TestCopyAssetsRecordsDiagnosticsForSymlinkedSources(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name     string
-		srcPath  string
-		setupSrc func(t *testing.T, vaultRoot string, externalRoot string)
-	}{
-		{
-			name:    "file_symlink",
-			srcPath: "images/hero.png",
-			setupSrc: func(t *testing.T, vaultRoot string, externalRoot string) {
-				writeAssetSymlinkOrSkip(t, filepath.Join(externalRoot, "hero.png"), filepath.Join(vaultRoot, "images", "hero.png"))
-			},
-		},
-		{
-			name:    "directory_symlink",
-			srcPath: "images/hero.png",
-			setupSrc: func(t *testing.T, vaultRoot string, externalRoot string) {
-				writeAssetSymlinkOrSkip(t, externalRoot, filepath.Join(vaultRoot, "images"))
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			vaultRoot := t.TempDir()
-			outputRoot := t.TempDir()
-			externalRoot := t.TempDir()
-			writeAssetFile(t, externalRoot, "hero.png", "outside")
-			tt.setupSrc(t, vaultRoot, externalRoot)
-
-			assets := map[string]*model.Asset{
-				tt.srcPath: {
-					SrcPath:  tt.srcPath,
-					RefCount: 1,
-					DstPath:  "assets/hero.png",
-				},
-			}
-			collectorDiag := diag.NewCollector()
-
-			if err := copyAssetsForTest(vaultRoot, outputRoot, assets, collectorDiag); err != nil {
-				t.Fatalf("CopyAssets() error = %v", err)
-			}
-
-			diagnostics := collectorDiag.Diagnostics()
-			if len(diagnostics) != 1 {
-				t.Fatalf("len(collectorDiag.Diagnostics()) = %d, want 1", len(diagnostics))
-			}
-			if got := diagnostics[0]; got.Kind != diag.KindUnresolvedAsset || got.Location.Path != tt.srcPath {
-				t.Fatalf("collectorDiag.Diagnostics()[0] = %#v, want unresolved_asset for symlink source", got)
-			}
-			if _, err := os.Stat(filepath.Join(outputRoot, "assets", "hero.png")); !os.IsNotExist(err) {
-				t.Fatalf("Stat(output symlink asset) error = %v, want not-exist", err)
-			}
-		})
-	}
-}
-
 func TestAssetCollectorRegisterReturnsStableSitePath(t *testing.T) {
 	t.Parallel()
 
@@ -928,7 +799,6 @@ func TestAssetCollectorRegisterHashesCaseInsensitiveBasenameCollisions(t *testin
 	t.Parallel()
 
 	vaultRoot := t.TempDir()
-	outputRoot := t.TempDir()
 	writeAssetFile(t, vaultRoot, "images/Photo.png", "left")
 	writeAssetFile(t, vaultRoot, "attachments/photo.png", "right")
 
@@ -962,20 +832,6 @@ func TestAssetCollectorRegisterHashesCaseInsensitiveBasenameCollisions(t *testin
 	}
 	if asset := merged["attachments/photo.png"]; asset == nil || asset.DstPath != right {
 		t.Fatalf("merged[attachments/photo.png] = %#v, want stable DstPath %q", asset, right)
-	}
-
-	collectorDiag := diag.NewCollector()
-	if err := copyAssetsForTest(vaultRoot, outputRoot, merged, collectorDiag); err != nil {
-		t.Fatalf("CopyAssets() error = %v", err)
-	}
-	if collectorDiag.Len() != 0 {
-		t.Fatalf("collectorDiag.Diagnostics() = %#v, want no diagnostics", collectorDiag.Diagnostics())
-	}
-	if _, err := os.Stat(filepath.Join(outputRoot, filepath.FromSlash(left))); err != nil {
-		t.Fatalf("Stat(%q) error = %v", left, err)
-	}
-	if _, err := os.Stat(filepath.Join(outputRoot, filepath.FromSlash(right))); err != nil {
-		t.Fatalf("Stat(%q) error = %v", right, err)
 	}
 }
 

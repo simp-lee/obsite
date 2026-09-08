@@ -639,7 +639,7 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 		}
 		article.SectionPath = section.RelPath
 		article.VersionID = section.VersionID
-		if _, _, prefixErr := slug.NumericPrefix(path.Base(article.RelPath)); prefixErr != nil {
+		if _, _, prefixErr := slug.NumericPrefix(articleFileStem(article.RelPath)); prefixErr != nil {
 			record(collector, diag.KindOrder, article.RelPath, "%v", prefixErr)
 			continue
 		}
@@ -1254,8 +1254,8 @@ func articleLess(left, right *model.Note) bool {
 		if lo != nil && *lo != *ro {
 			return *lo < *ro
 		}
-		lp, lhas, _ := slug.NumericPrefix(path.Base(left.RelPath))
-		rp, rhas, _ := slug.NumericPrefix(path.Base(right.RelPath))
+		lp, lhas, _ := slug.NumericPrefix(articleFileStem(left.RelPath))
+		rp, rhas, _ := slug.NumericPrefix(articleFileStem(right.RelPath))
 		if lhas != rhas {
 			return lhas
 		}
@@ -1287,6 +1287,11 @@ func articleTypeRank(typeName string) int {
 	default:
 		return 3
 	}
+}
+
+func articleFileStem(relPath string) string {
+	filename := path.Base(relPath)
+	return strings.TrimSuffix(filename, path.Ext(filename))
 }
 
 func numericPrefixValue(prefix string) int64 {
@@ -1459,8 +1464,16 @@ func routeDestination(route string) string {
 }
 func reservedDestination(route string) string { return strings.Trim(route, "/") }
 func outputPathsConflict(left, right string) bool {
-	left, right = strings.Trim(left, "/"), strings.Trim(right, "/")
+	left, right = physicalOutputPath(left), physicalOutputPath(right)
 	return physicalPathConflict(left, right) || physicalPathConflict(fold(left), fold(right))
+}
+
+func physicalOutputPath(value string) string {
+	value = strings.Trim(value, "/")
+	if decoded, err := url.PathUnescape(value); err == nil {
+		return strings.Trim(decoded, "/")
+	}
+	return value
 }
 
 func physicalPathConflict(left, right string) bool {
@@ -1472,10 +1485,13 @@ func portableRoute(route string) bool {
 		if segment == "" {
 			continue
 		}
-		if _, err := url.PathUnescape(segment); err != nil {
+		decoded, err := url.PathUnescape(segment)
+		if err != nil || decoded == "." || decoded == ".." || strings.ContainsAny(decoded, `/\\`) {
 			return false
 		}
-		portableValue := strings.ReplaceAll(segment, "%", "x")
+		// Percent and fragment characters are safe in decoded filesystem names;
+		// their generated URL spellings remain escaped.
+		portableValue := strings.NewReplacer("%", "x", "#", "x").Replace(decoded)
 		if !internalfsutil.IsPortableSitePath(portableValue) {
 			return false
 		}

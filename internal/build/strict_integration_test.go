@@ -2,6 +2,7 @@ package build
 
 import (
 	"bytes"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,11 @@ func copyFixtureVault(t *testing.T, fixtureName string) string {
 
 func readBuildOutputFile(t *testing.T, root, relPath string) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relPath)))
+	filePath, err := url.PathUnescape(relPath)
+	if err != nil {
+		t.Fatalf("decode output URL path %q: %v", relPath, err)
+	}
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(filePath)))
 	if err != nil {
 		t.Fatalf("read output %q: %v", relPath, err)
 	}

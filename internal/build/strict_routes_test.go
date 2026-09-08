@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 func TestStrictBuildPreservesUnicodeSourcePaths(t *testing.T) {
@@ -68,13 +70,37 @@ func TestStrictBuildUsesCanonicalRoutesForNestedMarkdownLinks(t *testing.T) {
 	if !bytes.Contains(page, []byte(`href=../../assets/manual%20file.`)) {
 		t.Fatalf("nested attachment link did not use the asset planner:\n%s", page)
 	}
-	if entries, err := filepath.Glob(filepath.Join(output, "assets", "manual%20file.*.pdf")); err != nil || len(entries) != 1 {
+	if entries, err := filepath.Glob(filepath.Join(output, "assets", "manual file.*.pdf")); err != nil || len(entries) != 1 {
 		t.Fatalf("missing published content-addressed attachment: %v, err=%v", entries, err)
 	}
 	if !bytes.Contains(page, []byte(`data-popover-path=reference.md`)) {
 		t.Fatalf("nested link did not receive its popover target:\n%s", page)
 	}
-	if _, err := os.Stat(filepath.Join(output, "_popover", "reference.md.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(output, "_popover", "reference.md", "index.json")); err != nil {
 		t.Fatalf("missing popover payload: %v", err)
+	}
+}
+
+func TestStrictPopoverPathsArePrefixFree(t *testing.T) {
+	output := t.TempDir()
+	index := &model.VaultIndex{Notes: map[string]*model.Note{
+		"A.md":               {RelPath: "A.md"},
+		"foo.md":             {RelPath: "foo.md"},
+		"foo.md.json/bar.md": {RelPath: "foo.md.json/bar.md"},
+		"Ａ.md":               {RelPath: "Ａ.md"},
+	}}
+
+	if err := writeStrictPopoverPayloads(output, index, newStrictOutputRegistry("", nil)); err != nil {
+		t.Fatalf("writeStrictPopoverPayloads() error = %v", err)
+	}
+	for _, relPath := range []string{
+		filepath.Join("_popover", "A.md", "index.json"),
+		filepath.Join("_popover", "foo.md", "index.json"),
+		filepath.Join("_popover", "foo.md.json", "bar.md", "index.json"),
+		filepath.Join("_popover", "Ａ.md", "index.json"),
+	} {
+		if _, err := os.Stat(filepath.Join(output, relPath)); err != nil {
+			t.Fatalf("missing popover payload %q: %v", relPath, err)
+		}
 	}
 }

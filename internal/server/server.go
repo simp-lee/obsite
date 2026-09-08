@@ -3,7 +3,9 @@ package server
 import (
 	"bytes"
 	"fmt"
+	stdhtml "html"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -13,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/slug"
 	xhtml "golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
@@ -165,34 +169,46 @@ func (s *Server) resolvePath(requestPath string) (servePath string, redirectPath
 	if !ok {
 		return "", ""
 	}
-	resolvedPath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(outputPath, "/")))
-	if outputPath == "/" {
-		resolvedPath = s.outputPath
+	decodedOutputPath, err := url.PathUnescape(outputPath)
+	if err != nil {
+		return "", ""
 	}
-	realPath, info, err := s.resolveExistingOutputPath(resolvedPath)
+	resolvedPath := s.outputPath
+	decodedCleanPath := path.Clean("/" + strings.TrimPrefix(decodedOutputPath, "/"))
+	if decodedCleanPath != "/" {
+		_, candidate, err := internalfsutil.ResolveOutputURLPath(s.outputPath, strings.TrimPrefix(outputPath, "/"))
+		if err != nil {
+			return "", ""
+		}
+		resolvedPath = candidate
+	}
+	_, info, err := s.resolveExistingOutputPath(resolvedPath)
 	if err != nil {
 		return "", ""
 	}
 
 	if info.IsDir() {
-		if !hasIndexFile(realPath) {
+		_, indexInfo, indexErr := s.resolveExistingOutputPath(filepath.Join(resolvedPath, "index.html"))
+		if indexErr != nil || indexInfo.IsDir() {
 			return "", ""
 		}
 
-		canonicalPath := s.externalOutputPath(ensureDirectoryPath(outputPath))
+		canonicalOutputPath := canonicalPreviewOutputPath(decodedOutputPath, true)
+		canonicalPath := s.externalOutputPath(canonicalOutputPath)
 		if requestPath != canonicalPath {
 			return "", canonicalPath
 		}
 
-		return ensureDirectoryPath(outputPath), ""
+		return canonicalOutputPath, ""
 	}
 
-	canonicalPath := s.externalOutputPath(outputPath)
+	canonicalOutputPath := canonicalPreviewOutputPath(decodedOutputPath, false)
+	canonicalPath := s.externalOutputPath(canonicalOutputPath)
 	if requestPath != canonicalPath {
 		return "", canonicalPath
 	}
 
-	return outputPath, ""
+	return canonicalOutputPath, ""
 }
 
 func (s *Server) serveNotFound(w http.ResponseWriter, r *http.Request) {
@@ -245,15 +261,26 @@ func shouldServeLiveReloadRequest(r *http.Request) bool {
 
 func (s *Server) serveOutput(w http.ResponseWriter, r *http.Request, servePath string) {
 	req := r.Clone(r.Context())
-	req.URL.Path = servePath
+	decodedServePath, err := url.PathUnescape(servePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	req.URL.Path = decodedServePath
+	req.URL.RawPath = servePath
+
+	filePath := ""
+	if s.outputPath != "" {
+		filePath, err = s.resolveOutputFilePath(servePath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+	}
 	serve := func(writer http.ResponseWriter, request *http.Request) {
 		if s.outputPath == "" && s.fileServer != nil {
 			s.fileServer.ServeHTTP(writer, request)
 			return
-		}
-		filePath := filepath.Join(s.outputPath, filepath.FromSlash(strings.TrimPrefix(servePath, "/")))
-		if strings.HasSuffix(servePath, "/") {
-			filePath = filepath.Join(filePath, "index.html")
 		}
 		http.ServeFile(writer, request, filePath)
 	}
@@ -320,6 +347,31 @@ func (s *Server) serveInjectedResponse(w http.ResponseWriter, r *http.Request, s
 	_, _ = w.Write(body)
 }
 
+func (s *Server) resolveOutputFilePath(servePath string) (string, error) {
+	if s == nil || s.outputPath == "" {
+		return "", os.ErrNotExist
+	}
+	candidate := s.outputPath
+	if servePath != "/" {
+		_, resolvedCandidate, err := internalfsutil.ResolveOutputURLPath(s.outputPath, strings.TrimPrefix(servePath, "/"))
+		if err != nil {
+			return "", err
+		}
+		candidate = resolvedCandidate
+	}
+	if strings.HasSuffix(servePath, "/") {
+		candidate = filepath.Join(candidate, "index.html")
+	}
+	resolvedPath, info, err := s.resolveExistingOutputPath(candidate)
+	if err != nil {
+		return "", err
+	}
+	if info.IsDir() {
+		return "", os.ErrNotExist
+	}
+	return resolvedPath, nil
+}
+
 func (s *Server) resolveExistingOutputPath(candidate string) (string, os.FileInfo, error) {
 	if s == nil || strings.TrimSpace(candidate) == "" {
 		return "", nil, os.ErrNotExist
@@ -375,7 +427,7 @@ func detectOutputBasePath(outputPath string) string {
 	candidate := ""
 	for _, value := range match[1:] {
 		if len(value) > 0 {
-			candidate = strings.TrimSpace(string(value))
+			candidate = strings.TrimSpace(stdhtml.UnescapeString(string(value)))
 			break
 		}
 	}
@@ -567,7 +619,7 @@ func injectPreviewBaseHrefAt(body []byte, basePath string) []byte {
 		return body
 	}
 	basePath = ensureDirectoryPath(basePath)
-	baseTag := []byte(`<base href="` + basePath + `">`)
+	baseTag := []byte(`<base href="` + stdhtml.EscapeString(basePath) + `">`)
 
 	insertAt, baseStart, baseEnd, hasBase, ok := previewBaseRewriteRange(body)
 	if !ok {
@@ -763,6 +815,22 @@ func shouldInjectLiveReload(headers http.Header, body []byte) bool {
 	return strings.HasPrefix(contentType, "text/html")
 }
 
+func canonicalPreviewOutputPath(decodedPath string, directory bool) string {
+	cleaned := path.Clean("/" + strings.TrimPrefix(decodedPath, "/"))
+	if cleaned == "/" {
+		return "/"
+	}
+	segments := strings.Split(strings.Trim(cleaned, "/"), "/")
+	for index, segment := range segments {
+		segments[index] = slug.EncodeSegment(segment)
+	}
+	encoded := "/" + strings.Join(segments, "/")
+	if directory {
+		return ensureDirectoryPath(encoded)
+	}
+	return encoded
+}
+
 func cleanRequestPath(requestPath string) (cleanPath string, hasTrailingSlash bool) {
 	if requestPath == "" {
 		return "/", true
@@ -791,11 +859,6 @@ func ensureTrailingSlash(path string) string {
 	}
 
 	return path + "/"
-}
-
-func hasIndexFile(dir string) bool {
-	info, err := os.Stat(filepath.Join(dir, "index.html"))
-	return err == nil && !info.IsDir()
 }
 
 func newLiveReloadHub() *liveReloadHub {

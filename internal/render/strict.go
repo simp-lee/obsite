@@ -782,6 +782,9 @@ func strictEncodePath(value string) string {
 	return slug.EncodePath(value)
 }
 func esc(value string) string { return template.HTMLEscapeString(value) }
+
+// StrictRouteOutputPath returns the URL-escaped logical output path for route.
+// The publisher decodes it once when selecting the corresponding disk path.
 func StrictRouteOutputPath(route string) string {
 	trimmed := strings.Trim(route, "/")
 	if trimmed == "" {
