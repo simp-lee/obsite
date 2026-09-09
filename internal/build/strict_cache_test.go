@@ -1,6 +1,8 @@
 package build
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -33,6 +35,40 @@ func TestStrictCacheManifestSeparatesInputsFromOutputs(t *testing.T) {
 	}
 	if firstOutput.OutputHash == secondOutput.OutputHash {
 		t.Fatal("custom CSS output hash did not change")
+	}
+}
+
+func TestStrictCacheTracksRecursiveCustomCSSDependencies(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", "title: Cache\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vault, "custom.css", `@import "styles/nested.css";`)
+	writeStrictFile(t, vault, "styles/nested.css", `@font-face { src: url("../fonts/site.woff2"); }`)
+	writeStrictFile(t, vault, "fonts/site.woff2", "first font")
+	output := filepath.Join(t.TempDir(), "site")
+	firstResult, err := BuildWithOptions(vault, output, Options{Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := loadStrictCacheManifest(output)
+	firstDependency, firstOutput := cacheDependencyByOwner(first, "custom CSS"), cacheOutputByOwner(first, "custom CSS")
+	oldNested := firstResult.Assets["styles/nested.css"].DstPath
+
+	writeStrictFile(t, vault, "fonts/site.woff2", "second font")
+	secondResult, err := BuildWithOptions(vault, output, Options{Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := loadStrictCacheManifest(output)
+	secondDependency, secondOutput := cacheDependencyByOwner(second, "custom CSS"), cacheOutputByOwner(second, "custom CSS")
+	if firstDependency.InputSignature == secondDependency.InputSignature || firstOutput.OutputHash == secondOutput.OutputHash {
+		t.Fatal("recursive CSS change did not invalidate the fixed custom CSS output")
+	}
+	if secondResult.Assets["styles/nested.css"].DstPath == oldNested {
+		t.Fatal("recursive CSS change did not invalidate the transformed stylesheet")
+	}
+	if _, err := os.Stat(filepath.Join(output, filepath.FromSlash(oldNested))); !os.IsNotExist(err) {
+		t.Fatalf("stale transformed stylesheet remains after rebuild: %v", err)
 	}
 }
 

@@ -13,6 +13,66 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
+func TestBuildWithConfigRejectsAmbiguousVersionSourceIdentity(t *testing.T) {
+	vault := t.TempDir()
+	for _, dir := range []string{"", "docs/", "docs/v1/", "docs/v2/"} {
+		writePlanFile(t, vault, dir+"_index.md", "---\ntitle: Section\npublish: true\n---\n")
+	}
+	for source, articleSlug := range map[string]string{
+		"docs/v1/Intro.md": "first", "docs/v1/intro.md": "second", "docs/v2/intro.md": "intro",
+	} {
+		writePlanFile(t, vault, source, "---\ntitle: Article\npublish: true\ntype: doc\nslug: "+articleSlug+"\n---\n")
+	}
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{
+			{ID: "v1", Label: "One", Source: "v1"}, {ID: "v2", Label: "Two", Source: "v2"},
+		},
+	}}
+	result, err := BuildWithConfig(vault, cfg)
+	if err == nil {
+		t.Fatal("ambiguous version source identity was accepted")
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Kind == diag.KindVersion && strings.Contains(diagnostic.Message, "same normalized source identity") && strings.Contains(diagnostic.Message, "docs/v1/Intro.md") && strings.Contains(diagnostic.Message, "docs/v1/intro.md") {
+			return
+		}
+	}
+	t.Fatalf("missing source identity collision diagnostic: %v", result.Diagnostics)
+}
+
+func TestBuildWithConfigVersionCorrespondenceIgnoresHiddenSectionIdentity(t *testing.T) {
+	vault := t.TempDir()
+	for _, dir := range []string{"", "docs/", "docs/v1/", "docs/v2/", "docs/v1/Guide/", "docs/v2/Guide/"} {
+		writePlanFile(t, vault, dir+"_index.md", "---\ntitle: A\npublish: true\n---\n")
+	}
+	writePlanFile(t, vault, "docs/v1/guide/_index.md", "---\ntitle: Z\npublish: false\n---\n")
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{
+			{ID: "v1", Label: "One", Source: "v1"}, {ID: "v2", Label: "Two", Source: "v2"},
+		},
+	}}
+	result, err := BuildWithConfig(vault, cfg)
+	if err != nil {
+		t.Fatalf("BuildWithConfig: %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	matched := 0
+	for _, section := range result.Plan.Sections {
+		if section.RelPath != "docs/v1/Guide" && section.RelPath != "docs/v2/Guide" {
+			continue
+		}
+		matched++
+		for _, versionID := range []string{"v1", "v2"} {
+			want := "/docs/" + versionID + "/Guide/"
+			if got := section.VersionRoutes[versionID]; got != want {
+				t.Errorf("%s selector to %s = %q, want published counterpart %q", section.RelPath, versionID, got, want)
+			}
+		}
+	}
+	if matched != 2 {
+		t.Fatalf("published matching section count = %d", matched)
+	}
+}
+
 func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\norder: 0\n---\nHome\n")
@@ -92,6 +152,20 @@ func TestBuildWithConfigNFKCNormalizesExplicitSlugBeforeValidation(t *testing.T)
 	}
 }
 
+func TestBuildWithConfigRejectsDefaultArticleSlugThatNormalizesToPath(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "a／b.md", "---\ntitle: Article\npublish: true\ntype: page\n---\n")
+
+	result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+	if err == nil {
+		t.Fatalf("BuildWithConfig() error = nil, want normalized path separator rejection; diagnostics=%v", result.Diagnostics)
+	}
+	if joined := diagnosticMessages(result.Diagnostics); !strings.Contains(joined, `normalized basename "a/b" contains a path separator`) {
+		t.Fatalf("diagnostics = %q, want normalized path separator error", joined)
+	}
+}
+
 func TestBuildWithConfigRejectsNFKCDotSectionRoute(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
@@ -127,16 +201,16 @@ func TestBuildWithConfigRejectsMissingIndexAndHiddenOverride(t *testing.T) {
 	}
 }
 
-func TestBuildWithConfigPlansIndependentVersionTreesAndFallbacks(t *testing.T) {
+func TestBuildWithConfigPlansVersionCorrespondenceBySourcePathAndFallbacks(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
 	writePlanFile(t, vault, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\n")
 	for _, version := range []string{"v1", "v2"} {
 		writePlanFile(t, vault, "docs/"+version+"/_index.md", "---\ntitle: "+version+"\npublish: true\n---\n")
 	}
-	writePlanFile(t, vault, "docs/v1/01-intro.md", "---\ntitle: Intro\npublish: true\ntype: doc\n---\n")
+	writePlanFile(t, vault, "docs/v1/intro.md", "---\ntitle: Intro\npublish: true\ntype: doc\nslug: intro-v1\n---\n")
 	writePlanFile(t, vault, "docs/v1/only-v1.md", "---\ntitle: Only v1\npublish: true\ntype: doc\n---\n")
-	writePlanFile(t, vault, "docs/v2/intro.md", "---\ntitle: Intro\npublish: true\ntype: doc\n---\n")
+	writePlanFile(t, vault, "docs/v2/intro.md", "---\ntitle: Intro\npublish: true\ntype: doc\nslug: intro-v2\n---\n")
 	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
 		Root: "docs", Default: "v1", Entries: []model.VersionEntry{{ID: "v1", Label: "Version 1", Source: "v1"}, {ID: "v2", Label: "Version 2", Source: "v2"}},
 	}}
@@ -162,8 +236,38 @@ func TestBuildWithConfigPlansIndependentVersionTreesAndFallbacks(t *testing.T) {
 			intro = note
 		}
 	}
-	if intro == nil || intro.VersionRoutes["v2"] != "/docs/v2/intro/" {
-		t.Fatalf("matching version routes = %#v", intro)
+	if intro == nil || intro.VersionRoutes["v2"] != "/docs/v2/intro-v2/" {
+		t.Fatalf("same-source version routes = %#v, want target version's independent slug", intro)
+	}
+}
+
+func TestBuildWithConfigAllowsVersionContainerSectionsAndTheirBanner(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/_index.md", "---\ntitle: Docs\npublish: true\nbanner: docs/banner.svg\nbannerAlt: Docs banner\n---\n")
+	writePlanFile(t, vault, "docs/banner.svg", `<svg xmlns="http://www.w3.org/2000/svg"><path id="banner"/></svg>`)
+	writePlanFile(t, vault, "docs/sources/_index.md", "---\ntitle: Sources\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/sources/v1/_index.md", "---\ntitle: Version 1\npublish: true\n---\n")
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{{ID: "v1", Label: "Version 1", Source: "sources/v1"}},
+	}}
+
+	result, err := BuildWithConfig(vault, cfg)
+	if err != nil {
+		t.Fatalf("BuildWithConfig() error = %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	sections := make(map[string]*model.Section, len(result.Plan.Sections))
+	for _, section := range result.Plan.Sections {
+		sections[section.RelPath] = section
+	}
+	if docs := sections["docs"]; docs == nil || docs.Route != "/docs/" || docs.Banner != "docs/banner.svg" {
+		t.Fatalf("docs container = %#v, want landing with banner", docs)
+	}
+	if container := sections["docs/sources"]; container == nil || container.Route != "/docs/sources/" || container.VersionID != "" {
+		t.Fatalf("intermediate container = %#v, want non-version landing", container)
+	}
+	if version := sections["docs/sources/v1"]; version == nil || version.Route != "/docs/v1/" || version.VersionID != "v1" {
+		t.Fatalf("version source = %#v, want v1 landing", version)
 	}
 }
 

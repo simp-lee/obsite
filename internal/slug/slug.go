@@ -15,8 +15,8 @@ import (
 var (
 	// ErrInvalidFrontmatterSlug reports an explicit frontmatter slug that normalizes to empty.
 	ErrInvalidFrontmatterSlug = errors.New("frontmatter slug normalizes to empty")
-	// ErrInvalidFileSlug reports a file stem that normalizes to empty.
-	ErrInvalidFileSlug = errors.New("file stem normalizes to empty")
+	// ErrInvalidFileSlug reports a file stem that cannot produce one valid article path segment.
+	ErrInvalidFileSlug = errors.New("file stem is not a valid article path segment")
 	// ErrInvalidArticleSlug reports a slug that is not one permitted URL segment.
 	ErrInvalidArticleSlug = errors.New("article slug is not a valid URL path segment")
 	// ErrInvalidNumericPrefix reports an overflowing filename order prefix.
@@ -192,6 +192,9 @@ func GenerateArticleSegment(explicit *string, relPath string) (string, error) {
 	base = norm.NFKC.String(base)
 	if strings.TrimSpace(base) == "" {
 		return "", fmt.Errorf("%w: %q", ErrInvalidFileSlug, relPath)
+	}
+	if strings.ContainsAny(base, `/\`) {
+		return "", fmt.Errorf("%w: normalized basename %q contains a path separator", ErrInvalidFileSlug, base)
 	}
 	return base, nil
 }

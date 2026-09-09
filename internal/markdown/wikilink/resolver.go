@@ -82,10 +82,20 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 	fragment := strings.TrimSpace(string(node.Fragment))
 	lookup := LookupTarget(r.Index, r.CurrentNote, target, fragment)
 	if len(lookup.Ambiguous) > 1 {
-		r.recordAmbiguous(rawTarget, sourceRef, lookup.Note, lookup.Ambiguous)
+		if lookup.Section != nil {
+			r.recordAmbiguousSection(rawTarget, sourceRef, lookup.Section, lookup.Ambiguous)
+		} else {
+			r.recordAmbiguous(rawTarget, sourceRef, lookup.Note, lookup.Ambiguous)
+		}
 	}
 
 	switch {
+	case lookup.Section != nil && lookup.MissingFragment:
+		r.recordMissingSectionFragment(rawTarget, sourceRef, lookup.Section, fragment)
+		return nil, nil
+	case lookup.Section != nil:
+		r.markSectionResolved(sourceRef, lookup.Section)
+		return []byte(buildSectionHref(r.OutputNote, r.CurrentNote, lookup.Section, lookup.FragmentID, r.HeadingIDPrefix)), nil
 	case lookup.Note == nil && lookup.CanvasResource:
 		if len(lookup.Ambiguous) > 0 {
 			r.recordAmbiguousCanvas(rawTarget, sourceRef, lookup.Ambiguous)
@@ -108,7 +118,8 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 	}
 }
 
-// LookupTarget resolves a note target using the same best-match rules as the render-time resolver.
+// LookupTarget resolves an article or section-source target using the same
+// best-match rules as the render-time resolver.
 func LookupTarget(idx *model.VaultIndex, current *model.Note, target string, fragment string) LookupResult {
 	resolver := &VaultResolver{Index: idx, CurrentNote: current}
 	return resolver.lookup(strings.TrimSpace(target), strings.TrimSpace(fragment))
@@ -137,16 +148,8 @@ func LookupRouteTarget(idx *model.VaultIndex, current *model.Note, target string
 		}
 	}
 	for _, section := range sortedRouteSections(idx.SectionsByRoute) {
-		if section != nil && section.Route == route && (current == nil || section.VersionID == "" || current.VersionID == section.VersionID) {
-			if fragment == "" {
-				return LookupResult{Section: section}
-			}
-			for _, heading := range section.Headings {
-				if headingid.CanonicalText(heading.ID) == headingid.CanonicalText(fragment) || headingid.CanonicalText(heading.Text) == headingid.CanonicalText(fragment) {
-					return LookupResult{FragmentID: heading.ID, Section: section}
-				}
-			}
-			return LookupResult{MissingFragment: true, Section: section}
+		if section != nil && section.Route == route && inSectionVersionScope(current, section) {
+			return finalizeSectionLookup(section, fragment)
 		}
 	}
 	return LookupResult{}
@@ -174,8 +177,9 @@ func sortedRouteSections(sections map[string]*model.Section) []*model.Section {
 	return result
 }
 
-// LookupPathTarget resolves a normalized source path without falling back to a
-// basename or alias. It is used for ordinary relative Markdown links.
+// LookupPathTarget resolves a normalized article, section, or section-source
+// path without falling back to a basename or alias. It is used for ordinary
+// relative Markdown links.
 func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string, fragment string) LookupResult {
 	resolver := &VaultResolver{Index: idx, CurrentNote: current}
 	target = strings.TrimSpace(target)
@@ -188,6 +192,9 @@ func LookupPathTarget(idx *model.VaultIndex, current *model.Note, target string,
 		result.Unpublished = true
 		return result
 	}
+	if section := resolver.exactSectionPathMatch(target); section != nil && inSectionVersionScope(current, section) {
+		return finalizeSectionLookup(section, fragment)
+	}
 	return LookupResult{}
 }
 
@@ -198,6 +205,12 @@ type resolutionResult struct {
 
 type rankedCandidate struct {
 	note         *model.Note
+	distance     int
+	sharedPrefix int
+}
+
+type rankedSectionCandidate struct {
+	section      *model.Section
 	distance     int
 	sharedPrefix int
 }
@@ -246,6 +259,59 @@ func (r *VaultResolver) resolveUnpublished(target string) resolutionResult {
 	return resolveCandidateSet(r.CurrentNote, aliasCandidates)
 }
 
+func (r *VaultResolver) resolveSectionSource(target string) (*model.Section, []string) {
+	if r == nil || r.Index == nil || explicitPathTarget(target) || noteLookupKey(target) != "_index" {
+		return nil, nil
+	}
+
+	candidates := make([]rankedSectionCandidate, 0, len(r.Index.Sections))
+	for _, section := range r.Index.Sections {
+		if section == nil || !inSectionVersionScope(r.CurrentNote, section) {
+			continue
+		}
+		candidatePath := normalizeVaultPath(section.SourcePath)
+		candidate := rankedSectionCandidate{section: section}
+		if r.CurrentNote == nil {
+			candidate.distance = pathSegmentCount(candidatePath)
+		} else {
+			currentDir := noteSourceDir(r.CurrentNote)
+			relativePath, err := filepath.Rel(currentDir, candidatePath)
+			if err != nil {
+				relativePath = candidatePath
+			}
+			candidate.distance = pathSegmentCount(filepath.ToSlash(relativePath))
+			candidate.sharedPrefix = sharedPathPrefixDepth(currentDir, path.Dir(candidatePath))
+		}
+		candidates = append(candidates, candidate)
+	}
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		left, right := candidates[i], candidates[j]
+		if left.distance != right.distance {
+			return left.distance < right.distance
+		}
+		if left.sharedPrefix != right.sharedPrefix {
+			return left.sharedPrefix > right.sharedPrefix
+		}
+		return left.section.SourcePath < right.section.SourcePath
+	})
+
+	ambiguous := make([]string, 0)
+	for _, candidate := range candidates {
+		if candidate.distance != candidates[0].distance || candidate.sharedPrefix != candidates[0].sharedPrefix {
+			break
+		}
+		ambiguous = append(ambiguous, candidate.section.SourcePath)
+	}
+	if len(ambiguous) == 1 {
+		ambiguous = nil
+	}
+	return candidates[0].section, ambiguous
+}
+
 func (r *VaultResolver) exactPublicPathMatch(target string) *model.Note {
 	if r == nil || r.Index == nil {
 		return nil
@@ -258,6 +324,13 @@ func (r *VaultResolver) exactUnpublishedPathMatch(target string) *model.Note {
 		return nil
 	}
 	return exactPathMatch(target, r.Index.Unpublished.Notes)
+}
+
+func (r *VaultResolver) exactSectionPathMatch(target string) *model.Section {
+	if r == nil || r.Index == nil {
+		return nil
+	}
+	return exactSectionPathMatch(target, r.Index)
 }
 
 func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
@@ -277,6 +350,9 @@ func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
 			result.Unpublished = true
 			return result
 		}
+		if section := r.exactSectionPathMatch(target); section != nil && inSectionVersionScope(r.CurrentNote, section) {
+			return finalizeSectionLookup(section, fragment)
+		}
 		return canvasLookupResult(r.Index, r.CurrentNote, target)
 	}
 
@@ -287,6 +363,12 @@ func (r *VaultResolver) lookup(target string, fragment string) LookupResult {
 	if result := r.resolveUnpublished(target); result.note != nil {
 		lookup := finalizeLookup(result, fragment)
 		lookup.Unpublished = true
+		return lookup
+	}
+
+	if section, ambiguous := r.resolveSectionSource(target); section != nil {
+		lookup := finalizeSectionLookup(section, fragment)
+		lookup.Ambiguous = append([]string(nil), ambiguous...)
 		return lookup
 	}
 
@@ -303,6 +385,22 @@ func finalizeLookup(result resolutionResult, fragment string) LookupResult {
 	}
 
 	fragmentID, ok := resolveFragmentID(result.note, fragment)
+	if !ok {
+		lookup.MissingFragment = strings.TrimSpace(fragment) != ""
+		return lookup
+	}
+
+	lookup.FragmentID = fragmentID
+	return lookup
+}
+
+func finalizeSectionLookup(section *model.Section, fragment string) LookupResult {
+	lookup := LookupResult{Section: section}
+	if section == nil {
+		return lookup
+	}
+
+	fragmentID, ok := resolveHeadingFragmentID(section.Headings, fragment)
 	if !ok {
 		lookup.MissingFragment = strings.TrimSpace(fragment) != ""
 		return lookup
@@ -359,6 +457,13 @@ func inVersionScope(current, candidate *model.Note) bool {
 		return false
 	}
 	return current == nil || current.VersionID == candidate.VersionID
+}
+
+func inSectionVersionScope(current *model.Note, candidate *model.Section) bool {
+	if candidate == nil {
+		return false
+	}
+	return current == nil || candidate.VersionID == "" || current.VersionID == candidate.VersionID
 }
 
 func scopedNotes(current *model.Note, candidates []*model.Note) []*model.Note {
@@ -448,6 +553,53 @@ func exactPathMatch(target string, notes map[string]*model.Note) *model.Note {
 	return matched
 }
 
+func exactSectionPathMatch(target string, idx *model.VaultIndex) *model.Section {
+	if idx == nil {
+		return nil
+	}
+
+	for _, candidate := range candidatePaths(target) {
+		if section := idx.SectionsBySource[candidate]; section != nil {
+			return section
+		}
+		for _, section := range idx.Sections {
+			if section != nil && section.SourcePath == candidate {
+				return section
+			}
+		}
+	}
+
+	normalized := normalizeVaultPath(target)
+	if normalized != "" {
+		if section := idx.Sections[normalized]; section != nil {
+			return section
+		}
+	}
+
+	canonicalCandidates := canonicalCandidatePaths(target)
+	if len(canonicalCandidates) == 0 {
+		return nil
+	}
+
+	var matched *model.Section
+	for _, section := range idx.Sections {
+		if section == nil {
+			continue
+		}
+		_, sourceMatch := canonicalCandidates[model.CanonicalResourceLookupPath(section.SourcePath)]
+		_, directoryMatch := canonicalCandidates[model.CanonicalResourceLookupPath(section.RelPath)]
+		if !sourceMatch && !directoryMatch {
+			continue
+		}
+		if matched != nil && matched.SourcePath != section.SourcePath {
+			return nil
+		}
+		matched = section
+	}
+
+	return matched
+}
+
 func canonicalCandidatePaths(target string) map[string]struct{} {
 	paths := candidatePaths(target)
 	if len(paths) == 0 {
@@ -531,6 +683,43 @@ func buildNoteHref(output *model.Note, source *model.Note, target *model.Note, f
 // BuildNoteHref exposes the render-time href builder without mutating resolver state.
 func BuildNoteHref(output *model.Note, source *model.Note, target *model.Note, fragment string, headingIDPrefix string) string {
 	return buildNoteHref(output, source, target, fragment, headingIDPrefix)
+}
+
+func buildSectionHref(output *model.Note, source *model.Note, target *model.Section, fragment string, headingIDPrefix string) string {
+	if target == nil {
+		return ""
+	}
+	if source != nil && source.RelPath == target.SourcePath && fragment != "" {
+		if headingIDPrefix != "" {
+			return "#" + headingIDPrefix + fragment
+		}
+		return "#" + fragment
+	}
+	if output != nil && output.RelPath == target.SourcePath {
+		if fragment != "" {
+			return "#" + fragment
+		}
+		return "./"
+	}
+
+	href := relativeToNoteOutput(output, target.Route)
+	if target.Route == "/" {
+		href = strings.TrimSuffix(relativeToNoteOutput(output, "index.html"), "index.html")
+	}
+	if href == "" || href == "." {
+		href = "./"
+	} else if !strings.HasSuffix(href, "/") {
+		href += "/"
+	}
+	if fragment != "" {
+		href += "#" + fragment
+	}
+	return href
+}
+
+// BuildSectionHref exposes the render-time section landing href builder.
+func BuildSectionHref(output *model.Note, source *model.Note, target *model.Section, fragment string, headingIDPrefix string) string {
+	return buildSectionHref(output, source, target, fragment, headingIDPrefix)
 }
 
 func buildOutputHref(output *model.Note, target *model.Note) string {
@@ -654,29 +843,32 @@ func splitPathParts(value string) []string {
 }
 
 func resolveFragmentID(note *model.Note, fragment string) (string, bool) {
+	if note == nil {
+		return "", normalizeHeadingWhitespace(fragment) == ""
+	}
+	return resolveHeadingFragmentID(note.Headings, fragment)
+}
+
+func resolveHeadingFragmentID(headings []model.Heading, fragment string) (string, bool) {
 	fragment = normalizeHeadingWhitespace(fragment)
 	if fragment == "" {
 		return "", true
 	}
 
-	if note == nil {
-		return "", false
-	}
-
 	canonicalFragment := headingid.CanonicalText(fragment)
 	normalizedID := normalizeHeadingID(fragment)
 
-	for _, heading := range note.Headings {
+	for _, heading := range headings {
 		if headingid.CanonicalText(strings.TrimSpace(heading.ID)) == canonicalFragment {
 			return heading.ID, true
 		}
 	}
-	for _, heading := range note.Headings {
+	for _, heading := range headings {
 		if headingid.CanonicalText(heading.Text) == canonicalFragment {
 			return heading.ID, true
 		}
 	}
-	for _, heading := range note.Headings {
+	for _, heading := range headings {
 		if normalizeHeadingID(strings.TrimSpace(heading.ID)) == normalizedID {
 			return heading.ID, true
 		}
@@ -751,6 +943,12 @@ func (r *VaultResolver) MarkStandardLinkResolved(rawTarget string, note *model.N
 	r.markResolved(r.consumeOutLink(false, rawTarget, true), note)
 }
 
+// MarkStandardSectionLinkResolved records a section source as the resolved
+// target while retaining its non-article source identity.
+func (r *VaultResolver) MarkStandardSectionLinkResolved(rawTarget string, section *model.Section) {
+	r.markSectionResolved(r.consumeOutLink(false, rawTarget, true), section)
+}
+
 func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string, standard bool) *model.LinkRef {
 	if r == nil || embed || r.CurrentNote == nil {
 		return nil
@@ -773,6 +971,13 @@ func (r *VaultResolver) markResolved(ref *model.LinkRef, note *model.Note) {
 		return
 	}
 	ref.ResolvedRelPath = note.RelPath
+}
+
+func (r *VaultResolver) markSectionResolved(ref *model.LinkRef, section *model.Section) {
+	if ref == nil || section == nil {
+		return
+	}
+	ref.ResolvedRelPath = section.SourcePath
 }
 
 func (r *VaultResolver) recordDeadLink(rawTarget string, ref *model.LinkRef) {
@@ -821,12 +1026,34 @@ func (r *VaultResolver) recordMissingFragment(rawTarget string, ref *model.LinkR
 	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q points to missing heading %q in %q", rawTarget, missing, note.RelPath)})
 }
 
+func (r *VaultResolver) recordMissingSectionFragment(rawTarget string, ref *model.LinkRef, section *model.Section, fragment string) {
+	if r == nil || r.Diag == nil || section == nil {
+		return
+	}
+
+	missing := normalizeHeadingWhitespace(fragment)
+	if missing == "" {
+		r.recordDeadLink(rawTarget, ref)
+		return
+	}
+
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q points to missing heading %q in section source %q", rawTarget, missing, section.SourcePath)})
+}
+
 func (r *VaultResolver) recordAmbiguous(rawTarget string, ref *model.LinkRef, chosen *model.Note, candidates []string) {
 	if r == nil || r.Diag == nil || chosen == nil || len(candidates) == 0 {
 		return
 	}
 
 	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kindAmbiguousWikilink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q matched multiple notes at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.RelPath)})
+}
+
+func (r *VaultResolver) recordAmbiguousSection(rawTarget string, ref *model.LinkRef, chosen *model.Section, candidates []string) {
+	if r == nil || r.Diag == nil || chosen == nil || len(candidates) == 0 {
+		return
+	}
+
+	r.Diag.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: kindAmbiguousWikilink, Location: r.location(ref), Target: rawTarget, Message: fmt.Sprintf("wikilink %q matched multiple section sources at the same path distance (%s); choosing %q", rawTarget, strings.Join(candidates, ", "), chosen.SourcePath)})
 }
 
 func (r *VaultResolver) location(ref *model.LinkRef) diag.Location {

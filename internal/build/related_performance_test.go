@@ -140,7 +140,7 @@ func TestRelatedMemoryLifetimes(t *testing.T) {
 		t.Fatalf("related semantic inputs = %d, want %d before page output", relatedSemanticCount(analysis.Plan), count)
 	}
 
-	result, err := buildStrictSite(analysis.Plan, vault, output, nil, false, 4)
+	result, err := buildStrictSite(analysis.Plan, vault, output, nil, 4)
 	if err != nil {
 		t.Fatalf("buildStrictSite() error = %v; result = %#v", err, result)
 	}

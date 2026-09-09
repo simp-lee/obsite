@@ -861,6 +861,9 @@ func plannedWatchFiles(vaultPath, outputPath string) map[string]struct{} {
 			add(source)
 		}
 	}
+	for source := range plan.CSSInputFiles {
+		add(source)
+	}
 	return files
 }
 

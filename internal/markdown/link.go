@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/diag"
-	"github.com/simp-lee/obsite/internal/markdown/headingid"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
@@ -112,12 +111,12 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 	lookup := internalwikilink.LookupResult{}
 	if rootRelative {
 		lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, escapedTargetPath, fragment)
-		if lookup.Note == nil && !lookup.MissingFragment {
+		if lookup.Note == nil && lookup.Section == nil && !lookup.MissingFragment {
 			lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
 		}
 	} else if targetPath != "" {
 		lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, vaultPath, fragment)
-		if lookup.Note == nil && r.sourceNote.Route != "" {
+		if lookup.Note == nil && lookup.Section == nil && r.sourceNote.Route != "" {
 			if base, parseErr := url.Parse(r.sourceNote.Route); parseErr == nil {
 				resolved := base.ResolveReference(parsed)
 				lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, resolved.EscapedPath(), fragment)
@@ -131,27 +130,34 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 			return prefixRootRelativeDestination(r.outputNote, raw)
 		}
 		section := lookup.Section
-		if section == nil {
-			section = lookupSectionTarget(r.index, r.sourceNote, targetPath)
-		}
 		if section != nil && inLinkVersionScope(r.sourceNote, section) {
-			href := relativeToNoteOutput(r.outputNote, section.Route) + "/"
-			if section.Route == "/" && !rootRelative {
-				href = strings.TrimSuffix(relativeToNoteOutput(r.outputNote, "index.html"), "index.html")
+			resolvedFragment := ""
+			if fragment != "" {
+				if lookup.MissingFragment || lookup.FragmentID == "" {
+					resolvedFragment = fragment
+					if r.diagnostics != nil {
+						r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q targets a missing section heading", sourceTarget)})
+					}
+				} else {
+					resolvedFragment = lookup.FragmentID
+				}
 			}
+			href := internalwikilink.BuildSectionHref(r.outputNote, r.sourceNote, section, resolvedFragment, r.headingIDPrefix)
 			if rootRelative {
 				href = strings.TrimSuffix(r.outputNote.BasePath, "/") + section.Route
+				if resolvedFragment != "" {
+					href += "#" + resolvedFragment
+				}
 			}
 			if parsed.RawQuery != "" || parsed.ForceQuery {
-				href += "?" + parsed.RawQuery
-			}
-			if fragment != "" {
-				if id, ok := sectionFragmentID(section, fragment); ok {
-					fragment = id
-				} else if r.diagnostics != nil {
-					r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityWarning, Kind: diag.KindDeadLink, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown link %q targets a missing section heading", sourceTarget)})
+				if fragmentIndex := strings.IndexByte(href, '#'); fragmentIndex >= 0 {
+					href = href[:fragmentIndex] + "?" + parsed.RawQuery + href[fragmentIndex:]
+				} else {
+					href += "?" + parsed.RawQuery
 				}
-				href += "#" + fragment
+			}
+			if !lookup.MissingFragment && r.linkResolver != nil {
+				r.linkResolver.MarkStandardSectionLinkResolved(standardLinkLedgerTarget(sourceTarget), section)
 			}
 			return href
 		}
@@ -251,19 +257,6 @@ func isMarkdownAttachmentTarget(targetPath string) bool {
 	return extension != "" && extension != ".md"
 }
 
-func sectionFragmentID(section *model.Section, fragment string) (string, bool) {
-	if section == nil {
-		return "", false
-	}
-	canonical := headingid.CanonicalText(fragment)
-	for _, heading := range section.Headings {
-		if headingid.CanonicalText(heading.ID) == canonical || headingid.CanonicalText(heading.Text) == canonical {
-			return heading.ID, heading.ID != ""
-		}
-	}
-	return "", false
-}
-
 func isGeneratedTagRoute(index *model.VaultIndex, route string) bool {
 	if index == nil {
 		return false
@@ -274,29 +267,6 @@ func isGeneratedTagRoute(index *model.VaultIndex, route string) bool {
 		}
 	}
 	return false
-}
-
-func lookupSectionTarget(index *model.VaultIndex, note *model.Note, target string) *model.Section {
-	if index == nil {
-		return nil
-	}
-	target = strings.TrimSpace(target)
-	if target == "" {
-		return nil
-	}
-	if strings.HasPrefix(target, "/") {
-		cleaned := strings.Trim(target, "/")
-		route := "/"
-		if cleaned != "" {
-			route = "/" + slug.EncodePath(cleaned) + "/"
-		}
-		return index.SectionsByRoute[route]
-	}
-	if note == nil {
-		return nil
-	}
-	sectionPath := path.Clean(path.Join(path.Dir(note.RelPath), target))
-	return index.Sections[sectionPath]
 }
 
 func inLinkVersionScope(note *model.Note, section *model.Section) bool {

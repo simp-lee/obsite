@@ -23,6 +23,10 @@ const outputDirPrefix = "assets"
 var errUnsupportedAssetSource = errors.New("asset source must be a regular non-symlink file inside the vault")
 
 func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, reservedOutputKeys map[string]struct{}) map[string]string {
+	return planAssetDestinationsWithOverrides(vaultRoot, assets, reservedOutputKeys, nil)
+}
+
+func planAssetDestinationsWithOverrides(vaultRoot string, assets map[string]*model.Asset, reservedOutputKeys map[string]struct{}, overrides map[string][]byte) map[string]string {
 	grouped := make(map[string][]string)
 
 	for key, asset := range assets {
@@ -44,7 +48,7 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, res
 	for _, groupKey := range groupKeys {
 		sources := grouped[groupKey]
 		sort.Strings(sources)
-		hashed := hashCollisionPaths(vaultRoot, groupKey, sources)
+		hashed := hashCollisionPathsWithOverrides(vaultRoot, groupKey, sources, overrides)
 
 		if len(sources) == 1 {
 			planned[sources[0]] = hashed[sources[0]]
@@ -60,9 +64,13 @@ func planAssetDestinations(vaultRoot string, assets map[string]*model.Asset, res
 }
 
 func hashCollisionPaths(vaultRoot string, groupKey string, sources []string) map[string]string {
+	return hashCollisionPathsWithOverrides(vaultRoot, groupKey, sources, nil)
+}
+
+func hashCollisionPathsWithOverrides(vaultRoot string, groupKey string, sources []string, overrides map[string][]byte) map[string]string {
 	hashes := make(map[string]string, len(sources))
 	for _, srcPath := range sources {
-		hashValue, err := assetHash(vaultRoot, srcPath)
+		hashValue, err := assetHashWithOverrides(vaultRoot, srcPath, overrides)
 		if err != nil {
 			hashValue = missingAssetHash(srcPath)
 		}
@@ -274,6 +282,14 @@ func plainAssetKey(srcPath string) string {
 }
 
 func assetHash(vaultRoot string, srcPath string) (hashHex string, err error) {
+	return assetHashWithOverrides(vaultRoot, srcPath, nil)
+}
+
+func assetHashWithOverrides(vaultRoot string, srcPath string, overrides map[string][]byte) (hashHex string, err error) {
+	if data, ok := overrides[srcPath]; ok {
+		hash := sha256.Sum256(data)
+		return hex.EncodeToString(hash[:]), nil
+	}
 	if vaultRoot == "" {
 		return missingAssetHash(srcPath), nil
 	}

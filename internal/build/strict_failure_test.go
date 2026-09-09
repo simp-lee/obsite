@@ -121,7 +121,7 @@ func TestStrictBuildPreservesOutputAndCleansStageWhenSocialGenerationFails(t *te
 	articles := analysis.Plan.Plan.Articles
 	target := articles[len(articles)-1].RelPath
 	analysis.Plan.Index.Notes[target].Frontmatter.Title = ""
-	if _, err := buildStrictSite(analysis.Plan, vault, output, nil, false); err == nil || !strings.Contains(err.Error(), "generate social card") {
+	if _, err := buildStrictSite(analysis.Plan, vault, output, nil); err == nil || !strings.Contains(err.Error(), "generate social card") {
 		t.Fatalf("build error = %v, want social generation failure", err)
 	}
 	after := strictOutputBytes(t, output)

@@ -35,6 +35,64 @@ source:
 	}
 }
 
+func TestStrictBuildMarksSameSiteAbsoluteNavigationCurrent(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", `title: Navigation
+baseURL: https://example.test/sub/
+navigation:
+  - name: Current
+    url: https://example.test/sub/article/
+  - name: Outside Base
+    url: https://example.test/article/
+  - name: External
+    url: https://other.test/sub/article/
+  - name: Encoded Separator
+    url: https://example.test/sub%2Farticle/
+`)
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\n---\nContent\n")
+	output := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
+		t.Fatal(err)
+	}
+
+	page := string(readBuildOutputFile(t, output, "article/index.html"))
+	start := strings.Index(page, `aria-label="Global navigation"`)
+	if start < 0 {
+		t.Fatalf("article has no global navigation:\n%s", page)
+	}
+	end := strings.Index(page[start:], "</nav>")
+	if end < 0 {
+		t.Fatalf("article has unterminated global navigation:\n%s", page)
+	}
+	navigation := page[start : start+end]
+	if !strings.Contains(navigation, `href=https://example.test/sub/article/ aria-current=page>Current</a>`) {
+		t.Fatalf("same-site absolute navigation target is not current or its href changed: %s", navigation)
+	}
+	if strings.Count(navigation, `aria-current=page`) != 1 {
+		t.Fatalf("global navigation current-page count = %d, want 1: %s", strings.Count(navigation, `aria-current=page`), navigation)
+	}
+	for _, href := range []string{"https://example.test/article/", "https://other.test/sub/article/", "https://example.test/sub%2Farticle/"} {
+		if !strings.Contains(navigation, "href="+href) {
+			t.Fatalf("absolute navigation href %q was not preserved: %s", href, navigation)
+		}
+	}
+}
+
+func TestStrictBuildMarksPathlessAbsoluteHomeNavigationCurrent(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation:\n  - name: Home\n    url: https://example.test\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	output := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, output, Options{Strict: true}); err != nil {
+		t.Fatal(err)
+	}
+	page := string(readBuildOutputFile(t, output, "index.html"))
+	if !strings.Contains(page, `href=https://example.test aria-current=page>Home</a>`) {
+		t.Fatalf("pathless homepage navigation is not current or its href changed: %s", page)
+	}
+}
+
 func TestStrictBuildResolvesLinksToGeneratedTagPages(t *testing.T) {
 	vault := t.TempDir()
 	writeStrictFile(t, vault, "obsite.yaml", "title: Tags\nbaseURL: https://example.test/\nnavigation:\n  - name: Home\n    section: .\n")

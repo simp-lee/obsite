@@ -95,7 +95,7 @@ func TestStrictBuildUsesCanonicalSectionPlanAndRichMarkdown(t *testing.T) {
 	}
 }
 
-func TestStrictBuildIncludesNestedSidebarEntriesInHTMLFallback(t *testing.T) {
+func TestStrictBuildKeepsHTMLSidebarFallbackPageLocal(t *testing.T) {
 	vaultPath := t.TempDir()
 	writeStrictFile(t, vaultPath, "obsite.yaml", `title: Nested Sidebar
 baseURL: https://example.test/
@@ -107,19 +107,56 @@ sidebar:
 	writeStrictFile(t, vaultPath, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\nDocs\n")
 	writeStrictFile(t, vaultPath, "docs/nested/_index.md", "---\ntitle: Nested\npublish: true\n---\nNested\n")
 	writeStrictFile(t, vaultPath, "docs/nested/leaf.md", "---\ntitle: Leaf\npublish: true\ntype: page\n---\nLeaf\n")
+	writeStrictFile(t, vaultPath, "other/_index.md", "---\ntitle: Other\npublish: true\n---\nOther\n")
+	writeStrictFile(t, vaultPath, "other/unrelated.md", "---\ntitle: Unrelated\npublish: true\ntype: page\n---\nUnrelated\n")
 
 	outputPath := filepath.Join(t.TempDir(), "site")
 	if _, err := BuildWithOptions(vaultPath, outputPath, Options{}); err != nil {
 		t.Fatalf("BuildWithOptions() error = %v", err)
 	}
-	index := string(readBuildOutputFile(t, outputPath, "index.html"))
-	for _, want := range []string{"Docs", "Nested", "Leaf"} {
-		if !strings.Contains(index, want) {
-			t.Fatalf("HTML sidebar fallback missing nested entry %q:\n%s", want, index)
+	fallback := func(route string) string {
+		t.Helper()
+		page := string(readBuildOutputFile(t, outputPath, route))
+		start := strings.Index(page, "data-sidebar-root")
+		if start < 0 {
+			t.Fatalf("HTML page %q has no Sidebar fallback", route)
+		}
+		end := strings.Index(page[start:], "</nav>")
+		if end < 0 {
+			t.Fatalf("HTML page %q has an unterminated Sidebar fallback", route)
+		}
+		return page[start : start+end]
+	}
+
+	rootFallback := fallback("index.html")
+	for _, want := range []string{"Home", "Docs", "Other"} {
+		if !strings.Contains(rootFallback, want) {
+			t.Fatalf("root Sidebar fallback missing direct navigation %q: %s", want, rootFallback)
 		}
 	}
-	if strings.Count(index, `sidebar-list`) < 3 {
-		t.Fatalf("HTML sidebar fallback did not preserve nested list structure:\n%s", index)
+	for _, unwanted := range []string{"Nested", "Leaf", "Unrelated"} {
+		if strings.Contains(rootFallback, unwanted) {
+			t.Fatalf("root Sidebar fallback copied descendant %q: %s", unwanted, rootFallback)
+		}
+	}
+
+	articleFallback := fallback("docs/nested/leaf/index.html")
+	for _, want := range []string{"Home", "Docs", "Nested", "Leaf", `aria-current=page`} {
+		if !strings.Contains(articleFallback, want) {
+			t.Fatalf("article Sidebar fallback missing contextual navigation %q: %s", want, articleFallback)
+		}
+	}
+	for _, unwanted := range []string{"Other", "Unrelated"} {
+		if strings.Contains(articleFallback, unwanted) {
+			t.Fatalf("article Sidebar fallback copied unrelated branch %q: %s", unwanted, articleFallback)
+		}
+	}
+
+	sharedSidebar := string(readBuildOutputFile(t, outputPath, "assets/obsite/sidebar.json"))
+	for _, want := range []string{"Docs", "Nested", "Leaf", "Other", "Unrelated"} {
+		if !strings.Contains(sharedSidebar, want) {
+			t.Fatalf("shared Sidebar payload is missing complete-tree entry %q: %s", want, sharedSidebar)
+		}
 	}
 }
 

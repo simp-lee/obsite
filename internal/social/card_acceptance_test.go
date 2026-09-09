@@ -100,6 +100,27 @@ func TestGenerateTruncatesEachMetadataLine(t *testing.T) {
 	}
 }
 
+func TestGenerateTruncatesContextToOneGraphemeAwareLine(t *testing.T) {
+	const (
+		longContext = "文档 / 指南 / 上下文 / 文档 / 指南 / 上下文 / 文档 / 指南 / 上下文 / 文档 / 指南 / 上下文 / 文档 / 指南 / 上下文"
+		wantContext = "文档 / 指南 / 上下文 / 文档 / 指南 / 上下文 / 文档 / 指…"
+	)
+	input := Input{CanonicalURL: "https://example.test/context/", SiteTitle: "Site", Title: "Title", Context: longContext, Cover: acceptancePNGCover}
+	got, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := input
+	expected.Context = wantContext
+	want, err := Generate(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.PNG, want.PNG) {
+		t.Fatal("context was not rendered as one grapheme-aware ellipsized line")
+	}
+}
+
 func TestGenerateCanonicalInputMutationsChangeContentAddress(t *testing.T) {
 	base := Input{
 		CanonicalURL: "https://example.test/canonical/",

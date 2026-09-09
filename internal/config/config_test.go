@@ -26,6 +26,74 @@ func TestLoadForBuildRequiresStrictNavigationAndRejectsLegacyFields(t *testing.T
 	}
 }
 
+func TestLoadForBuildRejectsExplicitEmptyTargetsAndTemplates(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{
+			name:    "navigation keys are mutually exclusive even when empty",
+			content: "navigation:\n  - name: Home\n    section: .\n    url: ''\n",
+			want:    "navigation[0] must contain exactly one of url or section",
+		},
+		{
+			name:    "empty navigation URL",
+			content: "navigation:\n  - name: Home\n    url: '  '\n",
+			want:    "navigation[0].url must be non-empty",
+		},
+		{
+			name:    "empty navigation section",
+			content: "navigation:\n  - name: Home\n    section: ''\n",
+			want:    "navigation[0].section must be non-empty",
+		},
+		{
+			name:    "empty edit template",
+			content: "navigation: []\nsource:\n  editURL: ''\n",
+			want:    "source.editURL must be non-empty",
+		},
+		{
+			name:    "empty view template",
+			content: "navigation: []\nsource:\n  viewURL: '  '\n",
+			want:    "source.viewURL must be non-empty",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			content := "title: Site\nbaseURL: https://example.test/\n" + test.content
+			_, err := LoadForBuild(writeConfigVault(t, content))
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("LoadForBuild() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadForBuildRejectsScalarTypeCoercion(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		content  string
+		field    string
+		typeName string
+	}{
+		{name: "legacy boolean spelling", content: "related:\n  enabled: yes\n", field: "related.enabled", typeName: "boolean"},
+		{name: "floating point integer", content: "related:\n  count: 1.9\n", field: "related.count", typeName: "integer"},
+		{name: "numeric navigation name", content: "navigation:\n  - name: 123\n    section: .\n", field: "navigation[0].name", typeName: "string"},
+		{name: "wrong sequence tag", content: "navigation: !!str []\n", field: "navigation", typeName: "sequence"},
+		{name: "wrong mapping tag", content: "source: !!seq {}\n", field: "source", typeName: "mapping"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			base := "title: Site\nbaseURL: https://example.test/\nnavigation: []\n"
+			if strings.HasPrefix(test.content, "navigation:") {
+				base = "title: Site\nbaseURL: https://example.test/\n"
+			}
+			_, err := LoadForBuild(writeConfigVault(t, base+test.content))
+			if err == nil || !strings.Contains(err.Error(), test.field) || !strings.Contains(err.Error(), test.typeName) {
+				t.Fatalf("LoadForBuild() error = %v, want %s YAML %s rejection", err, test.field, test.typeName)
+			}
+		})
+	}
+}
+
 func TestLoadForBuildNormalizesRevisedConfig(t *testing.T) {
 	vault := writeConfigVault(t, `title: Site
 baseURL: https://example.test/base

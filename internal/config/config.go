@@ -49,14 +49,14 @@ type fileConfig struct {
 }
 
 type navigationFileItem struct {
-	Name    string `yaml:"name"`
-	URL     string `yaml:"url"`
-	Section string `yaml:"section"`
+	Name    string  `yaml:"name"`
+	URL     *string `yaml:"url"`
+	Section *string `yaml:"section"`
 }
 
 type sourceFileConfig struct {
-	EditURL string `yaml:"editURL"`
-	ViewURL string `yaml:"viewURL"`
+	EditURL *string `yaml:"editURL"`
+	ViewURL *string `yaml:"viewURL"`
 }
 
 type versionsFileConfig struct {
@@ -258,10 +258,22 @@ func validateParsedFileConfig(parsed fileConfig) error {
 			if strings.TrimSpace(item.Name) == "" {
 				return fmt.Errorf("navigation[%d].name is required", index)
 			}
-			if (strings.TrimSpace(item.URL) == "") == (strings.TrimSpace(item.Section) == "") {
+			if (item.URL == nil) == (item.Section == nil) {
 				return fmt.Errorf("navigation[%d] must contain exactly one of url or section", index)
 			}
+			if item.URL != nil && strings.TrimSpace(*item.URL) == "" {
+				return fmt.Errorf("navigation[%d].url must be non-empty", index)
+			}
+			if item.Section != nil && strings.TrimSpace(*item.Section) == "" {
+				return fmt.Errorf("navigation[%d].section must be non-empty", index)
+			}
 		}
+	}
+	if parsed.Source.EditURL != nil && strings.TrimSpace(*parsed.Source.EditURL) == "" {
+		return fmt.Errorf("source.editURL must be non-empty")
+	}
+	if parsed.Source.ViewURL != nil && strings.TrimSpace(*parsed.Source.ViewURL) == "" {
+		return fmt.Errorf("source.viewURL must be non-empty")
 	}
 	if parsed.Pagination.PageSize != nil && *parsed.Pagination.PageSize <= 0 {
 		return fmt.Errorf("pagination.pageSize must be greater than 0")
@@ -283,11 +295,22 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	cfg.DefaultImg = strings.TrimSpace(parsed.DefaultImg)
 	cfg.Navigation = make([]model.NavigationItem, 0, len(parsed.Navigation))
 	for _, item := range parsed.Navigation {
-		cfg.Navigation = append(cfg.Navigation, model.NavigationItem{
-			Name: strings.TrimSpace(item.Name), URL: strings.TrimSpace(item.URL), Section: strings.TrimSpace(item.Section),
-		})
+		navigation := model.NavigationItem{Name: strings.TrimSpace(item.Name)}
+		if item.URL != nil {
+			navigation.URL = strings.TrimSpace(*item.URL)
+		}
+		if item.Section != nil {
+			navigation.Section = strings.TrimSpace(*item.Section)
+		}
+		cfg.Navigation = append(cfg.Navigation, navigation)
 	}
-	cfg.Source = model.SourceConfig{EditURL: strings.TrimSpace(parsed.Source.EditURL), ViewURL: strings.TrimSpace(parsed.Source.ViewURL)}
+	cfg.Source = model.SourceConfig{}
+	if parsed.Source.EditURL != nil {
+		cfg.Source.EditURL = strings.TrimSpace(*parsed.Source.EditURL)
+	}
+	if parsed.Source.ViewURL != nil {
+		cfg.Source.ViewURL = strings.TrimSpace(*parsed.Source.ViewURL)
+	}
 	if parsed.Versions != nil {
 		versions := &model.VersionsConfig{Root: strings.TrimSpace(parsed.Versions.Root), Default: strings.TrimSpace(parsed.Versions.Default), Entries: make([]model.VersionEntry, 0, len(parsed.Versions.Entries))}
 		for _, entry := range parsed.Versions.Entries {
@@ -349,30 +372,122 @@ func validateStrictConfigDocument(data []byte) error {
 	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
 		return fmt.Errorf("configuration must be a YAML mapping")
 	}
-	allowed := map[string]struct{}{"title": {}, "baseURL": {}, "author": {}, "description": {}, "language": {}, "defaultImg": {}, "navigation": {}, "source": {}, "versions": {}, "pagination": {}, "sidebar": {}, "popover": {}, "related": {}, "rss": {}, "timeline": {}}
-	seen := make(map[string]struct{}, len(document.Content[0].Content)/2)
 	root := document.Content[0]
+	if err := validateConfigYAMLNode(root, "", configDocumentSchema()); err != nil {
+		return err
+	}
 	for index := 0; index+1 < len(root.Content); index += 2 {
-		key, value := root.Content[index], root.Content[index+1]
-		if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
-			return fmt.Errorf("configuration key at line %d must be a string", key.Line)
-		}
-		if _, exists := seen[key.Value]; exists {
-			return fmt.Errorf("duplicate key %q at line %d", key.Value, key.Line)
-		}
-		seen[key.Value] = struct{}{}
-		if value.Tag == "!!null" {
-			return fmt.Errorf("field %q at line %d must not be null", key.Value, value.Line)
-		}
-		if key.Value == "defaultPublish" {
-			return fmt.Errorf("field %q is not supported by the revised configuration", key.Value)
-		}
-		if _, ok := allowed[key.Value]; !ok {
-			return fmt.Errorf("unknown config field %q at line %d", key.Value, key.Line)
+		if root.Content[index].Value == "navigation" {
+			return nil
 		}
 	}
-	if _, ok := seen["navigation"]; !ok {
-		return fmt.Errorf("navigation must be explicitly provided")
+	return fmt.Errorf("navigation must be explicitly provided")
+}
+
+type configYAMLSchema struct {
+	kind     yaml.Kind
+	tag      string
+	typeName string
+	fields   map[string]*configYAMLSchema
+	item     *configYAMLSchema
+}
+
+func configDocumentSchema() *configYAMLSchema {
+	stringValue := &configYAMLSchema{kind: yaml.ScalarNode, tag: "!!str", typeName: "string"}
+	boolValue := &configYAMLSchema{kind: yaml.ScalarNode, tag: "!!bool", typeName: "boolean"}
+	intValue := &configYAMLSchema{kind: yaml.ScalarNode, tag: "!!int", typeName: "integer"}
+	enabled := func() *configYAMLSchema {
+		return &configYAMLSchema{kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{"enabled": boolValue}}
+	}
+	navigationItem := &configYAMLSchema{kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+		"name": stringValue, "url": stringValue, "section": stringValue,
+	}}
+	versionEntry := &configYAMLSchema{kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+		"id": stringValue, "label": stringValue, "source": stringValue,
+	}}
+	return &configYAMLSchema{kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+		"title":       stringValue,
+		"baseURL":     stringValue,
+		"author":      stringValue,
+		"description": stringValue,
+		"language":    stringValue,
+		"defaultImg":  stringValue,
+		"navigation":  {kind: yaml.SequenceNode, typeName: "sequence", item: navigationItem},
+		"source": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+			"editURL": stringValue, "viewURL": stringValue,
+		}},
+		"versions": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+			"root": stringValue, "default": stringValue,
+			"entries": {kind: yaml.SequenceNode, typeName: "sequence", item: versionEntry},
+		}},
+		"pagination": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{"pageSize": intValue}},
+		"sidebar":    enabled(),
+		"popover":    enabled(),
+		"related": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+			"enabled": boolValue, "count": intValue,
+		}},
+		"rss": enabled(),
+		"timeline": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+			"enabled": boolValue, "path": stringValue,
+		}},
+	}}
+}
+
+func validateConfigYAMLNode(node *yaml.Node, field string, schema *configYAMLSchema) error {
+	if node == nil || schema == nil {
+		return nil
+	}
+	if node.Tag == "!!null" {
+		return fmt.Errorf("field %q at line %d must not be null", field, node.Line)
+	}
+	expectedTag := schema.tag
+	if expectedTag == "" {
+		switch schema.kind {
+		case yaml.MappingNode:
+			expectedTag = "!!map"
+		case yaml.SequenceNode:
+			expectedTag = "!!seq"
+		}
+	}
+	if node.Kind != schema.kind || expectedTag != "" && node.ShortTag() != expectedTag {
+		if field == "" {
+			return fmt.Errorf("configuration must be a YAML %s", schema.typeName)
+		}
+		return fmt.Errorf("field %q at line %d must be a YAML %s", field, node.Line, schema.typeName)
+	}
+	switch schema.kind {
+	case yaml.MappingNode:
+		seen := make(map[string]int, len(node.Content)/2)
+		for index := 0; index+1 < len(node.Content); index += 2 {
+			key, value := node.Content[index], node.Content[index+1]
+			if key.Kind != yaml.ScalarNode || key.Tag != "!!str" {
+				return fmt.Errorf("mapping key at line %d must be a string", key.Line)
+			}
+			if firstLine, exists := seen[key.Value]; exists {
+				return fmt.Errorf("duplicate key %q at line %d (first declared at line %d)", key.Value, key.Line, firstLine)
+			}
+			seen[key.Value] = key.Line
+			childSchema := schema.fields[key.Value]
+			childField := key.Value
+			if field != "" {
+				childField = field + "." + key.Value
+			}
+			if childSchema == nil {
+				if field == "" && key.Value == "defaultPublish" {
+					return fmt.Errorf("field %q is not supported by the revised configuration", key.Value)
+				}
+				return fmt.Errorf("unknown config field %q at line %d", childField, key.Line)
+			}
+			if err := validateConfigYAMLNode(value, childField, childSchema); err != nil {
+				return err
+			}
+		}
+	case yaml.SequenceNode:
+		for index, child := range node.Content {
+			if err := validateConfigYAMLNode(child, fmt.Sprintf("%s[%d]", field, index), schema.item); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }

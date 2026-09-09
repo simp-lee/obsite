@@ -20,6 +20,9 @@ type BuildResult struct {
 	TagPages     int
 	WarningCount int
 	ErrorCount   int
+	// OutputCleanupError reports backup cleanup after a successful commit. It
+	// is publication status, not a quality failure.
+	OutputCleanupError error
 }
 
 // Options controls the strict section-based build entry point.
@@ -46,7 +49,7 @@ func BuildWithOptions(vaultPath, outputPath string, options Options) (*BuildResu
 		}
 		return result, internalanalyze.Failure(analysis.Diagnostics)
 	}
-	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Strict, options.Concurrency)
+	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Concurrency)
 	if strictResult == nil {
 		strictResult = &BuildResult{}
 	}

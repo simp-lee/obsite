@@ -362,6 +362,79 @@ func TestServeCommandWatchReloadsFixedVaultConfig(t *testing.T) {
 	}
 }
 
+func TestServeWatchCommandUsesRealBuildFailureTransaction(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputRoot := t.TempDir()
+	outputPath := filepath.Join(outputRoot, "site")
+	articlePath := filepath.Join(vaultPath, "article.md")
+	writeValidateFile(t, vaultPath, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeValidateFile(t, vaultPath, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeArticle := func(status, body string) {
+		t.Helper()
+		writeValidateFile(t, vaultPath, "article.md", "---\ntitle: Article\npublish: true\ntype: page\n"+status+"---\n"+body+"\n")
+	}
+	writeArticle("", "Published baseline")
+
+	deps := defaultCommandDependencies()
+	watcher := newFakeFileWatcher()
+	listenStarted := make(chan struct{}, 1)
+	listenBlock := make(chan struct{})
+	reloads := make(chan struct{}, 1)
+	server := &fakePreviewServer{listenStarted: listenStarted, listenBlock: listenBlock, reloadCalled: reloads}
+	deps.newPreviewServer = func(string, int) (previewServer, error) { return server, nil }
+	deps.newFileWatcher = func() (fileWatcher, error) { return watcher, nil }
+
+	var stdout lockedBuffer
+	var stderr lockedBuffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- executeWithDeps([]string{"serve", "--watch", "--vault", vaultPath, "--output", outputPath}, deps, &stdout, &stderr)
+	}()
+	select {
+	case <-listenStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for real initial build and preview server")
+	}
+	waitForServeWatchAddCount(t, watcher, vaultPath, 1)
+	before := snapshotCLIOutput(t, outputPath)
+
+	writeArticle("status: draft\n", "Invalid update")
+	watcher.send(fsnotify.Event{Name: articlePath, Op: fsnotify.Write})
+	waitForLockedBufferContainsWithin(t, &stderr, "watch: build site:", 3*time.Second)
+	watchDiagnostics := stderr.String()
+	for _, want := range []string{"error schema", "article.md:5", "[field=status]", "must be stable, experimental, or deprecated"} {
+		if !strings.Contains(watchDiagnostics, want) {
+			t.Fatalf("watch diagnostics = %q, want %q", watchDiagnostics, want)
+		}
+	}
+	assertCLIOutputUnchanged(t, outputPath, before, "serve --watch rebuild failure")
+	assertNoCLITransactionResidue(t, outputRoot, outputPath)
+	select {
+	case <-reloads:
+		t.Fatal("failed real rebuild notified live reload")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	writeArticle("status: stable\n", "Recovered update")
+	watcher.send(fsnotify.Event{Name: articlePath, Op: fsnotify.Write})
+	waitForServeWatchSignalWithin(t, reloads, "reload after real build recovery", 3*time.Second)
+	published, err := os.ReadFile(filepath.Join(outputPath, "article", "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(published, []byte("Recovered update")) || bytes.Contains(published, []byte("Published baseline")) {
+		t.Fatalf("recovered watch output = %s", published)
+	}
+
+	close(listenBlock)
+	if err := <-errCh; err != nil {
+		t.Fatalf("serve --watch error = %v", err)
+	}
+	if got := stdout.String(); got != "" {
+		t.Fatalf("serve --watch stdout = %q, want empty", got)
+	}
+}
+
 func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 	vaultPath := t.TempDir()
 	notePath := filepath.Join(vaultPath, "notes", "alpha.md")
@@ -782,6 +855,197 @@ func TestStartServeWatchLoopFiltersNonBuildOpsAndHiddenFiles(t *testing.T) {
 	watcher.send(fsnotify.Event{Name: imagePath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "image rebuild")
 	assertNoServeWatchError(t, errorSignal)
+}
+
+func TestPlannedWatchFilesIncludesRawHTMLAndCustomCSSDependencies(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeCLIConfig(t, vaultPath)
+	for relPath, content := range map[string]string{
+		"_index.md":         "---\ntitle: Home\npublish: true\n---\n<img src=\"images/raw.bin\">\n",
+		"custom.css":        "@import \"styles/nested.css\";\n",
+		"styles/nested.css": "body { background: url(../images/css.bin); }\n",
+		"images/raw.bin":    "raw",
+		"images/css.bin":    "css",
+		"images/unused.bin": "unused",
+	} {
+		filePath := filepath.Join(vaultPath, filepath.FromSlash(relPath))
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := plannedWatchFiles(vaultPath, filepath.Join(vaultPath, "public"))
+	for _, relPath := range []string{"images/raw.bin", "images/css.bin", "styles/nested.css"} {
+		filePath := filepath.Join(vaultPath, filepath.FromSlash(relPath))
+		if _, ok := files[filePath]; !ok {
+			t.Fatalf("planned watch files omit dependency %q: %#v", relPath, files)
+		}
+	}
+	unused := filepath.Join(vaultPath, "images", "unused.bin")
+	if _, ok := files[unused]; ok {
+		t.Fatalf("planned watch files include unrelated resource %q", unused)
+	}
+
+	nested := filepath.Join(vaultPath, "styles", "nested.css")
+	if err := os.WriteFile(nested, []byte("body { background: url(../images/missing.bin); }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	failedFiles := plannedWatchFiles(vaultPath, filepath.Join(vaultPath, "public"))
+	if _, ok := failedFiles[nested]; !ok {
+		t.Fatalf("failed CSS analysis dropped discovered dependency %q: %#v", nested, failedFiles)
+	}
+}
+
+func TestPlannedWatchFilesRetainsAmbiguousMarkdownResourceCandidates(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		reference string
+	}{
+		{name: "attachment link", reference: `[Logo](logo.svg)`},
+		{name: "Markdown image", reference: `![Logo](logo.svg)`},
+		{name: "image embed", reference: `![[logo.svg]]`},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			vaultPath := t.TempDir()
+			writeCLIConfig(t, vaultPath)
+			if err := os.WriteFile(filepath.Join(vaultPath, "_index.md"), []byte("---\ntitle: Home\npublish: true\n---\n"+testCase.reference+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"Logo.svg", "LOGO.svg"} {
+				if err := os.WriteFile(filepath.Join(vaultPath, name), []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			files := plannedWatchFiles(vaultPath, filepath.Join(vaultPath, "public"))
+			for _, name := range []string{"Logo.svg", "LOGO.svg"} {
+				candidate := filepath.Join(vaultPath, name)
+				if _, ok := files[candidate]; !ok {
+					t.Fatalf("failed analysis watch files omit ambiguous candidate %q: %#v", name, files)
+				}
+				loop := serveWatchLoop{vaultPath: vaultPath, outputPath: filepath.Join(vaultPath, "public"), configPath: filepath.Join(vaultPath, defaultConfigFilename), relevantWatchFiles: files}
+				if !loop.shouldTrigger(candidate, fsnotify.Remove, false) {
+					t.Fatalf("removing ambiguous candidate %q would not trigger a recovery build", name)
+				}
+			}
+		})
+	}
+}
+
+func TestServeWatchRecoversWhenAmbiguousResourceCandidateIsDeleted(t *testing.T) {
+	vaultPath := t.TempDir()
+	outputPath := filepath.Join(vaultPath, "public")
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	indexPath := filepath.Join(vaultPath, "_index.md")
+	logoPath := filepath.Join(vaultPath, "Logo.svg")
+	collisionPath := filepath.Join(vaultPath, "LOGO.svg")
+	writeCLIConfig(t, vaultPath)
+	writeIndex := func(body string) {
+		t.Helper()
+		content := "---\ntitle: Home\npublish: true\n---\n" + body + "\n\n![Logo](logo.svg)\n"
+		if err := os.WriteFile(indexPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeIndex("Initial body")
+	if err := os.WriteFile(logoPath, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := internalbuild.BuildWithOptions(vaultPath, outputPath, internalbuild.Options{}); err != nil {
+		t.Fatalf("initial build error = %v", err)
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := make(chan error, 2)
+	reloads := make(chan struct{}, 1)
+	watchErrors := make(chan error, 1)
+	refreshInputs := func() map[string]struct{} { return plannedWatchFiles(vaultPath, outputPath) }
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:               watcher,
+		vaultPath:             vaultPath,
+		outputPath:            outputPath,
+		configPath:            configPath,
+		relevantWatchFiles:    refreshInputs(),
+		refreshRelevantInputs: refreshInputs,
+		debounce:              15 * time.Millisecond,
+		rebuild: func() error {
+			_, err := internalbuild.BuildWithOptions(vaultPath, outputPath, internalbuild.Options{})
+			attempts <- err
+			return err
+		},
+		notifyReload: func() { reloads <- struct{}{} },
+		onError:      func(err error) { watchErrors <- err },
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	writeIndex("Updated body")
+	if err := os.WriteFile(collisionPath, []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	watcher.send(fsnotify.Event{Name: collisionPath, Op: fsnotify.Create})
+	select {
+	case err := <-attempts:
+		if err == nil {
+			t.Fatal("ambiguous resource rebuild unexpectedly succeeded")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for ambiguous resource rebuild")
+	}
+	waitForServeWatchErrorContains(t, watchErrors, "site plan has")
+	published, err := os.ReadFile(filepath.Join(outputPath, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(published, []byte("Initial body")) || bytes.Contains(published, []byte("Updated body")) {
+		t.Fatalf("failed rebuild changed published body: %s", published)
+	}
+
+	if err := os.Remove(collisionPath); err != nil {
+		t.Fatal(err)
+	}
+	watcher.send(fsnotify.Event{Name: collisionPath, Op: fsnotify.Remove})
+	select {
+	case err := <-attempts:
+		if err != nil {
+			t.Fatalf("resource deletion recovery build error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for resource deletion recovery build")
+	}
+	waitForServeWatchSignalWithin(t, reloads, "reload after ambiguity repair", 2*time.Second)
+	published, err = os.ReadFile(filepath.Join(outputPath, "index.html"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(published, []byte("Updated body")) {
+		t.Fatalf("resource deletion did not publish the pending body: %s", published)
+	}
+}
+
+func TestPlannedWatchFilesKeepsExactResourceLookupNarrow(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeCLIConfig(t, vaultPath)
+	if err := os.WriteFile(filepath.Join(vaultPath, "_index.md"), []byte("---\ntitle: Home\npublish: true\n---\n![Logo](Logo.svg)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Logo.svg", "LOGO.svg"} {
+		if err := os.WriteFile(filepath.Join(vaultPath, name), []byte(`<svg xmlns="http://www.w3.org/2000/svg"></svg>`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	files := plannedWatchFiles(vaultPath, filepath.Join(vaultPath, "public"))
+	if _, ok := files[filepath.Join(vaultPath, "Logo.svg")]; !ok {
+		t.Fatal("planned watch files omit the exact resource dependency")
+	}
+	if _, ok := files[filepath.Join(vaultPath, "LOGO.svg")]; ok {
+		t.Fatal("planned watch files include an unreferenced canonical collision despite exact lookup")
+	}
 }
 
 func TestStartServeWatchLoopRebuildsForAttachmentsAndVaultCustomCSS(t *testing.T) {

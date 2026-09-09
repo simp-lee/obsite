@@ -136,7 +136,7 @@ func newMarkdownWithState(
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
-		newRawHTMLExtender(),
+		newRawHTMLExtender(sourceNote, outputNote, idx, assetSink),
 		newImageExtender(sourceNote, outputNote, idx, assetSink, imageCount),
 	)
 

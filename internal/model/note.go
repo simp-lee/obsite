@@ -1,6 +1,15 @@
 package model
 
-import "time"
+import (
+	"path"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/simp-lee/obsite/internal/slug"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+)
 
 // Note describes a Markdown note discovered in a vault.
 type Note struct {
@@ -97,6 +106,74 @@ func noteSortKey(note *Note) string {
 	return note.RelPath
 }
 
+// LessCollectionNote applies the canonical article collection order shared by
+// section, sidebar, reading-flow, and tag lists.
+func LessCollectionNote(left *Note, right *Note) bool {
+	if left == nil || right == nil {
+		return left != nil
+	}
+	leftType, rightType := collectionTypeRank(left.Frontmatter.Type), collectionTypeRank(right.Frontmatter.Type)
+	if leftType != rightType {
+		return leftType < rightType
+	}
+	if left.Frontmatter.Type == "doc" && right.Frontmatter.Type == "doc" {
+		leftOrder, rightOrder := left.Frontmatter.Order, right.Frontmatter.Order
+		if (leftOrder != nil) != (rightOrder != nil) {
+			return leftOrder != nil
+		}
+		if leftOrder != nil && *leftOrder != *rightOrder {
+			return *leftOrder < *rightOrder
+		}
+		leftPrefix, leftHasPrefix, _ := slug.NumericPrefix(collectionFileStem(left.RelPath))
+		rightPrefix, rightHasPrefix, _ := slug.NumericPrefix(collectionFileStem(right.RelPath))
+		if leftHasPrefix != rightHasPrefix {
+			return leftHasPrefix
+		}
+		if leftHasPrefix && collectionNumericPrefixValue(leftPrefix) != collectionNumericPrefixValue(rightPrefix) {
+			return collectionNumericPrefixValue(leftPrefix) < collectionNumericPrefixValue(rightPrefix)
+		}
+	} else if left.Frontmatter.Type == "post" && right.Frontmatter.Type == "post" && !left.Frontmatter.Date.Equal(right.Frontmatter.Date) {
+		return left.Frontmatter.Date.After(right.Frontmatter.Date)
+	}
+	leftTitle, rightTitle := collectionFold(left.Frontmatter.Title), collectionFold(right.Frontmatter.Title)
+	if leftTitle != rightTitle {
+		return leftTitle < rightTitle
+	}
+	leftPath, rightPath := collectionFold(left.RelPath), collectionFold(right.RelPath)
+	if leftPath != rightPath {
+		return leftPath < rightPath
+	}
+	return left.RelPath < right.RelPath
+}
+
+func collectionTypeRank(typeName string) int {
+	switch typeName {
+	case "doc":
+		return 0
+	case "post":
+		return 1
+	case "page":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func collectionFileStem(relPath string) string {
+	filename := path.Base(relPath)
+	return strings.TrimSuffix(filename, path.Ext(filename))
+}
+
+func collectionNumericPrefixValue(prefix string) int64 {
+	prefix = strings.TrimRight(prefix, "-_ .")
+	value, _ := strconv.ParseInt(prefix, 10, 32)
+	return value
+}
+
+func collectionFold(value string) string {
+	return cases.Fold().String(norm.NFKC.String(value))
+}
+
 // SectionRange identifies a source slice within Note.RawContent.
 type SectionRange struct {
 	StartOffset int
@@ -158,7 +235,8 @@ type Heading struct {
 type LinkRef struct {
 	// RawTarget is captured from the source wikilink during AST extraction.
 	RawTarget string
-	// ResolvedRelPath is filled on render-time link copies once RawTarget matches a note.
+	// ResolvedRelPath is filled on render-time link copies once RawTarget
+	// matches an article or section source.
 	ResolvedRelPath string
 	Display         string
 	Fragment        string

@@ -33,7 +33,7 @@ import (
 
 // buildStrictSite publishes the normalized section model through the same
 // managed staging publisher used by the existing build foundation.
-func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, strict bool, concurrency ...int) (result *BuildResult, err error) {
+func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, concurrency ...int) (result *BuildResult, err error) {
 	workerConcurrency := 0
 	if len(concurrency) > 0 {
 		workerConcurrency = concurrency[0]
@@ -67,14 +67,9 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			}
 		}
 		if publisher.cleanupErr != nil {
-			warning := d.Diagnostic{Severity: d.SeverityWarning, Kind: d.KindOutputCleanup, Message: publisher.cleanupErr.Error()}
-			result.Diagnostics = append(result.Diagnostics, warning)
-			result.WarningCount++
+			result.OutputCleanupError = publisher.cleanupErr
 			if diagnosticsWriter != nil {
-				_, _ = fmt.Fprintf(diagnosticsWriter, "%s %s: %s\n", warning.Severity, warning.Kind, warning.Message)
-			}
-			if strict && err == nil {
-				err = fmt.Errorf("strict build output cleanup failed: %w", publisher.cleanupErr)
+				_, _ = fmt.Fprintf(diagnosticsWriter, "cleanup %s: %s\n", d.KindOutputCleanup, publisher.cleanupErr)
 			}
 		}
 	}()
@@ -95,8 +90,13 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 	if err != nil {
 		return result, err
 	}
+	overrides := strictPlannedAssetOverrides(plan)
+	for source, planned := range strictPlannedAssets(plan) {
+		plannedAsset := planned.Asset
+		assets[source] = &plannedAsset
+	}
 	reservedAssetOutputs := strictReservedAssetOutputs(plan)
-	assetCollector, err := internalasset.NewCollectorWithResourceFiles(boundary.VaultPath, assets, reservedAssetOutputs, nil)
+	assetCollector, err := internalasset.NewCollectorWithOverrides(boundary.VaultPath, assets, reservedAssetOutputs, nil, overrides)
 	if err != nil {
 		return result, fmt.Errorf("plan strict assets: %w", err)
 	}
@@ -268,21 +268,15 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		}
 	}
 	applyStrictPlannedDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
-	for source, planned := range plan.ThemeAssets {
-		asset := planned.Asset
-		allAssets[source] = &asset
+	for source, planned := range strictPlannedAssets(plan) {
+		plannedAsset := planned.Asset
+		allAssets[source] = &plannedAsset
 	}
 	assetSources := make([]string, 0, len(allAssets))
 	for source := range allAssets {
 		assetSources = append(assetSources, source)
 	}
 	sort.Strings(assetSources)
-	overrides := make(map[string][]byte, len(plan.ThemeAssets))
-	for source, planned := range plan.ThemeAssets {
-		if planned != nil {
-			overrides[source] = planned.Data
-		}
-	}
 	distinct := make(map[string]bool, len(assetSources))
 	for _, source := range assetSources {
 		distinct[source] = strictDistinctAssetSource(plan, source)
@@ -297,7 +291,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 			continue
 		}
 		var data []byte
-		if planned := plan.ThemeAssets[source]; planned != nil {
+		if planned := strictPlannedAsset(plan, source); planned != nil {
 			data = planned.Data
 		} else {
 			_, sourceData, _, readErr := internalfsutil.ReadContainedRegularFile(boundary.VaultPath, source)
@@ -350,6 +344,42 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		_ = diagnosticsWriter
 	}
 	return result, nil
+}
+
+func strictPlannedAssets(plan *model.SitePlan) map[string]*model.PlannedAsset {
+	if plan == nil {
+		return nil
+	}
+	planned := make(map[string]*model.PlannedAsset, len(plan.ThemeAssets)+len(plan.VaultCSSAssets))
+	for source, item := range plan.ThemeAssets {
+		if item != nil {
+			planned[source] = item
+		}
+	}
+	for source, item := range plan.VaultCSSAssets {
+		if item != nil {
+			planned[source] = item
+		}
+	}
+	return planned
+}
+
+func strictPlannedAsset(plan *model.SitePlan, source string) *model.PlannedAsset {
+	if plan == nil {
+		return nil
+	}
+	if planned := plan.VaultCSSAssets[source]; planned != nil {
+		return planned
+	}
+	return plan.ThemeAssets[source]
+}
+
+func strictPlannedAssetOverrides(plan *model.SitePlan) map[string][]byte {
+	overrides := make(map[string][]byte)
+	for source, planned := range strictPlannedAssets(plan) {
+		overrides[source] = planned.Data
+	}
+	return overrides
 }
 
 func strictDistinctAssetSource(plan *model.SitePlan, source string) bool {
@@ -504,7 +534,7 @@ func strictCacheHTMLBase(plan *model.SitePlan, route, title, description, source
 		input.Versions = append(input.Versions, strictCacheVersionEntry{ID: version.ID, Label: version.Label, RootRoute: version.Root.Route})
 	}
 	if plan.Config.Sidebar.Enabled {
-		input.Sidebar = strictSidebar(plan, versionID)
+		input.Sidebar = render.StrictSidebarRootFallbackNodes(plan, versionID)
 	}
 	return input
 }
@@ -606,6 +636,9 @@ func strictCacheLookupDigests(index *model.VaultIndex) (strictCacheLookupDigest,
 
 func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
 	input := strictCacheHTMLBase(plan, section.Route, section.Title, section.Description, section.SourcePath, section.VersionID)
+	if plan.Config.Sidebar.Enabled {
+		input.Sidebar = render.StrictSidebarSectionFallbackNodes(plan, section)
+	}
 	input.Section = &strictCacheSectionInput{
 		RelPath: section.RelPath, SourcePath: section.SourcePath, Route: section.Route,
 		Title: section.Title, Description: section.Description, Order: section.Order,
@@ -621,6 +654,9 @@ func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, l
 
 func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, section *model.Section, previous, next *model.Note, position, total int, backlinks, related []*model.Note, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
 	input := strictCacheHTMLBase(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, article.RelPath, article.VersionID)
+	if plan.Config.Sidebar.Enabled {
+		input.Sidebar = render.StrictSidebarArticleFallbackNodes(plan, section, article)
+	}
 	input.Article = &strictCacheArticleInput{
 		RelPath: article.RelPath, Route: article.Route, SectionPath: article.SectionPath,
 		VersionID: article.VersionID, VersionRoutes: article.VersionRoutes, SocialImage: article.SocialImage,
@@ -890,7 +926,7 @@ func writeStrictCacheManifest(outputRoot string, plan *model.SitePlan, index *mo
 		if plan == nil {
 			return fmt.Errorf("site plan is required for asset dependency %q", source)
 		}
-		if planned := plan.ThemeAssets[source]; planned != nil {
+		if planned := strictPlannedAsset(plan, source); planned != nil {
 			if err := addDependency("asset:"+source, source, struct {
 				Content []byte `json:"content"`
 			}{planned.Data}); err != nil {
@@ -937,10 +973,7 @@ func writeStrictConfiguredAssets(vaultRoot, outputRoot string, plan *model.SiteP
 		return nil
 	}
 	if plan.Config.CustomCSS != "" {
-		_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultRoot, plan.Config.CustomCSS)
-		if err != nil {
-			return fmt.Errorf("read custom CSS: %w", err)
-		}
+		data := plan.CustomCSSData
 		if err := outputs.dependencyBytes("custom CSS", strictCacheRelativePath(vaultRoot, plan.Config.CustomCSS), data); err != nil {
 			return err
 		}

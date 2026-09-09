@@ -71,6 +71,42 @@ func TestPublisherKeepsPublishedOutputWhenBackupCleanupPartiallyFails(t *testing
 	}
 }
 
+func TestStrictBuildReportsPostCommitCleanupWithoutReturningFailure(t *testing.T) {
+	vault := t.TempDir()
+	output := filepath.Join(t.TempDir(), "site")
+	writeStrictFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nOld body\n")
+	if _, err := BuildWithOptions(vault, output, Options{Strict: true}); err != nil {
+		t.Fatal(err)
+	}
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nNew body\n")
+
+	cleanupFailure := errors.New("simulated committed backup cleanup failure")
+	originalRemove := stagedOutputRemoveAll
+	stagedOutputRemoveAll = func(name string) error {
+		if strings.Contains(name, "-backup-") {
+			return cleanupFailure
+		}
+		return originalRemove(name)
+	}
+	defer func() { stagedOutputRemoveAll = originalRemove }()
+
+	var diagnostics bytes.Buffer
+	result, err := BuildWithOptions(vault, output, Options{Strict: true, DiagnosticsWriter: &diagnostics})
+	if err != nil {
+		t.Fatalf("BuildWithOptions() error = %v, want committed build success", err)
+	}
+	if result == nil || result.WarningCount != 0 || len(result.Diagnostics) != 0 || !errors.Is(result.OutputCleanupError, cleanupFailure) {
+		t.Fatalf("result = %#v, want separate post-commit cleanup status without a quality warning", result)
+	}
+	if !strings.Contains(diagnostics.String(), "cleanup output_cleanup") || !strings.Contains(diagnostics.String(), cleanupFailure.Error()) {
+		t.Fatalf("diagnostics = %q, want separate cleanup status", diagnostics.String())
+	}
+	if html := string(readBuildOutputFile(t, output, "index.html")); !strings.Contains(html, "New body") || strings.Contains(html, "Old body") {
+		t.Fatalf("published HTML = %q, want newly committed output", html)
+	}
+}
+
 func TestPublisherPublishesExpectedOutputDirectoryPermissions(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("directory permission bits are not portable on Windows")

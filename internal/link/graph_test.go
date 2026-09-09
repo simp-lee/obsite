@@ -72,6 +72,24 @@ func TestBuildSourceGraphResolvesRelativeGeneratedRoutes(t *testing.T) {
 	}
 }
 
+func TestBuildSourceGraphDoesNotReinterpretSectionLinksAsArticleRoutes(t *testing.T) {
+	t.Parallel()
+
+	host := testNote("docs/host.md", "docs/host")
+	host.Route = "/docs/host/"
+	host.OutLinks = []model.LinkRef{{RawTarget: "../guide/", Standard: true}}
+	article := testNote("docs/guide.md", "docs/guide")
+	article.Route = "/docs/guide/"
+	index := buildIndex([]*model.Note{host, article}, nil)
+	index.Sections = map[string]*model.Section{
+		"guide": {RelPath: "guide", SourcePath: "guide/_index.md", Route: "/guide/"},
+	}
+	graph := BuildSourceGraph(index)
+	if got := graph.Forward[host.RelPath]; len(got) != 0 {
+		t.Fatalf("section link created article recommendation signals: %v", got)
+	}
+}
+
 func TestBuildSourceGraphResolvesMarkdownEntitiesInStandardPaths(t *testing.T) {
 	t.Parallel()
 

@@ -20,6 +20,7 @@ type AssetCollector struct {
 	registeredByGroup  map[string][]string
 	planned            map[string]string
 	reservedOutputKeys map[string]struct{}
+	overrides          map[string][]byte
 	seededByGroup      map[string][]string
 	inventoryByGroup   map[string][]string
 	scanInventoryHook  func() error
@@ -33,18 +34,29 @@ func NewCollectorWithResourceFiles(vaultRoot string, indexed map[string]*model.A
 	return newCollectorWithReservedPaths(vaultRoot, indexed, reservedOutputPaths, resourceInventoryGroups(resourceFiles), nil)
 }
 
+// NewCollectorWithOverrides plans explicitly transformed assets from their
+// emitted bytes while retaining the shared vault inventory and collision rules.
+func NewCollectorWithOverrides(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, resourceFiles []string, overrides map[string][]byte) (*AssetCollector, error) {
+	return newCollectorWithOverrides(vaultRoot, indexed, reservedOutputPaths, resourceInventoryGroups(resourceFiles), nil, overrides)
+}
+
 func newCollectorWithReservedPaths(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, inventoryByGroup map[string][]string, scanInventoryHook func() error) (*AssetCollector, error) {
+	return newCollectorWithOverrides(vaultRoot, indexed, reservedOutputPaths, inventoryByGroup, scanInventoryHook, nil)
+}
+
+func newCollectorWithOverrides(vaultRoot string, indexed map[string]*model.Asset, reservedOutputPaths []string, inventoryByGroup map[string][]string, scanInventoryHook func() error, overrides map[string][]byte) (*AssetCollector, error) {
 	collector := &AssetCollector{
 		vaultRoot:          vaultRoot,
 		assets:             make(map[string]*model.Asset),
 		registeredByGroup:  make(map[string][]string),
 		planned:            make(map[string]string),
 		reservedOutputKeys: normalizeReservedOutputKeys(reservedOutputPaths),
+		overrides:          overrides,
 		seededByGroup:      make(map[string][]string),
 		scanInventoryHook:  scanInventoryHook,
 	}
 
-	for srcPath, dstPath := range planAssetDestinations(vaultRoot, indexed, collector.reservedOutputKeys) {
+	for srcPath, dstPath := range planAssetDestinationsWithOverrides(vaultRoot, indexed, collector.reservedOutputKeys, collector.overrides) {
 		if srcPath == "" || dstPath == "" {
 			continue
 		}
@@ -172,7 +184,7 @@ func (c *AssetCollector) PlanDestinations(assets map[string]*model.Asset) map[st
 		return nil
 	}
 
-	planned := planAssetDestinations(c.vaultRoot, expanded, c.reservedOutputKeys)
+	planned := planAssetDestinationsWithOverrides(c.vaultRoot, expanded, c.reservedOutputKeys, c.overrides)
 	filtered := make(map[string]string, len(requested))
 	for srcPath, dstPath := range planned {
 		if srcPath == "" || dstPath == "" {
@@ -214,7 +226,7 @@ func (c *AssetCollector) registerSitePathLocked(srcPath string) string {
 		return dstPath
 	}
 
-	hashValue, err := assetHash(c.vaultRoot, srcPath)
+	hashValue, err := assetHashWithOverrides(c.vaultRoot, srcPath, c.overrides)
 	if err != nil {
 		hashValue = missingAssetHash(srcPath)
 	}
@@ -244,7 +256,7 @@ func (c *AssetCollector) planGroupLocked(srcPath string) {
 		assets[candidate] = asset
 	}
 
-	for candidate, dstPath := range planAssetDestinations(c.vaultRoot, assets, c.reservedOutputKeys) {
+	for candidate, dstPath := range planAssetDestinationsWithOverrides(c.vaultRoot, assets, c.reservedOutputKeys, c.overrides) {
 		if candidate == "" || dstPath == "" {
 			continue
 		}

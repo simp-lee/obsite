@@ -64,6 +64,12 @@ type SitePlan struct {
 	ReservedRoutes map[string]struct{}
 	ThemeAssets    map[string]*PlannedAsset
 	ThemeAssetURLs map[string]string
+	CustomCSSData  []byte
+	// VaultCSSAssets contains transformed vault CSS and its recursive assets,
+	// including stylesheets referenced from raw HTML.
+	VaultCSSAssets map[string]*PlannedAsset
+	// CSSInputFiles retains partial dependency discovery for watch mode.
+	CSSInputFiles map[string]struct{}
 }
 
 // PlannedSource keeps the strict parse result for either an article or a

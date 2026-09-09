@@ -54,6 +54,19 @@ func TestParseStrictFrontmatterRejectsUnknownDuplicateNullAndInvalidMetadata(t *
 	}
 }
 
+func TestParseStrictFrontmatterRejectsExplicitEmptySectionBanner(t *testing.T) {
+	vaultPath := t.TempDir()
+	writeVaultFile(t, vaultPath, "_index.md", "---\ntitle: Home\npublish: true\nbanner: ''\n---\n")
+	scan, err := Scan(vaultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = ParseStrictFrontmatter(scan)
+	if err == nil || !strings.Contains(err.Error(), "banner") || !strings.Contains(err.Error(), "non-empty") {
+		t.Fatalf("ParseStrictFrontmatter() error = %v, want non-empty banner rejection", err)
+	}
+}
+
 func TestParseStrictFrontmatterKeepsQuotedNullAsString(t *testing.T) {
 	vaultPath := t.TempDir()
 	writeVaultFile(t, vaultPath, "_index.md", "---\ntitle: \"null\"\npublish: true\n---\n")
@@ -111,5 +124,25 @@ func TestParseStrictFrontmatterRejectsImplicitFrontmatterAndDateBeforeUpdated(t 
 	_, err = ParseStrictFrontmatter(scan)
 	if err == nil || !strings.Contains(err.Error(), "updated") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestParseStrictFrontmatterRejectsOutOfRangeRFC3339Offsets(t *testing.T) {
+	for _, field := range []string{"date", "updated", "reviewed"} {
+		for _, value := range []string{"2026-01-01T00:00:00+24:00", "2026-01-01T00:00:00+00:60"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				vaultPath := t.TempDir()
+				writeVaultFile(t, vaultPath, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+				writeVaultFile(t, vaultPath, "article.md", "---\ntitle: A\npublish: true\ntype: page\n"+field+": "+value+"\n---\n")
+				scan, err := Scan(vaultPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, err = ParseStrictFrontmatter(scan)
+				if err == nil || !strings.Contains(err.Error(), `parse article "article.md"`) || !strings.Contains(err.Error(), field+" at line 5") {
+					t.Fatalf("ParseStrictFrontmatter() error = %v, want %s source-field diagnostic at line 5", err, field)
+				}
+			})
+		}
 	}
 }

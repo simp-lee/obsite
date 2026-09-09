@@ -1205,6 +1205,36 @@ func TestNewMarkdownPassesThroughRawHTML(t *testing.T) {
 	}
 }
 
+func TestRewriteRawHTMLResourcesPreservesMarkupAndRewritesEverySrcsetCandidate(t *testing.T) {
+	t.Parallel()
+
+	source := []byte(`<IMG data-label="A&amp;B" srcset="one.png, two.png 2x" src="one.png"><img src="foo&notit;.png"><link rel="canonical" href="/guide/"><link rel="stylesheet" href="site.css"><link rel="preload" as="image" href="one.png" imagesrcset="one.png 1x, two.png 2x">`)
+	attributeContextTargetSeen := false
+	rewritten, err := RewriteRawHTMLResources(source, func(raw string) (string, error) {
+		switch raw {
+		case "one.png":
+			return "assets/one.hash.png", nil
+		case "two.png":
+			return "assets/two.hash.png", nil
+		case "site.css":
+			return "assets/site.hash.css", nil
+		default:
+			attributeContextTargetSeen = attributeContextTargetSeen || raw == "foo&notit;.png"
+			return raw, nil
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `<IMG data-label="A&amp;B" srcset="assets/one.hash.png, assets/two.hash.png 2x" src="assets/one.hash.png"><img src="foo&notit;.png"><link rel="canonical" href="/guide/"><link rel="stylesheet" href="assets/site.hash.css"><link rel="preload" as="image" href="assets/one.hash.png" imagesrcset="assets/one.hash.png 1x, assets/two.hash.png 2x">`
+	if !attributeContextTargetSeen {
+		t.Fatal("raw HTML resource used text-context rather than attribute-context entity decoding")
+	}
+	if string(rewritten) != want {
+		t.Fatalf("rewritten raw HTML = %q, want exact preservation %q", rewritten, want)
+	}
+}
+
 func TestNewMarkdownKeepsRawHTMLPassthroughWhileBlockingDangerousMarkdownURLs(t *testing.T) {
 	t.Parallel()
 

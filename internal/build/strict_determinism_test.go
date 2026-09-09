@@ -5,156 +5,129 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"testing"
 )
 
 func TestStrictBuildIsByteStableAcrossConcurrentBuilds(t *testing.T) {
-	vault := copyFixtureVault(t, "feature-vault")
+	vault := makeStrictVersionedMetadataVault(t, false, false)
 	roots := make([]string, 4)
+	buildResults := make([]*BuildResult, len(roots))
 	for index := range roots {
 		roots[index] = filepath.Join(t.TempDir(), "site")
 	}
-	results := make(chan error, len(roots))
-	for _, root := range roots {
-		root := root
+	type completion struct {
+		index  int
+		result *BuildResult
+		err    error
+	}
+	completed := make(chan completion, len(roots))
+	for index, root := range roots {
+		index, root := index, root
 		go func() {
-			_, err := BuildWithOptions(vault, root, Options{})
-			results <- err
+			result, err := BuildWithOptions(vault, root, Options{})
+			completed <- completion{index: index, result: result, err: err}
 		}()
 	}
 	for range roots {
-		if err := <-results; err != nil {
-			t.Fatal(err)
+		item := <-completed
+		if item.err != nil {
+			t.Fatal(item.err)
 		}
+		buildResults[item.index] = item.result
 	}
-	want := strictOutputBytes(t, roots[0])
-	for _, root := range roots[1:] {
-		got := strictOutputBytes(t, root)
-		if len(got) != len(want) {
-			t.Fatalf("file counts differ: %d and %d", len(want), len(got))
-		}
-		for name, data := range want {
-			other, ok := got[name]
-			if !ok {
-				t.Fatalf("concurrent build omitted output %q", name)
-			}
-			if !bytes.Equal(data, other) {
-				t.Fatalf("concurrent output %q differs", name)
-			}
-		}
+	wantBytes := strictOutputBytes(t, roots[0])
+	wantURLs := strictOutputURLs(buildResults[0])
+	for index, root := range roots[1:] {
+		compareStrictOutputBytes(t, wantBytes, strictOutputBytes(t, root))
+		compareStrictURLValues(t, wantURLs, strictOutputURLs(buildResults[index+1]))
 	}
 }
 
-func TestStrictBuildIsByteStableAcrossWorkerConcurrency(t *testing.T) {
-	vault := copyFixtureVault(t, "feature-vault")
+func TestStrictBuildVersionedMetadataDeterminismMatrix(t *testing.T) {
+	type mode struct {
+		name        string
+		incremental bool
+	}
+	type inputOrder struct {
+		name    string
+		reverse bool
+	}
+	modes := []mode{{name: "full"}, {name: "incremental", incremental: true}}
+	orders := []inputOrder{{name: "forward"}, {name: "reverse", reverse: true}}
 	concurrencies := []int{1, 4}
-	roots := make([]string, len(concurrencies))
-	results := make([]*BuildResult, len(concurrencies))
-	for index, concurrency := range concurrencies {
-		roots[index] = filepath.Join(t.TempDir(), "site")
-		result, err := BuildWithOptions(vault, roots[index], Options{Concurrency: concurrency})
-		if err != nil {
-			t.Fatalf("BuildWithOptions(concurrency=%d): %v", concurrency, err)
-		}
-		results[index] = result
-	}
 
-	want := strictOutputBytes(t, roots[0])
-	got := strictOutputBytes(t, roots[1])
-	if len(got) != len(want) {
-		t.Fatalf("worker configurations produced %d and %d files", len(want), len(got))
-	}
-	for name, data := range want {
-		other, ok := got[name]
-		if !ok {
-			t.Fatalf("worker configuration omitted output %q", name)
-		}
-		if !bytes.Equal(data, other) {
-			t.Fatalf("worker configuration changed output %q", name)
-		}
-	}
-	compareStrictURLValues(t, strictOutputURLs(results[0]), strictOutputURLs(results[1]))
-}
+	var wantBytes map[string][]byte
+	var wantURLs map[string]string
+	for _, buildMode := range modes {
+		for _, order := range orders {
+			for _, concurrency := range concurrencies {
+				name := buildMode.name + "/" + order.name + "/workers-" + strconv.Itoa(concurrency)
+				t.Run(name, func(t *testing.T) {
+					vault := makeStrictVersionedMetadataVault(t, order.reverse, buildMode.incremental)
+					output := filepath.Join(t.TempDir(), "site")
+					if buildMode.incremental {
+						seedConcurrency := 1
+						if concurrency == 1 {
+							seedConcurrency = 4
+						}
+						if _, err := BuildWithOptions(vault, output, Options{Concurrency: seedConcurrency}); err != nil {
+							t.Fatalf("build incremental precursor: %v", err)
+						}
+						if loadStrictCacheManifest(output) == nil {
+							t.Fatal("incremental precursor did not produce a cache manifest")
+						}
+						if _, err := os.Stat(filepath.Join(output, "docs", "v1", "start-preview", "index.html")); err != nil {
+							t.Fatalf("incremental precursor route is missing: %v", err)
+						}
+						writeStrictVersionedMetadataVault(t, vault, order.reverse, false)
+					}
 
-func TestStrictBuildIsByteStableAcrossEquivalentInputOrders(t *testing.T) {
-	makeVault := func(t *testing.T, reverse bool) string {
-		t.Helper()
-		vault := t.TempDir()
-		config := "title: Ordered\nbaseURL: https://example.test/\nnavigation: []\n"
-		rootIndex := "---\ntitle: Home\npublish: true\n---\nHome\n"
-		sectionIndex := "---\ntitle: Docs\npublish: true\n---\nDocs\n"
-		if reverse {
-			config = "navigation: []\nbaseURL: https://example.test/\ntitle: Ordered\n"
-			rootIndex = "---\npublish: true\ntitle: Home\n---\nHome\n"
-			sectionIndex = "---\npublish: true\ntitle: Docs\n---\nDocs\n"
-		}
-		writeStrictFile(t, vault, "obsite.yaml", config)
-		writeStrictFile(t, vault, "_index.md", rootIndex)
-		writeStrictFile(t, vault, "docs/_index.md", sectionIndex)
-		files := []struct{ name, title string }{{"02-beta.md", "Beta"}, {"01-alpha.md", "Alpha"}, {"10-page.md", "Page"}}
-		if reverse {
-			for left, right := 0, len(files)-1; left < right; left, right = left+1, right-1 {
-				files[left], files[right] = files[right], files[left]
+					result, err := BuildWithOptions(vault, output, Options{Concurrency: concurrency})
+					if err != nil {
+						t.Fatalf("BuildWithOptions(concurrency=%d): %v", concurrency, err)
+					}
+					gotBytes := strictOutputBytes(t, output)
+					gotURLs := strictOutputURLs(result)
+					assertStrictVersionedMetadataCoverage(t, result)
+					if wantBytes == nil {
+						wantBytes = gotBytes
+						wantURLs = gotURLs
+						return
+					}
+					compareStrictOutputBytes(t, wantBytes, gotBytes)
+					compareStrictURLValues(t, wantURLs, gotURLs)
+				})
 			}
-		}
-		for _, file := range files {
-			frontmatter := "title: " + file.title + "\npublish: true\ntype: doc\n"
-			if reverse {
-				frontmatter = "type: doc\npublish: true\ntitle: " + file.title + "\n"
-			}
-			writeStrictFile(t, vault, "docs/"+file.name, "---\n"+frontmatter+"---\n"+file.title+"\n")
-		}
-		return vault
-	}
-	firstRoot := filepath.Join(t.TempDir(), "site")
-	secondRoot := filepath.Join(t.TempDir(), "site")
-	if _, err := BuildWithOptions(makeVault(t, false), firstRoot, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := BuildWithOptions(makeVault(t, true), secondRoot, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	first, second := strictOutputBytes(t, firstRoot), strictOutputBytes(t, secondRoot)
-	if len(first) != len(second) {
-		t.Fatalf("file counts = %d and %d", len(first), len(second))
-	}
-	for name, data := range first {
-		if !bytes.Equal(data, second[name]) {
-			t.Fatalf("input creation order changed output %q", name)
 		}
 	}
 }
 
-func TestStrictBuildIsByteStableAcrossOutputRootsAndRebuilds(t *testing.T) {
-	vault := copyFixtureVault(t, "feature-vault")
-	secondVault := copyFixtureVault(t, "feature-vault")
-	firstRoot := filepath.Join(t.TempDir(), "first")
-	secondRoot := filepath.Join(t.TempDir(), "second")
-	if _, err := BuildWithOptions(vault, firstRoot, Options{}); err != nil {
-		t.Fatal(err)
+func assertStrictVersionedMetadataCoverage(t *testing.T, result *BuildResult) {
+	t.Helper()
+	if result == nil || result.Index == nil {
+		t.Fatal("versioned determinism fixture produced no index")
 	}
-	if _, err := BuildWithOptions(secondVault, secondRoot, Options{}); err != nil {
-		t.Fatal(err)
-	}
-	first := strictOutputBytes(t, firstRoot)
-	second := strictOutputBytes(t, secondRoot)
-	if len(first) != len(second) {
-		t.Fatalf("file counts = %d and %d", len(first), len(second))
-	}
-	for name, data := range first {
-		if !bytes.Equal(data, second[name]) {
-			t.Fatalf("output %q differs across roots", name)
+	coveredArticle := false
+	for _, note := range result.Index.Notes {
+		if note == nil || note.VersionID == "" || len(note.VersionRoutes) < 2 {
+			continue
+		}
+		metadata := note.Frontmatter
+		if metadata.Author != "" && metadata.Status != "" && metadata.Audience != "" && metadata.ProductVersion != "" && metadata.Series != "" && note.BannerURL != "" && note.CoverURL != "" && note.SocialImage != "" {
+			coveredArticle = true
+			break
 		}
 	}
-	if _, err := BuildWithOptions(vault, firstRoot, Options{}); err != nil {
-		t.Fatal(err)
+	if !coveredArticle {
+		t.Fatal("determinism fixture does not cover version routes, metadata, banner, cover, and social URLs")
 	}
-	third := strictOutputBytes(t, firstRoot)
-	for name, data := range first {
-		if !bytes.Equal(data, third[name]) {
-			t.Fatalf("rebuild output %q differs", name)
+	for _, section := range result.Index.Sections {
+		if section != nil && section.VersionID != "" && len(section.VersionRoutes) >= 2 && section.BannerURL != "" {
+			return
 		}
 	}
+	t.Fatal("determinism fixture does not cover versioned section and banner URLs")
 }
 
 func strictOutputURLs(result *BuildResult) map[string]string {
@@ -187,22 +160,44 @@ func strictOutputURLs(result *BuildResult) map[string]string {
 		prefix := "section:" + relPath + ":"
 		values[prefix+"route"] = section.Route
 		values[prefix+"banner"] = section.BannerURL
+		for version, route := range section.VersionRoutes {
+			values[prefix+"version:"+version] = route
+		}
+		for index, breadcrumb := range section.Breadcrumbs {
+			values[prefix+"breadcrumb:"+strconv.Itoa(index)] = breadcrumb.URL
+		}
 	}
 	return values
+}
+
+func compareStrictOutputBytes(t *testing.T, want, got map[string][]byte) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("output file counts differ: %d and %d", len(want), len(got))
+	}
+	for name, data := range want {
+		other, ok := got[name]
+		if !ok {
+			t.Fatalf("output omitted file %q", name)
+		}
+		if !bytes.Equal(data, other) {
+			t.Fatalf("output file %q differs", name)
+		}
+	}
 }
 
 func compareStrictURLValues(t *testing.T, want, got map[string]string) {
 	t.Helper()
 	if len(got) != len(want) {
-		t.Fatalf("worker configurations produced %d and %d URL values", len(want), len(got))
+		t.Fatalf("URL value counts differ: %d and %d", len(want), len(got))
 	}
 	for name, value := range want {
 		other, ok := got[name]
 		if !ok {
-			t.Fatalf("worker configuration omitted URL %q", name)
+			t.Fatalf("output omitted URL %q", name)
 		}
 		if other != value {
-			t.Fatalf("worker configuration changed URL %q: %q and %q", name, value, other)
+			t.Fatalf("output changed URL %q: %q and %q", name, value, other)
 		}
 	}
 }

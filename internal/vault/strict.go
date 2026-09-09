@@ -318,7 +318,7 @@ func decodeSectionSource(relPath string, body []byte, bodyStartLine int, info in
 		}
 	}
 	if value, ok := fields["banner"]; ok {
-		section.Frontmatter.Banner, err = strictString(value, "banner", false)
+		section.Frontmatter.Banner, err = strictString(value, "banner", true)
 		if err != nil {
 			return nil, err
 		}
@@ -329,7 +329,9 @@ func decodeSectionSource(relPath string, body []byte, bodyStartLine int, info in
 			return nil, err
 		}
 	}
-	if (section.Frontmatter.Banner == "") != (section.Frontmatter.BannerAlt == "") {
+	_, hasBanner := fields["banner"]
+	_, hasBannerAlt := fields["bannerAlt"]
+	if hasBanner != hasBannerAlt {
 		return nil, fmt.Errorf("banner and bannerAlt must be configured together")
 	}
 	return section, nil
@@ -441,7 +443,9 @@ func decodeStrictArticle(relPath string, body []byte, bodyStartLine int, info in
 			}
 		}
 	}
-	if note.Frontmatter.Banner != "" && note.Frontmatter.BannerAlt == "" || note.Frontmatter.Banner == "" && note.Frontmatter.BannerAlt != "" {
+	_, hasBanner := fields["banner"]
+	_, hasBannerAlt := fields["bannerAlt"]
+	if hasBanner != hasBannerAlt {
 		return nil, fmt.Errorf("banner and bannerAlt must be configured together")
 	}
 	if !note.Frontmatter.Updated.IsZero() {
@@ -528,11 +532,30 @@ func strictTime(node *yaml.Node, name string) (time.Time, error) {
 		}
 		return value.UTC(), nil
 	}
+	if !strictRFC3339Offset(node.Value) {
+		return time.Time{}, fmt.Errorf("%s at line %d must be RFC 3339 or YYYY-MM-DD", name, node.Line)
+	}
 	value, err := time.Parse(time.RFC3339Nano, node.Value)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("%s at line %d must be RFC 3339 or YYYY-MM-DD", name, node.Line)
 	}
 	return value.UTC(), nil
+}
+
+func strictRFC3339Offset(value string) bool {
+	if strings.HasSuffix(value, "Z") {
+		return true
+	}
+	if len(value) < len("+00:00") {
+		return false
+	}
+	offset := value[len(value)-len("+00:00"):]
+	if offset[0] != '+' && offset[0] != '-' || offset[3] != ':' {
+		return false
+	}
+	hour := int(offset[1]-'0')*10 + int(offset[2]-'0')
+	minute := int(offset[4]-'0')*10 + int(offset[5]-'0')
+	return hour <= 23 && minute <= 59
 }
 
 func strictOrder(node *yaml.Node, name string) (*int, error) {

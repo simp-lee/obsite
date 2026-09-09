@@ -151,7 +151,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 		record(collector, diag.KindSection, "_index.md", "vault root must contain _index.md")
 	}
 
-	versions, versionByPath := planVersions(cfg.Versions, resolvedVault, sections, sources, scan.ResourceFiles, collector)
+	versions, versionByPath := planVersions(cfg.Versions, resolvedVault, sections, collector)
 	for _, section := range sections {
 		if versionID := versionByPath[section.RelPath]; versionID != "" {
 			section.VersionID = versionID
@@ -170,12 +170,13 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	validateNavigation(sections, cfg.Navigation, cfg.FieldLines, collector)
 	frontmatterAssets, assetOwners := validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
 	validateStrictOptionalInputs(resolvedVault, plan, collector)
-	buildVersionCorrespondence(versions)
+	buildVersionCorrespondence(versions, collector)
 	finalizeCollections(plan, sections, versions)
 	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{Concurrency: concurrency, CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
 	if indexErr != nil {
 		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
 	}
+	planVaultCSS(plan, scan, indexResult.Index, collector)
 	if indexResult.Index != nil {
 		validateStrictMarkdown(plan, indexResult.Index, collector)
 		for _, tag := range sortedStrictTags(indexResult.Index.Tags) {
@@ -346,7 +347,7 @@ func hasSectionParent(sections map[string]*model.Section, sectionPath string) bo
 	}
 }
 
-func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[string]*model.Section, sources vault.StrictFrontmatterResult, resourceFiles []string, collector *diag.Collector) ([]*model.Version, map[string]string) {
+func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[string]*model.Section, collector *diag.Collector) ([]*model.Version, map[string]string) {
 	if config == nil {
 		return nil, map[string]string{}
 	}
@@ -421,47 +422,6 @@ func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[s
 				}
 				versionByPath[sectionPath] = version.ID
 			}
-		}
-	}
-	// A configured version root may not contain unclaimed content: this avoids
-	// silently publishing files outside an explicitly selected version source.
-	for _, source := range sources.Sources {
-		physical := path.Dir(source.RelPath)
-		if physical == "." {
-			continue
-		}
-		if isDescendant(physical, root) || physical == root {
-			// The root container's own _index.md is required metadata, not
-			// content competing with a version entry.
-			if physical == root && source.RelPath == sectionSourcePath(root) {
-				continue
-			}
-			claimed := false
-			for _, version := range versions {
-				if physical == version.Source || isDescendant(physical, version.Source) {
-					claimed = true
-					break
-				}
-			}
-			if !claimed {
-				record(collector, diag.KindVersion, source.RelPath, "content under version root %q is not covered by a version source", root)
-			}
-		}
-	}
-	for _, relPath := range resourceFiles {
-		physical := path.Dir(relPath)
-		if physical == "." || (!isDescendant(physical, root) && physical != root) {
-			continue
-		}
-		claimed := false
-		for _, version := range versions {
-			if physical == version.Source || isDescendant(physical, version.Source) {
-				claimed = true
-				break
-			}
-		}
-		if !claimed {
-			record(collector, diag.KindVersion, relPath, "resource under version root %q is not covered by a version source", root)
 		}
 	}
 	return versions, versionByPath
@@ -991,30 +951,34 @@ func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatt
 			assets[source] = &clone
 		}
 	}
-	if len(assets) == 0 && len(plan.ThemeAssets) == 0 {
+	if len(assets) == 0 && len(plan.ThemeAssets) == 0 && len(plan.VaultCSSAssets) == 0 {
 		return
 	}
 
-	assetCollector, err := internalasset.NewCollectorWithResourceFiles(vaultRoot, assets, nil, nil)
+	allAssets := make(map[string]*model.Asset, len(assets)+len(plan.ThemeAssets)+len(plan.VaultCSSAssets))
+	for source, plannedAsset := range assets {
+		allAssets[source] = plannedAsset
+	}
+	overrides := make(map[string][]byte, len(plan.ThemeAssets)+len(plan.VaultCSSAssets))
+	addPlanned := func(plannedAssets map[string]*model.PlannedAsset) {
+		for source, planned := range plannedAssets {
+			if planned == nil {
+				continue
+			}
+			plannedAsset := planned.Asset
+			allAssets[source] = &plannedAsset
+			overrides[source] = planned.Data
+		}
+	}
+	addPlanned(plan.ThemeAssets)
+	addPlanned(plan.VaultCSSAssets)
+
+	assetCollector, err := internalasset.NewCollectorWithOverrides(vaultRoot, allAssets, nil, nil, overrides)
 	if err != nil {
 		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
 		return
 	}
-	applyPlannedAssetDestinations(assets, assetCollector.PlanDestinations(assets))
-
-	allAssets := make(map[string]*model.Asset, len(assets)+len(plan.ThemeAssets))
-	for source, asset := range assets {
-		allAssets[source] = asset
-	}
-	overrides := make(map[string][]byte, len(plan.ThemeAssets))
-	for source, planned := range plan.ThemeAssets {
-		if planned == nil {
-			continue
-		}
-		asset := planned.Asset
-		allAssets[source] = &asset
-		overrides[source] = planned.Data
-	}
+	applyPlannedAssetDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
 	distinct := make(map[string]bool, len(allAssets))
 	for source := range frontmatter {
 		distinct[source] = true
@@ -1129,7 +1093,7 @@ func sortedStrictTags(tags map[string]*model.Tag) []*model.Tag {
 	return values
 }
 
-func buildVersionCorrespondence(versions []*model.Version) {
+func buildVersionCorrespondence(versions []*model.Version, collector *diag.Collector) {
 	byVersionPath := make(map[string]map[string]*model.Note)
 	byVersionSectionPath := make(map[string]map[string]*model.Section)
 	for _, version := range versions {
@@ -1139,25 +1103,21 @@ func buildVersionCorrespondence(versions []*model.Version) {
 		items := make(map[string]*model.Note)
 		sections := make(map[string]*model.Section)
 		for _, section := range version.Sections {
-			if section == nil {
+			if section == nil || !section.EffectivePublish || section.Route == "" {
 				continue
 			}
-			relSection := strings.TrimPrefix(section.RelPath, version.Source)
-			relSection = strings.TrimPrefix(relSection, "/")
-			sections[fold(relSection)] = section
+			relSection := versionRelativeSourcePath(section.RelPath, version.Source)
+			sections[versionCorrespondenceKey(relSection)] = section
 			for _, article := range section.Articles {
-				rel := strings.TrimPrefix(article.RelPath, version.Source)
-				rel = strings.TrimPrefix(rel, "/")
-				segment := article.Slug
-				if segment == "" {
-					var err error
-					segment, err = slug.GenerateArticleSegment(nil, rel)
-					if err != nil {
-						items[fold(rel)] = article
-						continue
-					}
+				// Cross-version article identity is the normalized Markdown source
+				// path, not its independently configurable output slug.
+				relSource := versionRelativeSourcePath(article.RelPath, version.Source)
+				key := versionCorrespondenceKey(relSource)
+				if previous := items[key]; previous != nil {
+					record(collector, diag.KindVersion, article.RelPath, "version %q articles %q and %q have the same normalized source identity %q", version.ID, previous.RelPath, article.RelPath, key)
+					continue
 				}
-				items[fold(path.Join(path.Dir(rel), segment))] = article
+				items[key] = article
 			}
 		}
 		byVersionPath[version.ID] = items
@@ -1205,6 +1165,17 @@ func buildVersionCorrespondence(versions []*model.Version) {
 	}
 }
 
+func versionRelativeSourcePath(sourcePath, versionSource string) string {
+	relative := strings.TrimPrefix(sourcePath, versionSource)
+	return strings.TrimPrefix(relative, "/")
+}
+
+// versionCorrespondenceKey is the cross-version page identity normalization:
+// scanner-normalized slash separators followed by Unicode NFKC and case fold.
+func versionCorrespondenceKey(relativeSourcePath string) string {
+	return fold(relativeSourcePath)
+}
+
 func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version) {
 	for _, section := range sections {
 		if section == nil {
@@ -1235,58 +1206,7 @@ func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Sectio
 }
 
 func sortArticles(items []*model.Note) {
-	sort.SliceStable(items, func(i, j int) bool { return articleLess(items[i], items[j]) })
-}
-
-func articleLess(left, right *model.Note) bool {
-	if left == nil || right == nil {
-		return left != nil
-	}
-	leftType, rightType := articleTypeRank(left.Frontmatter.Type), articleTypeRank(right.Frontmatter.Type)
-	if leftType != rightType {
-		return leftType < rightType
-	}
-	if left.Frontmatter.Type == "doc" && right.Frontmatter.Type == "doc" {
-		lo, ro := left.Frontmatter.Order, right.Frontmatter.Order
-		if (lo != nil) != (ro != nil) {
-			return lo != nil
-		}
-		if lo != nil && *lo != *ro {
-			return *lo < *ro
-		}
-		lp, lhas, _ := slug.NumericPrefix(articleFileStem(left.RelPath))
-		rp, rhas, _ := slug.NumericPrefix(articleFileStem(right.RelPath))
-		if lhas != rhas {
-			return lhas
-		}
-		if lhas && numericPrefixValue(lp) != numericPrefixValue(rp) {
-			return numericPrefixValue(lp) < numericPrefixValue(rp)
-		}
-	} else if left.Frontmatter.Type == "post" && right.Frontmatter.Type == "post" && !left.Frontmatter.Date.Equal(right.Frontmatter.Date) {
-		return left.Frontmatter.Date.After(right.Frontmatter.Date)
-	}
-	lt, rt := fold(left.Frontmatter.Title), fold(right.Frontmatter.Title)
-	if lt != rt {
-		return lt < rt
-	}
-	leftPath, rightPath := fold(left.RelPath), fold(right.RelPath)
-	if leftPath != rightPath {
-		return leftPath < rightPath
-	}
-	return left.RelPath < right.RelPath
-}
-
-func articleTypeRank(typeName string) int {
-	switch typeName {
-	case "doc":
-		return 0
-	case "post":
-		return 1
-	case "page":
-		return 2
-	default:
-		return 3
-	}
+	sort.SliceStable(items, func(i, j int) bool { return model.LessCollectionNote(items[i], items[j]) })
 }
 
 func articleFileStem(relPath string) string {

@@ -83,6 +83,7 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 		AttachmentFolderPath: scanResult.AttachmentFolderPath,
 		Notes:                make(map[string]*model.Note, len(public)),
 		Sections:             make(map[string]*model.Section, len(publicSections)),
+		SectionsBySource:     make(map[string]*model.Section, len(publicSections)),
 		SectionsByRoute:      make(map[string]*model.Section, len(publicSections)),
 		NoteBySlug:           make(map[string]*model.Note, len(public)),
 		NoteByName:           make(map[string][]*model.Note),
@@ -134,6 +135,7 @@ func BuildStrictIndex(scanResult ScanResult, sources StrictFrontmatterResult, pu
 	for _, section := range publicSections {
 		if section != nil {
 			idx.Sections[section.RelPath] = section
+			idx.SectionsBySource[section.SourcePath] = section
 			if section.Route != "" {
 				idx.SectionsByRoute[section.Route] = section
 			}
@@ -339,6 +341,7 @@ func extractNoteMetadata(
 	resourceVersions map[string]string,
 ) []string {
 	inlineTags := make([]string, 0)
+	var rawHTMLContext markdown.RawHTMLResourceContext
 	lineOffset := 0
 	if note != nil && note.BodyStartLine > 1 {
 		lineOffset = note.BodyStartLine - 1
@@ -367,6 +370,8 @@ func extractNoteMetadata(
 				resource := resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, resourceTarget, scanResult.LookupResourcePath)
 				if resource.Path != "" && resourceVersionAllowed(note, resourceVersions, resource.Path) {
 					registerAsset(assets, resource.Path)
+				} else {
+					registerAmbiguousAssets(assets, resource.Ambiguous)
 				}
 			}
 		case *gmwikilink.Node:
@@ -379,6 +384,7 @@ func extractNoteMetadata(
 						registerAsset(assets, imageLookup.Path)
 					}
 				} else if resourcepath.LooksLikeImage(embedRef.Target) && len(imageLookup.Ambiguous) > 0 {
+					registerAmbiguousAssets(assets, imageLookup.Ambiguous)
 					recordAmbiguousImageEmbed(diagCollector, note, embedRef.Target, imageLookup.Ambiguous, current, lineStarts, lineOffset)
 				}
 			} else {
@@ -392,11 +398,35 @@ func extractNoteMetadata(
 			if lookup.Path != "" && resourceVersionAllowed(note, resourceVersions, lookup.Path) {
 				registerAsset(assets, lookup.Path)
 			} else if len(lookup.Ambiguous) > 0 {
+				registerAmbiguousAssets(assets, lookup.Ambiguous)
 				recordAmbiguousMarkdownImage(diagCollector, note, rawDestination, lookup.Ambiguous, current, lineStarts, lineOffset)
 			} else {
 				recordUnresolvedMarkdownImage(diagCollector, note, rawDestination, current, lineStarts, lineOffset)
 			}
 			return gast.WalkSkipChildren, nil
+		case *gast.HTMLBlock:
+			raw := make([]byte, 0)
+			for index := 0; index < current.Lines().Len(); index++ {
+				line := current.Lines().At(index)
+				raw = append(raw, line.Value(source)...)
+			}
+			if current.HasClosure() {
+				closure := current.ClosureLine
+				raw = append(raw, closure.Value(source)...)
+			}
+			extractRawHTMLAssets(note, scanResult, assets, diagCollector, current, raw, lineStarts, lineOffset, resourceVersions, &rawHTMLContext)
+		case *gast.RawHTML:
+			raw := current.Segments.Value(source)
+			extractRawHTMLAssets(note, scanResult, assets, diagCollector, current, raw, lineStarts, lineOffset, resourceVersions, &rawHTMLContext)
+		case *gast.Text:
+			if rawHTMLContext.InStyle() {
+				targets, err := markdown.CSSResourceTargets(current.Segment.Value(source))
+				if err != nil {
+					recordRawHTMLAssetError(diagCollector, note, "", current, lineStarts, lineOffset, "inspect raw HTML style resources: %v", err)
+				} else {
+					extractRawHTMLAssetTargets(note, scanResult, assets, diagCollector, current, targets, lineStarts, lineOffset, resourceVersions)
+				}
+			}
 		case *gast.FencedCodeBlock:
 			if isMermaidFence(current.Language(source)) {
 				note.HasMermaid = true
@@ -477,6 +507,58 @@ func resourceVersionAllowed(note *model.Note, resourceVersions map[string]string
 	return versionID == "" || note == nil || note.VersionID == versionID
 }
 
+func extractRawHTMLAssets(note *model.Note, scanResult ScanResult, assets map[string]*model.Asset, diagCollector *diag.Collector, node gast.Node, raw []byte, lineStarts []int, lineOffset int, resourceVersions map[string]string, context *markdown.RawHTMLResourceContext) {
+	targets, err := context.Targets(raw)
+	if err != nil {
+		recordRawHTMLAssetError(diagCollector, note, "", node, lineStarts, lineOffset, "inspect raw HTML resources: %v", err)
+		return
+	}
+	extractRawHTMLAssetTargets(note, scanResult, assets, diagCollector, node, targets, lineStarts, lineOffset, resourceVersions)
+}
+
+func extractRawHTMLAssetTargets(note *model.Note, scanResult ScanResult, assets map[string]*model.Asset, diagCollector *diag.Collector, node gast.Node, targets []string, lineStarts []int, lineOffset int, resourceVersions map[string]string) {
+	for _, target := range targets {
+		if !resourcepath.IsLocalTarget(target) {
+			continue
+		}
+		targetPath := target
+		if position := strings.IndexAny(targetPath, "?#"); position >= 0 {
+			targetPath = targetPath[:position]
+		}
+		if targetPath == "" {
+			continue
+		}
+		lookup := resourcepath.LookupPath(note, scanResult.AttachmentFolderPath, targetPath, scanResult.LookupResourcePath)
+		if len(lookup.Ambiguous) > 0 {
+			registerAmbiguousAssets(assets, lookup.Ambiguous)
+			recordRawHTMLAssetError(diagCollector, note, target, node, lineStarts, lineOffset, "raw HTML resource %q matched multiple publishable vault assets after canonical path normalization (%s); refusing canonical fallback", target, strings.Join(lookup.Ambiguous, ", "))
+			continue
+		}
+		if lookup.Path == "" {
+			recordRawHTMLAssetError(diagCollector, note, target, node, lineStarts, lineOffset, "raw HTML resource %q could not be resolved to a publishable vault asset", target)
+			continue
+		}
+		if !resourceVersionAllowed(note, resourceVersions, lookup.Path) {
+			recordRawHTMLAssetError(diagCollector, note, target, node, lineStarts, lineOffset, "raw HTML resource %q is outside the current version resource scope", target)
+			continue
+		}
+		registerAsset(assets, lookup.Path)
+	}
+}
+
+func recordRawHTMLAssetError(diagCollector *diag.Collector, note *model.Note, target string, node gast.Node, lineStarts []int, lineOffset int, format string, args ...any) {
+	if diagCollector == nil || note == nil {
+		return
+	}
+	diagCollector.Add(diag.Diagnostic{
+		Severity: diag.SeverityError,
+		Kind:     diag.KindUnresolvedAsset,
+		Location: diag.Location{Path: note.RelPath, Line: lineNumberForNode(node, lineStarts, lineOffset)},
+		Target:   target,
+		Message:  fmt.Sprintf(format, args...),
+	})
+}
+
 func registerAsset(assets map[string]*model.Asset, vaultRelPath string) {
 	if vaultRelPath == "" {
 		return
@@ -488,6 +570,12 @@ func registerAsset(assets map[string]*model.Asset, vaultRelPath string) {
 		assets[vaultRelPath] = asset
 	}
 	asset.RefCount++
+}
+
+func registerAmbiguousAssets(assets map[string]*model.Asset, candidates []string) {
+	for _, candidate := range candidates {
+		registerAsset(assets, candidate)
+	}
 }
 
 func headingID(heading *gast.Heading) string {

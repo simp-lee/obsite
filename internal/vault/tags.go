@@ -119,7 +119,7 @@ func lessTagNote(left string, right string, noteByPath map[string]*model.Note) b
 	leftNote := noteByPath[left]
 	rightNote := noteByPath[right]
 	if leftNote != nil || rightNote != nil {
-		return model.LessRecentNote(leftNote, rightNote)
+		return model.LessCollectionNote(leftNote, rightNote)
 	}
 	return left < right
 }
