@@ -312,6 +312,49 @@ func TestStrictOutputRegistryReusesUnchangedOutputAfterOwnerChange(t *testing.T)
 	}
 }
 
+func TestStrictOutputRegistryDoesNotReuseCachedSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symbolic links are not portable on Windows")
+	}
+
+	previousRoot := t.TempDir()
+	externalRoot := t.TempDir()
+	const route = "assets/banner.png"
+	content := []byte("cached asset")
+	externalPath := filepath.Join(externalRoot, "banner.png")
+	if err := os.WriteFile(externalPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	previousPath := filepath.Join(previousRoot, filepath.FromSlash(route))
+	if err := os.MkdirAll(filepath.Dir(previousPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(externalPath, previousPath); err != nil {
+		t.Fatal(err)
+	}
+
+	hash := fmt.Sprintf("%x", sha256.Sum256(content))
+	manifest := &strictCacheManifest{Outputs: []strictCacheOutput{{
+		Route: route, OutputHash: hash,
+	}}}
+	staging := t.TempDir()
+	registry := newStrictOutputRegistry(previousRoot, manifest)
+	if err := registry.write(staging, route, "asset:current/banner.png", content); err != nil {
+		t.Fatal(err)
+	}
+
+	info, err := os.Lstat(filepath.Join(staging, filepath.FromSlash(route)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("cached output mode = %v, want a regular file", info.Mode())
+	}
+	if got, err := os.ReadFile(filepath.Join(staging, filepath.FromSlash(route))); err != nil || !bytes.Equal(got, content) {
+		t.Fatalf("cached output = %q, %v; want regular file contents %q", got, err, content)
+	}
+}
+
 func TestStrictOutputRegistryRejectsDuplicateOwners(t *testing.T) {
 	root := t.TempDir()
 	registry := newStrictOutputRegistry("", nil)

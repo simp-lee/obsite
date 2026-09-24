@@ -5,13 +5,12 @@ import (
 	"bytes"
 	"fmt"
 	"html"
-	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/gohugoio/hugo-goldmark-extensions/passthrough"
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/callout"
+	"github.com/simp-lee/obsite/internal/markdown/pathutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
@@ -209,12 +208,12 @@ func (r *imageHTMLRenderer) rewriteDestination(rawDestination string) string {
 
 	siteRelPath := vaultRelPath
 	if r.assetSink != nil {
-		if registered := normalizeSitePath(r.assetSink.Register(vaultRelPath)); registered != "" {
+		if registered := pathutil.NormalizeSitePath(r.assetSink.Register(vaultRelPath)); registered != "" {
 			siteRelPath = registered
 		}
 	}
 
-	return relativeToNoteOutput(r.outputNote, siteRelPath) + suffix
+	return pathutil.RelativeToNoteOutput(r.outputNote, siteRelPath) + suffix
 }
 
 func (r *imageHTMLRenderer) resolveIndexedAssetPath(rawDestination string) string {
@@ -620,52 +619,6 @@ func fencedCodeBlockLine(note *model.Note, source []byte, node *gast.FencedCodeB
 
 func isMermaidFence(language []byte) bool {
 	return strings.EqualFold(strings.TrimSpace(string(language)), "mermaid")
-}
-
-func relativeToNoteOutput(note *model.Note, siteRelPath string) string {
-	normalized := normalizeSitePath(siteRelPath)
-	if normalized == "" {
-		return ""
-	}
-
-	relativePath, err := filepath.Rel(noteOutputDir(note), normalized)
-	if err != nil {
-		return normalized
-	}
-
-	return filepath.ToSlash(relativePath)
-}
-
-func noteOutputDir(note *model.Note) string {
-	if note == nil {
-		return "."
-	}
-
-	output := note.Route
-	if output == "" {
-		output = note.Slug
-	}
-	output = strings.Trim(strings.ReplaceAll(output, "\\", "/"), "/")
-	if output == "" {
-		return "."
-	}
-
-	return path.Clean(output)
-}
-
-func normalizeSitePath(value string) string {
-	cleaned := strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "" {
-		return ""
-	}
-
-	cleaned = path.Clean(cleaned)
-	if cleaned == "." {
-		return ""
-	}
-
-	return cleaned
 }
 
 func splitDestinationSuffix(value string) (string, string) {

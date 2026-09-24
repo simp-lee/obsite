@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"io"
 	"path"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
 	figureast "github.com/mangoumbrella/goldmark-figure/ast"
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/markdown/pathutil"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
@@ -583,7 +583,7 @@ func (r *wikilinkHTMLRenderer) renderImageEmbed(
 ) {
 	siteRelPath := assetPath
 	if r.assetSink != nil {
-		if registered := normalizeSitePath(r.assetSink.Register(assetPath)); registered != "" {
+		if registered := pathutil.NormalizeSitePath(r.assetSink.Register(assetPath)); registered != "" {
 			siteRelPath = registered
 		}
 	}
@@ -594,7 +594,7 @@ func (r *wikilinkHTMLRenderer) renderImageEmbed(
 	alt := embedAltText(label, composeRawTarget(string(node.Target), string(node.Fragment)), assetPath)
 
 	_, _ = w.WriteString(`<img src="`)
-	_, _ = w.Write(util.EscapeHTML(util.URLEscape([]byte(relativeToNoteOutput(r.outputNote, siteRelPath)), true)))
+	_, _ = w.Write(util.EscapeHTML(util.URLEscape([]byte(pathutil.RelativeToNoteOutput(r.outputNote, siteRelPath)), true)))
 	_, _ = w.WriteString(`" alt="`)
 	_, _ = w.Write(util.EscapeHTML([]byte(alt)))
 	_ = w.WriteByte('"')
@@ -1040,52 +1040,6 @@ func offsetInSection(offset int, section model.SectionRange) bool {
 		return false
 	}
 	return true
-}
-
-func relativeToNoteOutput(note *model.Note, siteRelPath string) string {
-	normalized := normalizeSitePath(siteRelPath)
-	if normalized == "" {
-		return ""
-	}
-
-	relativePath, err := filepath.Rel(noteOutputDir(note), normalized)
-	if err != nil {
-		return normalized
-	}
-
-	return filepath.ToSlash(relativePath)
-}
-
-func noteOutputDir(note *model.Note) string {
-	if note == nil {
-		return "."
-	}
-
-	output := note.Route
-	if output == "" {
-		output = note.Slug
-	}
-	output = strings.Trim(strings.ReplaceAll(output, "\\", "/"), "/")
-	if output == "" {
-		return "."
-	}
-
-	return path.Clean(output)
-}
-
-func normalizeSitePath(value string) string {
-	cleaned := strings.TrimSpace(strings.ReplaceAll(value, "\\", "/"))
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "" {
-		return ""
-	}
-
-	cleaned = path.Clean(cleaned)
-	if cleaned == "." {
-		return ""
-	}
-
-	return cleaned
 }
 
 func parseImageEmbedFigureTarget(line []byte) (string, bool) {

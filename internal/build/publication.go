@@ -31,6 +31,7 @@ type stagedOutputPublisher struct {
 	publicationAttempted bool
 	publicationSource    os.FileInfo
 	cleanupErr           error
+	trackTransactionPath func(string)
 }
 
 var (
@@ -112,14 +113,17 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 		if pathErr != nil {
 			return pathErr
 		}
-		if previousContent, err := os.ReadFile(previousPath); err == nil {
-			previousHash := sha256.Sum256(previousContent)
-			if fmt.Sprintf("%x", previousHash) == previous.OutputHash {
-				if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
-					registry.records = append(registry.records, strictCacheOutput{Owner: owner, Route: cleaned, OutputHash: fmt.Sprintf("%x", hash)})
-					return nil
+		previousInfo, statErr := os.Lstat(previousPath)
+		if statErr == nil && previousInfo.Mode().IsRegular() {
+			if previousContent, err := os.ReadFile(previousPath); err == nil {
+				previousHash := sha256.Sum256(previousContent)
+				if fmt.Sprintf("%x", previousHash) == previous.OutputHash {
+					if err := linkCachedOutput(previousPath, outputRoot, cleaned); err == nil {
+						registry.records = append(registry.records, strictCacheOutput{Owner: owner, Route: cleaned, OutputHash: fmt.Sprintf("%x", hash)})
+						return nil
+					}
+					writeContent = previousContent
 				}
-				writeContent = previousContent
 			}
 		}
 	}
@@ -134,8 +138,12 @@ func linkCachedOutput(previousPath, outputRoot, relPath string) error {
 	if strings.TrimSpace(previousPath) == "" || strings.TrimSpace(outputRoot) == "" {
 		return os.ErrNotExist
 	}
-	if _, err := os.Stat(previousPath); err != nil {
+	info, err := os.Lstat(previousPath)
+	if err != nil {
 		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("cached output source %q must be a regular file", previousPath)
 	}
 	cleanRelPath, destination, err := resolveOutputWritePath(outputRoot, relPath)
 	if err != nil {
@@ -169,6 +177,10 @@ func (registry *strictOutputRegistry) claim(relPath, owner string) error {
 }
 
 func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedOutputPublisher, error) {
+	return prepareStagedOutputPublisherWithTransactionTracking(vaultPath, outputPath, nil)
+}
+
+func prepareStagedOutputPublisherWithTransactionTracking(vaultPath string, outputPath string, trackTransactionPath func(string)) (*stagedOutputPublisher, error) {
 	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
 	if err != nil {
 		return nil, err
@@ -185,9 +197,10 @@ func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedO
 		publishedMode = state.info.Mode().Perm()
 	}
 	publisher := &stagedOutputPublisher{
-		outputPath:    outputPath,
-		initialOutput: state,
-		publishedMode: publishedMode,
+		outputPath:           outputPath,
+		initialOutput:        state,
+		publishedMode:        publishedMode,
+		trackTransactionPath: trackTransactionPath,
 	}
 	stagingParent, err := nearestExistingOutputAncestor(outputPath)
 	if err != nil {
@@ -198,6 +211,7 @@ func prepareStagedOutputPublisher(vaultPath string, outputPath string) (*stagedO
 		return nil, fmt.Errorf("create staged output for %q: %w", outputPath, err)
 	}
 	publisher.stagingPath = stagingPath
+	publisher.trackTransaction(stagingPath)
 	return publisher, nil
 }
 
@@ -267,6 +281,13 @@ func reserveManagedOutputPath(outputPath string, purpose string) (string, error)
 	return reservedPath, nil
 }
 
+func (publisher *stagedOutputPublisher) trackTransaction(path string) {
+	if publisher == nil || publisher.trackTransactionPath == nil || strings.TrimSpace(path) == "" {
+		return
+	}
+	publisher.trackTransactionPath(filepath.Clean(path))
+}
+
 func (publisher *stagedOutputPublisher) OutputPath() string {
 	if publisher == nil {
 		return ""
@@ -310,6 +331,7 @@ func (publisher *stagedOutputPublisher) publish() error {
 			return err
 		}
 		publisher.backupPath = backupPath
+		publisher.trackTransaction(backupPath)
 		if err := stagedOutputRename(publisher.outputPath, backupPath); err != nil {
 			return fmt.Errorf("backup managed output %q: %w", publisher.outputPath, err)
 		}
@@ -510,6 +532,7 @@ func (publisher *stagedOutputPublisher) quarantinePublication() (string, bool, e
 	if err != nil {
 		return "", false, err
 	}
+	publisher.trackTransaction(failedPath)
 	var quarantineErr error
 	if err := stagedOutputRename(publisher.outputPath, failedPath); err != nil {
 		quarantineErr = fmt.Errorf("quarantine failed published output %q: %w", publisher.outputPath, err)

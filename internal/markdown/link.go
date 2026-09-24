@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/simp-lee/obsite/internal/diag"
+	"github.com/simp-lee/obsite/internal/markdown/pathutil"
 	internalwikilink "github.com/simp-lee/obsite/internal/markdown/wikilink"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
@@ -186,7 +187,7 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 				if escapedFragment := parsed.EscapedFragment(); escapedFragment != "" {
 					suffix += "#" + escapedFragment
 				}
-				return relativeToNoteOutput(r.outputNote, destination) + suffix
+				return pathutil.RelativeToNoteOutput(r.outputNote, destination) + suffix
 			}
 			if r.diagnostics != nil {
 				r.diagnostics.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindUnresolvedAsset, Location: diag.Location{Path: r.sourceNote.RelPath, Line: line}, Target: sourceTarget, Message: fmt.Sprintf("markdown attachment %q is outside the current version resource scope", sourceTarget)})
@@ -275,6 +276,13 @@ func lookupPublicPageRoute(routes map[string]struct{}, route string) (string, bo
 		return "", false
 	}
 	canonical := slug.CanonicalRoute(route)
+	if _, ok := routes[canonical]; ok {
+		return canonical, true
+	}
+	if canonical == "/" || strings.HasSuffix(canonical, "/") {
+		return canonical, false
+	}
+	canonical += "/"
 	_, ok := routes[canonical]
 	return canonical, ok
 }
@@ -286,7 +294,7 @@ func publicPageHref(note *model.Note, route string, parsed *url.URL, rootRelativ
 			href = strings.TrimSuffix(note.BasePath, "/") + route
 		}
 	} else {
-		href = relativeToNoteOutput(note, route)
+		href = pathutil.RelativeToNoteOutput(note, route)
 		if strings.HasSuffix(route, "/") {
 			if href == "" || href == "." {
 				href = "./"

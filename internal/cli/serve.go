@@ -36,20 +36,21 @@ type fsnotifyWatcher struct {
 }
 
 type serveWatchLoop struct {
-	watcher               fileWatcher
-	vaultPath             string
-	outputPath            string
-	configPath            string
-	fixedWatchInputs      []string
-	relevantWatchFiles    map[string]struct{}
-	refreshRelevantInputs func() map[string]struct{}
-	debounce              time.Duration
-	rebuild               func() error
-	notifyReload          func()
-	onError               func(error)
-	watchedDirs           map[string]struct{}
-	vaultWatchDirs        map[string]struct{}
-	fixedWatchDirs        map[string]struct{}
+	watcher                fileWatcher
+	vaultPath              string
+	outputPath             string
+	configPath             string
+	fixedWatchInputs       []string
+	relevantWatchFiles     map[string]struct{}
+	outputTransactionPaths map[string]struct{}
+	refreshRelevantInputs  func() map[string]struct{}
+	debounce               time.Duration
+	rebuild                func() error
+	notifyReload           func()
+	onError                func(error)
+	watchedDirs            map[string]struct{}
+	vaultWatchDirs         map[string]struct{}
+	fixedWatchDirs         map[string]struct{}
 }
 
 func newServeCommand(deps commandDependencies) *cobra.Command {
@@ -95,9 +96,19 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 
 func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedVaultPath string, resolvedOutputPath string, port int) error {
 	resolvedConfigPath := filepath.Join(normalizedVaultPath, defaultConfigFilename)
+	outputTransactionPaths := make(map[string]struct{})
+	trackOutputTransactionPath := func(path string) {
+		cleanPath := filepath.Clean(path)
+		if strings.TrimSpace(cleanPath) != "" && cleanPath != "." && pathWithinRoot(normalizedVaultPath, cleanPath) {
+			outputTransactionPaths[cleanPath] = struct{}{}
+		}
+	}
 
 	build := func() error {
-		if _, err := deps.buildSiteWithOptions(normalizedVaultPath, resolvedOutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
+		if _, err := deps.buildSiteWithOptions(normalizedVaultPath, resolvedOutputPath, internalbuild.Options{
+			DiagnosticsWriter:          cmd.ErrOrStderr(),
+			TrackOutputTransactionPath: trackOutputTransactionPath,
+		}); err != nil {
 			return fmt.Errorf("build site: %w", err)
 		}
 		return nil
@@ -125,14 +136,15 @@ func runServeWatchMode(cmd *cobra.Command, deps commandDependencies, normalizedV
 		return plannedWatchFiles(normalizedVaultPath, resolvedOutputPath)
 	}
 	if err := startServeWatchLoop(ctx, serveWatchLoop{
-		watcher:               watcher,
-		vaultPath:             normalizedVaultPath,
-		outputPath:            resolvedOutputPath,
-		configPath:            resolvedConfigPath,
-		relevantWatchFiles:    refreshInputs(),
-		refreshRelevantInputs: refreshInputs,
-		debounce:              defaultWatchDebounce,
-		rebuild:               build,
+		watcher:                watcher,
+		vaultPath:              normalizedVaultPath,
+		outputPath:             resolvedOutputPath,
+		configPath:             resolvedConfigPath,
+		outputTransactionPaths: outputTransactionPaths,
+		relevantWatchFiles:     refreshInputs(),
+		refreshRelevantInputs:  refreshInputs,
+		debounce:               defaultWatchDebounce,
+		rebuild:                build,
 		notifyReload: func() {
 			if refresher, ok := srv.(interface{ RefreshBasePath() }); ok {
 				refresher.RefreshBasePath()
@@ -196,6 +208,7 @@ func startServeWatchLoop(ctx context.Context, loop serveWatchLoop) error {
 	loop.watchedDirs = make(map[string]struct{})
 	loop.vaultWatchDirs = make(map[string]struct{})
 	loop.fixedWatchDirs = make(map[string]struct{})
+	loop.pruneMissingOutputTransactions()
 
 	if err := loop.addVaultTree(loop.vaultPath); err != nil {
 		return closeServeWatchLoopWatcher(err, loop.watcher)
@@ -240,6 +253,10 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			}
 
 			wasWatchedDir := loop.isWatchedDir(cleanPath)
+			outputTransaction := loop.pathIsOutputTransaction(cleanPath)
+			if outputTransaction {
+				loop.forgetOutputTransaction(cleanPath, effectiveOp)
+			}
 			if hasDirectoryLifecycleOp(effectiveOp) {
 				loop.removeWatchedDirSubtree(cleanPath)
 			}
@@ -249,6 +266,9 @@ func (loop *serveWatchLoop) run(ctx context.Context) {
 			recoveredFixedInput, err := loop.recoverFixedInputWatches(cleanPath, effectiveOp)
 			if err != nil {
 				loop.reportError(err)
+			}
+			if outputTransaction {
+				continue
 			}
 			if !recoveredFixedInput && !loop.shouldTrigger(cleanPath, effectiveOp, wasWatchedDir) {
 				continue
@@ -742,25 +762,40 @@ func (loop *serveWatchLoop) pathIsOutput(path string) bool {
 }
 
 func (loop *serveWatchLoop) pathIsOutputTransaction(candidate string) bool {
-	if loop == nil || strings.TrimSpace(loop.outputPath) == "" {
+	if loop == nil || len(loop.outputTransactionPaths) == 0 {
 		return false
 	}
 	candidate = filepath.Clean(candidate)
-	base := filepath.Base(filepath.Clean(loop.outputPath))
-	prefix := "." + base + "-obsite-"
 	for current := candidate; current != "" && pathWithinRoot(loop.vaultPath, current); current = filepath.Dir(current) {
-		name := filepath.Base(current)
-		if strings.HasPrefix(name, prefix) {
-			remainder := strings.TrimPrefix(name, prefix)
-			if strings.HasPrefix(remainder, "stage-") || strings.HasPrefix(remainder, "backup-") || strings.HasPrefix(remainder, "failed-") {
-				return true
-			}
+		if _, ok := loop.outputTransactionPaths[current]; ok {
+			return true
 		}
 		if filepath.Clean(current) == filepath.Clean(loop.vaultPath) {
 			break
 		}
 	}
 	return false
+}
+
+func (loop *serveWatchLoop) pruneMissingOutputTransactions() {
+	if loop == nil {
+		return
+	}
+	for path := range loop.outputTransactionPaths {
+		if watchPathMissing(path) {
+			delete(loop.outputTransactionPaths, path)
+		}
+	}
+}
+
+func (loop *serveWatchLoop) forgetOutputTransaction(path string, op fsnotify.Op) {
+	if loop == nil || op&(fsnotify.Remove|fsnotify.Rename) == 0 {
+		return
+	}
+	cleanPath := filepath.Clean(path)
+	if _, ok := loop.outputTransactionPaths[cleanPath]; ok && watchPathMissing(cleanPath) {
+		delete(loop.outputTransactionPaths, cleanPath)
+	}
 }
 
 func (loop *serveWatchLoop) pathWithinVault(path string) bool {

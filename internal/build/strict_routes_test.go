@@ -97,7 +97,7 @@ func TestStrictBuildResolvesLinksToGeneratedTagPages(t *testing.T) {
 	vault := t.TempDir()
 	writeStrictFile(t, vault, "obsite.yaml", "title: Tags\nbaseURL: https://example.test/\nnavigation:\n  - name: Home\n    section: .\n")
 	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
-	writeStrictFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\ntags: [foo]\n---\n[Foo](/tags/foo/)\n")
+	writeStrictFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\ntags: [foo]\n---\n[Foo](/tags/foo/)\n[Foo without slash](/tags/foo)\n")
 	output := filepath.Join(t.TempDir(), "site")
 	if result, err := BuildWithOptions(vault, output, Options{Strict: true}); err != nil {
 		t.Fatalf("BuildWithOptions() error = %v; diagnostics = %#v", err, result.Diagnostics)
@@ -105,7 +105,7 @@ func TestStrictBuildResolvesLinksToGeneratedTagPages(t *testing.T) {
 		t.Fatalf("WarningCount = %d, want no warning for generated tag link; diagnostics = %#v", result.WarningCount, result.Diagnostics)
 	}
 	page := string(readBuildOutputFile(t, output, "article/index.html"))
-	if !strings.Contains(page, `href=/tags/foo/`) || !strings.Contains(page, `>Foo</a>`) {
+	if !strings.Contains(page, `href=/tags/foo/>Foo</a>`) || !strings.Contains(page, `href=/tags/foo/>Foo without slash</a>`) {
 		t.Fatalf("tag link was not preserved as a generated route:\n%s", page)
 	}
 	if _, err := os.Stat(filepath.Join(output, "tags", "foo", "index.html")); err != nil {

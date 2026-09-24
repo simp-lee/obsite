@@ -268,6 +268,9 @@ func TestServeCommandWatchBuildsBeforeServing(t *testing.T) {
 		if options.DiagnosticsWriter == nil {
 			t.Fatal("build options DiagnosticsWriter = nil, want injected stderr writer")
 		}
+		if options.TrackOutputTransactionPath == nil {
+			t.Fatal("build options TrackOutputTransactionPath = nil in watch mode")
+		}
 		if err := os.MkdirAll(outputPath, 0o755); err != nil {
 			return nil, err
 		}
@@ -502,6 +505,59 @@ func TestStartServeWatchLoopDebouncesRebuildsAndNotifiesReload(t *testing.T) {
 	watcher.send(fsnotify.Event{Name: configPath, Op: fsnotify.Write})
 	waitForServeWatchSignal(t, rebuildSignal, "config rebuild")
 	waitForServeWatchSignal(t, reloadSignal, "config reload")
+}
+
+func TestStartServeWatchLoopTracksOnlyActualOutputTransactionPaths(t *testing.T) {
+	vaultPath := t.TempDir()
+	configPath := filepath.Join(vaultPath, defaultConfigFilename)
+	outputPath := filepath.Join(vaultPath, "public")
+	userDirs := []string{
+		filepath.Join(vaultPath, ".public-obsite-stage-user-notes"),
+		filepath.Join(vaultPath, ".public-obsite-backup-user-notes"),
+		filepath.Join(vaultPath, ".public-obsite-failed-user-notes"),
+	}
+	transactionDir := filepath.Join(vaultPath, ".public-obsite-stage-actual")
+	userNotePath := filepath.Join(userDirs[0], "note.md")
+	files := []string{configPath, userNotePath, filepath.Join(transactionDir, "index.html")}
+	for _, userDir := range userDirs[1:] {
+		files = append(files, filepath.Join(userDir, "note.md"))
+	}
+	for _, filePath := range files {
+		if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filePath, []byte("content"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	watcher := newFakeFileWatcher()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	rebuildSignal := make(chan struct{}, 1)
+	if err := startServeWatchLoop(ctx, serveWatchLoop{
+		watcher:                watcher,
+		vaultPath:              vaultPath,
+		outputPath:             outputPath,
+		configPath:             configPath,
+		outputTransactionPaths: map[string]struct{}{transactionDir: {}},
+		debounce:               15 * time.Millisecond,
+		rebuild: func() error {
+			rebuildSignal <- struct{}{}
+			return nil
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, userDir := range userDirs {
+		waitForServeWatchAddCount(t, watcher, userDir, 1)
+	}
+	if got := watcher.countAddCalls(transactionDir); got != 0 {
+		t.Fatalf("watcher.Add(%q) calls = %d, want 0 for tracked transaction", transactionDir, got)
+	}
+	watcher.send(fsnotify.Event{Name: userNotePath, Op: fsnotify.Write})
+	waitForServeWatchSignal(t, rebuildSignal, "user directory rebuild")
 }
 
 func TestStartServeWatchLoopRefreshesPartialPlanInputsAfterFailedRebuild(t *testing.T) {

@@ -29,6 +29,9 @@ type BuildResult struct {
 type Options struct {
 	Strict            bool
 	DiagnosticsWriter io.Writer
+	// TrackOutputTransactionPath is called when the publisher creates a
+	// temporary output transaction path.
+	TrackOutputTransactionPath func(path string)
 	// Concurrency bounds independent Markdown indexing and recommendation
 	// workers. A non-positive value uses the production default.
 	Concurrency int
@@ -49,7 +52,7 @@ func BuildWithOptions(vaultPath, outputPath string, options Options) (*BuildResu
 		}
 		return result, internalanalyze.Failure(analysis.Diagnostics)
 	}
-	strictResult, buildErr := buildStrictSite(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.Concurrency)
+	strictResult, buildErr := buildStrictSiteWithTransactionTracking(analysis.Plan, vaultPath, outputPath, options.DiagnosticsWriter, options.TrackOutputTransactionPath, options.Concurrency)
 	if strictResult == nil {
 		strictResult = &BuildResult{}
 	}

@@ -34,6 +34,10 @@ import (
 // buildStrictSite publishes the normalized section model through the same
 // managed staging publisher used by the existing build foundation.
 func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, concurrency ...int) (result *BuildResult, err error) {
+	return buildStrictSiteWithTransactionTracking(planned, vaultPath, outputPath, diagnosticsWriter, nil, concurrency...)
+}
+
+func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath, outputPath string, diagnosticsWriter io.Writer, trackTransactionPath func(string), concurrency ...int) (result *BuildResult, err error) {
 	workerConcurrency := 0
 	if len(concurrency) > 0 {
 		workerConcurrency = concurrency[0]
@@ -53,7 +57,7 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 		return result, err
 	}
 	result.OutputPath = boundary.OutputPath
-	publisher, err := prepareStagedOutputPublisher(boundary.VaultPath, boundary.OutputPath)
+	publisher, err := prepareStagedOutputPublisherWithTransactionTracking(boundary.VaultPath, boundary.OutputPath, trackTransactionPath)
 	if err != nil {
 		return result, err
 	}

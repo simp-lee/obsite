@@ -10,6 +10,7 @@ import (
 
 	"github.com/simp-lee/obsite/internal/diag"
 	"github.com/simp-lee/obsite/internal/markdown/headingid"
+	"github.com/simp-lee/obsite/internal/markdown/pathutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/simp-lee/obsite/internal/slug"
@@ -706,9 +707,9 @@ func buildSectionHref(output *model.Note, source *model.Note, target *model.Sect
 		return "./"
 	}
 
-	href := relativeToNoteOutput(output, target.Route)
+	href := pathutil.RelativeToNoteOutput(output, target.Route)
 	if target.Route == "/" {
-		href = strings.TrimSuffix(relativeToNoteOutput(output, "index.html"), "index.html")
+		href = strings.TrimSuffix(pathutil.RelativeToNoteOutput(output, "index.html"), "index.html")
 	}
 	if href == "" || href == "." {
 		href = "./"
@@ -727,39 +728,11 @@ func BuildSectionHref(output *model.Note, source *model.Note, target *model.Sect
 }
 
 func buildOutputHref(output *model.Note, target *model.Note) string {
-	href := relativeToNoteOutput(output, noteSiteOutputPath(target))
+	href := pathutil.RelativeToNoteOutput(output, noteSiteOutputPath(target))
 	if href == "" || href == "." {
 		return "./"
 	}
 	return href + "/"
-}
-
-func relativeToNoteOutput(note *model.Note, siteRelPath string) string {
-	normalized := normalizeSitePath(siteRelPath)
-	if normalized == "" {
-		return ""
-	}
-
-	relativePath, err := filepath.Rel(noteOutputDir(note), normalized)
-	if err != nil {
-		return normalized
-	}
-
-	return filepath.ToSlash(relativePath)
-}
-
-func noteOutputDir(note *model.Note) string {
-	if note == nil {
-		return "."
-	}
-
-	output := noteSiteOutputPath(note)
-	output = strings.Trim(strings.ReplaceAll(output, `\`, "/"), "/")
-	if output == "" {
-		return "."
-	}
-
-	return path.Clean(output)
 }
 
 func noteSourceDir(note *model.Note) string {
@@ -783,21 +756,6 @@ func noteSiteOutputPath(note *model.Note) string {
 		return note.Route
 	}
 	return note.Slug
-}
-
-func normalizeSitePath(value string) string {
-	cleaned := strings.TrimSpace(strings.ReplaceAll(value, `\`, "/"))
-	cleaned = strings.TrimPrefix(cleaned, "/")
-	if cleaned == "" {
-		return ""
-	}
-
-	cleaned = path.Clean(cleaned)
-	if cleaned == "." {
-		return ""
-	}
-
-	return cleaned
 }
 
 func normalizeVaultPath(value string) string {

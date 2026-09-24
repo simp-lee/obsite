@@ -161,6 +161,21 @@ func TestStrictThemeSlotLiteralsMayReferenceExactPlannedOutputs(t *testing.T) {
 	}
 }
 
+func TestStrictThemeSlotsMayReferenceBuiltInStyleCSS(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", "title: Theme\nbaseURL: https://example.test/docs/\nnavigation: []\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vault, ".obsite/theme/slots.html", `{{define "obsite-head-end"}}<link rel="preload" href="./style.css" as="style">{{end}}`)
+
+	output := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, output, Options{Strict: true}); err != nil {
+		t.Fatalf("built-in style.css should be allowed in theme slots: %v", err)
+	}
+	if page := string(readBuildOutputFile(t, output, "index.html")); !strings.Contains(page, `href=./style.css`) {
+		t.Fatalf("published slot is missing built-in style.css preload: %s", page)
+	}
+}
+
 func TestStrictThemeFailuresHaveSharedReadOnlyDiagnostics(t *testing.T) {
 	for _, test := range []struct {
 		name, slots, css, want string

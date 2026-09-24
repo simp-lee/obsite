@@ -66,7 +66,7 @@ func themeSlotPublicOutputPaths(baseURL string, outputs map[string]struct{}) (ma
 	if err != nil {
 		return nil, err
 	}
-	public := make(map[string]struct{}, len(outputs))
+	public := make(map[string]struct{}, len(outputs)+1)
 	for output := range outputs {
 		reference, err := url.Parse(strings.TrimPrefix(output, "/"))
 		if err != nil {
@@ -74,6 +74,8 @@ func themeSlotPublicOutputPaths(baseURL string, outputs map[string]struct{}) (ma
 		}
 		public[base.ResolveReference(reference).Path] = struct{}{}
 	}
+	// style.css is emitted by the strict builder rather than the asset planner.
+	public[base.ResolveReference(&url.URL{Path: "style.css"}).Path] = struct{}{}
 	return public, nil
 }
 

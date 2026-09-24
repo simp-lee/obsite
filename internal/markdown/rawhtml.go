@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	internalasset "github.com/simp-lee/obsite/internal/asset"
+	"github.com/simp-lee/obsite/internal/markdown/pathutil"
 	"github.com/simp-lee/obsite/internal/model"
 	"github.com/simp-lee/obsite/internal/resourcepath"
 	"github.com/yuin/goldmark"
@@ -151,11 +152,11 @@ func (r *rawHTMLRenderer) rewriteTarget(raw string) (string, error) {
 	}
 	destination := resource
 	if r.assetSink != nil {
-		if planned := normalizeSitePath(r.assetSink.Register(resource)); planned != "" {
+		if planned := pathutil.NormalizeSitePath(r.assetSink.Register(resource)); planned != "" {
 			destination = planned
 		}
 	}
-	return relativeToNoteOutput(r.outputNote, destination) + suffix, nil
+	return pathutil.RelativeToNoteOutput(r.outputNote, destination) + suffix, nil
 }
 
 // Targets returns resource URL spellings while retaining inline HTML context.
