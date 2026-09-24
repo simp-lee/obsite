@@ -113,6 +113,66 @@ func TestStrictBuildResolvesLinksToGeneratedTagPages(t *testing.T) {
 	}
 }
 
+func TestStrictBuildResolvesLinksToGeneratedTimelineAndNotFoundPages(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", `title: Generated pages
+baseURL: https://example.test/docs/
+navigation: []
+pagination:
+  pageSize: 1
+timeline:
+  enabled: true
+  path: updates
+`)
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vault, "links.md", `---
+title: Links
+publish: true
+type: page
+---
+[Timeline](/updates/)
+[Encoded timeline](/%75pdates/)
+[Timeline page 2](/updates/page/2/)
+[Not found](/404.html)
+[Relative timeline](../updates/)
+[Relative timeline page 2](../updates/page/2/)
+[Relative not found](../404.html)
+`)
+	writeStrictFile(t, vault, "first.md", "---\ntitle: First\npublish: true\ntype: post\ndate: 2026-04-05\n---\nFirst\n")
+	writeStrictFile(t, vault, "second.md", "---\ntitle: Second\npublish: true\ntype: post\ndate: 2026-04-06\n---\nSecond\n")
+
+	output := filepath.Join(t.TempDir(), "site")
+	result, err := BuildWithOptions(vault, output, Options{Strict: true})
+	if err != nil {
+		t.Fatalf("BuildWithOptions() error = %v; diagnostics = %#v", err, result.Diagnostics)
+	}
+	if result.WarningCount != 0 || result.ErrorCount != 0 {
+		t.Fatalf("diagnostic counts = %d warning(s), %d error(s), want none; diagnostics = %#v", result.WarningCount, result.ErrorCount, result.Diagnostics)
+	}
+
+	page := string(readBuildOutputFile(t, output, "links/index.html"))
+	for _, href := range []string{
+		"/docs/updates/",
+		"/docs/updates/page/2/",
+		"/docs/404.html",
+		"../updates/",
+		"../updates/page/2/",
+		"../404.html",
+	} {
+		if !strings.Contains(page, "href="+href) {
+			t.Fatalf("generated page link %q is missing:\n%s", href, page)
+		}
+	}
+	if !strings.Contains(page, "href=/docs/updates/>Encoded timeline</a>") {
+		t.Fatalf("encoded generated route was not rendered canonically:\n%s", page)
+	}
+	for _, relPath := range []string{"updates/index.html", "updates/page/2/index.html", "404.html"} {
+		if _, err := os.Stat(filepath.Join(output, filepath.FromSlash(relPath))); err != nil {
+			t.Fatalf("generated page %q is missing: %v", relPath, err)
+		}
+	}
+}
+
 func TestStrictBuildUsesCanonicalRoutesForNestedMarkdownLinks(t *testing.T) {
 	vault := copyFixtureVault(t, "runtime-vault")
 	output := filepath.Join(t.TempDir(), "site")

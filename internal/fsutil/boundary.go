@@ -74,6 +74,9 @@ func ResolveVaultOutput(vaultPath string, outputPath string) (VaultOutputBoundar
 		if info.Mode()&os.ModeSymlink != 0 {
 			return VaultOutputBoundary{}, fmt.Errorf("output path %q must not be a symbolic link", absoluteOutput)
 		}
+		if !info.IsDir() {
+			return VaultOutputBoundary{}, fmt.Errorf("output path %q must be a directory", absoluteOutput)
+		}
 	} else if !errors.Is(lstatErr, os.ErrNotExist) {
 		return VaultOutputBoundary{}, fmt.Errorf("stat output path %q: %w", absoluteOutput, lstatErr)
 	}

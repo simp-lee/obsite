@@ -149,6 +149,15 @@ func TestEmbeddedResourceHashes(t *testing.T) {
 			t.Errorf("%s resource SHA-256 = %s, want %s", test.name, got, test.want)
 		}
 	}
+
+	hmmSource, err := os.ReadFile("hmm_model.go")
+	if err != nil {
+		t.Fatalf("ReadFile(hmm_model.go) error = %v", err)
+	}
+	const wantHMMSource = "86f6d27d540d7ad63b3f9b2de8d234e1c26b2cc8cd5a11d8a1ab3e6fe880c86a"
+	if got := fmt.Sprintf("%x", sha256.Sum256(hmmSource)); got != wantHMMSource {
+		t.Errorf("hmm_model.go SHA-256 = %s, want %s", got, wantHMMSource)
+	}
 }
 
 func TestThirdPartyInventory(t *testing.T) {

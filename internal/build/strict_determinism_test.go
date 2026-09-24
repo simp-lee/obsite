@@ -66,6 +66,7 @@ func TestStrictBuildVersionedMetadataDeterminismMatrix(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					vault := makeStrictVersionedMetadataVault(t, order.reverse, buildMode.incremental)
 					output := filepath.Join(t.TempDir(), "site")
+					var precursorStyle os.FileInfo
 					if buildMode.incremental {
 						seedConcurrency := 1
 						if concurrency == 1 {
@@ -80,6 +81,11 @@ func TestStrictBuildVersionedMetadataDeterminismMatrix(t *testing.T) {
 						if _, err := os.Stat(filepath.Join(output, "docs", "v1", "start-preview", "index.html")); err != nil {
 							t.Fatalf("incremental precursor route is missing: %v", err)
 						}
+						var statErr error
+						precursorStyle, statErr = os.Stat(filepath.Join(output, "style.css"))
+						if statErr != nil {
+							t.Fatalf("incremental precursor style.css is missing: %v", statErr)
+						}
 						writeStrictVersionedMetadataVault(t, vault, order.reverse, false)
 					}
 
@@ -90,6 +96,29 @@ func TestStrictBuildVersionedMetadataDeterminismMatrix(t *testing.T) {
 					gotBytes := strictOutputBytes(t, output)
 					gotURLs := strictOutputURLs(result)
 					assertStrictVersionedMetadataCoverage(t, result)
+					if buildMode.incremental {
+						currentStyle, statErr := os.Stat(filepath.Join(output, "style.css"))
+						if statErr != nil {
+							t.Fatalf("incremental style.css is missing after rebuild: %v", statErr)
+						}
+						if !os.SameFile(precursorStyle, currentStyle) {
+							t.Fatal("incremental rebuild rewrote unrelated style.css output")
+						}
+
+						unchanged, unchangedErr := BuildWithOptions(vault, output, Options{Concurrency: concurrency})
+						if unchangedErr != nil {
+							t.Fatalf("unchanged incremental rebuild: %v", unchangedErr)
+						}
+						compareStrictOutputBytes(t, gotBytes, strictOutputBytes(t, output))
+						compareStrictURLValues(t, gotURLs, strictOutputURLs(unchanged))
+						unchangedStyle, statErr := os.Stat(filepath.Join(output, "style.css"))
+						if statErr != nil {
+							t.Fatalf("unchanged incremental style.css is missing: %v", statErr)
+						}
+						if !os.SameFile(currentStyle, unchangedStyle) {
+							t.Fatal("unchanged incremental rebuild rewrote unrelated style.css output")
+						}
+					}
 					if wantBytes == nil {
 						wantBytes = gotBytes
 						wantURLs = gotURLs

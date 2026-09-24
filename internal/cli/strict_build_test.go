@@ -246,6 +246,14 @@ versions:
 			},
 			want: expectedDiagnostic{kind: diag.KindMetadata, pathSuffix: "article.md", line: 5, field: "banner", target: "images/banner.svg", message: "external SVG reference"},
 		},
+		{
+			name: "undecodable banner",
+			mutate: func(t *testing.T, vault string) {
+				writeValidateFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: page\nbanner: images/banner.svg\nbannerAlt: Invalid\n---\n")
+				writeValidateFile(t, vault, "images/banner.svg", `<svg xmlns="http://www.w3.org/2000/svg"><rect width="16" width="8" height="5"/></svg>`)
+			},
+			want: expectedDiagnostic{kind: diag.KindMetadata, pathSuffix: "article.md", line: 5, field: "banner", target: "images/banner.svg", message: `duplicate SVG attribute "width"`},
+		},
 	}
 
 	for _, test := range tests {

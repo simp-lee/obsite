@@ -36,6 +36,18 @@ func TestLinkRefRetainsRawAndResolvedTargets(t *testing.T) {
 	}
 }
 
+func TestCollectionNotesTieDoesNotUseRawPathFallback(t *testing.T) {
+	left := &Note{RelPath: "A.md", Frontmatter: Frontmatter{Title: "Same", Type: "doc"}}
+	right := &Note{RelPath: "Ａ.md", Frontmatter: Frontmatter{Title: "Same", Type: "doc"}}
+
+	if !CollectionNotesTie(left, right) {
+		t.Fatal("notes with equal normalized collection keys were not identified as a tie")
+	}
+	if LessCollectionNote(left, right) || LessCollectionNote(right, left) {
+		t.Fatal("collection comparator used an unspecified raw-path tie-breaker")
+	}
+}
+
 func TestNoteFrontmatterPublishStoresSinglePublishPolicy(t *testing.T) {
 	published := true
 	hidden := false

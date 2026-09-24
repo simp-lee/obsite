@@ -45,6 +45,10 @@ func TestResolveVaultOutputBoundary(t *testing.T) {
 	if err := os.MkdirAll(vault, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	outputFile := filepath.Join(vault, "output-file")
+	if err := os.WriteFile(outputFile, []byte("not a directory"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	tests := []struct {
 		name       string
@@ -56,6 +60,7 @@ func TestResolveVaultOutputBoundary(t *testing.T) {
 		{name: "external output", output: filepath.Join(root, "published", "site")},
 		{name: "vault root", output: vault, wantErr: "must not equal the vault root"},
 		{name: "vault ancestor", output: root, wantErr: "must not contain the vault"},
+		{name: "existing regular file", output: outputFile, wantErr: "must be a directory"},
 	}
 
 	for _, tt := range tests {

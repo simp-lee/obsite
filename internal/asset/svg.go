@@ -44,6 +44,13 @@ func ValidateLocalSVG(data []byte) error {
 		switch value := token.(type) {
 		case xml.StartElement:
 			seenPreambleContent = true
+			attributeNames := make(map[xml.Name]struct{}, len(value.Attr))
+			for _, attribute := range value.Attr {
+				if _, exists := attributeNames[attribute.Name]; exists {
+					return fmt.Errorf("duplicate SVG attribute %q is not allowed", attribute.Name.Local)
+				}
+				attributeNames[attribute.Name] = struct{}{}
+			}
 			namespaces := map[string]string{"xml": xmlNamespace}
 			if len(namespaceStack) != 0 {
 				for prefix, namespace := range namespaceStack[len(namespaceStack)-1] {

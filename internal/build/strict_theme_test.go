@@ -69,10 +69,17 @@ func TestStrictBuildRewritesThemeCSSAndInvalidatesDependentURLs(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	firstBytes := strictOutputBytes(t, output)
+	firstURLs := strictOutputURLs(first)
 	again, err := BuildWithOptions(vault, output, Options{Strict: true})
-	if err != nil || !reflect.DeepEqual(first.Assets, again.Assets) {
-		t.Fatalf("unchanged theme plan is not stable: %v", err)
+	if err != nil {
+		t.Fatalf("unchanged theme rebuild failed: %v", err)
 	}
+	if !reflect.DeepEqual(first.Assets, again.Assets) {
+		t.Fatal("unchanged theme plan is not stable")
+	}
+	compareStrictOutputBytes(t, firstBytes, strictOutputBytes(t, output))
+	compareStrictURLValues(t, firstURLs, strictOutputURLs(again))
 	writeStrictFile(t, vault, ".obsite/theme/assets/My Logo.svg", `<svg xmlns="http://www.w3.org/2000/svg"><circle id="mark"/></svg>`)
 	changed, err := BuildWithOptions(vault, output, Options{Strict: true})
 	if err != nil {
@@ -91,13 +98,81 @@ func TestStrictBuildRewritesThemeCSSAndInvalidatesDependentURLs(t *testing.T) {
 	}
 }
 
+func TestStrictBuildPlansThemeCSSVaultRootResources(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", "title: Theme\nbaseURL: https://example.test/docs/\nnavigation: []\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeStrictFile(t, vault, ".obsite/theme/theme.css", `@import "/styles/vault.css";
+.hero { background: url("/images/hero.bin?v=1#mark"); }
+.external { background: url("//cdn.example.test/image.png"); }`)
+	writeStrictFile(t, vault, "styles/vault.css", `.font { src: url("../fonts/site.woff2"); }`)
+	writeStrictFile(t, vault, "images/hero.bin", "hero bytes")
+	writeStrictFile(t, vault, "fonts/site.woff2", "font bytes")
+
+	output := filepath.Join(t.TempDir(), "site")
+	result, err := BuildWithOptions(vault, output, Options{Strict: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"images/hero.bin", "styles/vault.css", "fonts/site.woff2"} {
+		planned := result.Assets[source]
+		if planned == nil || planned.DstPath == "" {
+			t.Fatalf("theme root resource %q was not planned: %#v", source, result.Assets)
+		}
+		readBuildOutputFile(t, output, planned.DstPath)
+	}
+
+	rootCSS := string(readBuildOutputFile(t, output, result.Assets[".obsite/theme/theme.css"].DstPath))
+	for _, want := range []string{
+		path.Base(result.Assets["styles/vault.css"].DstPath),
+		path.Base(result.Assets["images/hero.bin"].DstPath) + "?v=1#mark",
+		"//cdn.example.test/image.png",
+	} {
+		if !strings.Contains(rootCSS, want) {
+			t.Fatalf("theme CSS missing %q: %s", want, rootCSS)
+		}
+	}
+	if strings.Contains(rootCSS, `url("/images/hero.bin`) {
+		t.Fatalf("theme CSS retained vault-root URL under a subpath baseURL: %s", rootCSS)
+	}
+	vaultCSS := string(readBuildOutputFile(t, output, result.Assets["styles/vault.css"].DstPath))
+	if want := path.Base(result.Assets["fonts/site.woff2"].DstPath); !strings.Contains(vaultCSS, want) {
+		t.Fatalf("vault CSS imported by theme missing planned dependency %q: %s", want, vaultCSS)
+	}
+}
+
+func TestStrictThemeSlotLiteralsMayReferenceExactPlannedOutputs(t *testing.T) {
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", "title: Theme\nbaseURL: https://example.test/docs/\nnavigation: []\n")
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	const source = ".obsite/theme/assets/logo.bin"
+	data := []byte("logo bytes")
+	writeStrictFile(t, vault, source, string(data))
+	planned := asset.PlanData(source, data)
+	resourceURL := "/docs/" + planned.DstPath + "?v=1#logo"
+	writeStrictFile(t, vault, ".obsite/theme/slots.html", fmt.Sprintf(`{{define "obsite-footer-end"}}<img src=%q><img src="https://cdn.example.test/logo.png">{{end}}`, resourceURL))
+
+	output := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, output, Options{Strict: true}); err != nil {
+		t.Fatalf("planned and external slot resources must pass validation: %v", err)
+	}
+	if page := string(readBuildOutputFile(t, output, "index.html")); !strings.Contains(page, resourceURL) {
+		t.Fatalf("published slot is missing planned literal resource %q: %s", resourceURL, page)
+	}
+}
+
 func TestStrictThemeFailuresHaveSharedReadOnlyDiagnostics(t *testing.T) {
 	for _, test := range []struct {
 		name, slots, css, want string
 	}{
 		{name: "missing slot resource", slots: `{{define "obsite-footer-end"}}<img src="{{themeAssetURL .SiteRootRel "missing.svg"}}">{{end}}`, want: "missing.svg"},
 		{name: "conditional slot resource", slots: `{{define "obsite-footer-end"}}{{if eq .RelPath "/guide/"}}<img src="{{themeAssetURL .SiteRootRel "missing.svg"}}">{{end}}{{end}}`, want: "missing.svg"},
+		{name: "literal slot resource", slots: `{{define "obsite-footer-end"}}<img src="/logo.png">{{end}}`, want: "themeAssetURL"},
+		{name: "conditional literal slot resource", slots: `{{define "obsite-footer-end"}}{{if eq .RelPath "/guide/"}}<img srcset="/logo.png 1x, https://cdn.example.test/logo.png 2x">{{end}}{{end}}`, want: "themeAssetURL"},
+		{name: "literal slot attachment", slots: `{{define "obsite-footer-end"}}<a href="/manual.pdf">Manual</a>{{end}}`, want: "themeAssetURL"},
 		{name: "missing CSS resource", css: `.logo { background: url(missing.svg); }`, want: "missing.svg"},
+		{name: "missing root CSS resource", css: `.logo { background: url("/images/missing.svg"); }`, want: "/images/missing.svg"},
+		{name: "escaping root CSS resource", css: `.logo { background: url("/../outside.svg"); }`, want: "escapes the vault"},
 		{name: "cyclic CSS", css: `@import "theme.css";`, want: "cyclic theme CSS"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -105,6 +180,8 @@ func TestStrictThemeFailuresHaveSharedReadOnlyDiagnostics(t *testing.T) {
 			writeStrictFile(t, vault, "obsite.yaml", "title: Theme\nbaseURL: https://example.test/\nnavigation: []\n")
 			writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
 			writeStrictFile(t, vault, "guide/_index.md", "---\ntitle: Guide\npublish: true\n---\nGuide\n")
+			writeStrictFile(t, vault, "logo.png", "unplanned logo")
+			writeStrictFile(t, vault, "manual.pdf", "unplanned manual")
 			writeStrictFile(t, vault, ".obsite/theme/slots.html", test.slots)
 			writeStrictFile(t, vault, ".obsite/theme/theme.css", test.css)
 			output := filepath.Join(t.TempDir(), "site")

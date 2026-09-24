@@ -94,7 +94,7 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 		r.recordMissingSectionFragment(rawTarget, sourceRef, lookup.Section, fragment)
 		return nil, nil
 	case lookup.Section != nil:
-		r.markSectionResolved(sourceRef, lookup.Section)
+		r.markSectionResolved(sourceRef, lookup.Section, lookup.FragmentID)
 		return []byte(buildSectionHref(r.OutputNote, r.CurrentNote, lookup.Section, lookup.FragmentID, r.HeadingIDPrefix)), nil
 	case lookup.Note == nil && lookup.CanvasResource:
 		if len(lookup.Ambiguous) > 0 {
@@ -113,7 +113,7 @@ func (r *VaultResolver) ResolveWikilink(node *gmwikilink.Node) ([]byte, error) {
 		r.recordMissingFragment(rawTarget, sourceRef, lookup.Note, fragment)
 		return nil, nil
 	default:
-		r.markResolved(sourceRef, lookup.Note)
+		r.markResolved(sourceRef, lookup.Note, lookup.FragmentID)
 		return []byte(buildNoteHref(r.OutputNote, r.CurrentNote, lookup.Note, lookup.FragmentID, r.HeadingIDPrefix)), nil
 	}
 }
@@ -656,20 +656,22 @@ func buildNoteHref(output *model.Note, source *model.Note, target *model.Note, f
 	if target == nil {
 		return ""
 	}
-	if source != nil && source.RelPath == target.RelPath && fragment != "" {
-		if headingIDPrefix != "" {
+	if source != nil && source.RelPath == target.RelPath {
+		if fragment == "" {
+			return buildOutputHref(output, target)
+		}
+		if headingIDPrefix == "" {
+			return "#" + fragment
+		}
+		if isRenderedEmbeddedHeading(source, target.RelPath, fragment, headingIDPrefix) {
 			return "#" + headingIDPrefix + fragment
 		}
-		return "#" + fragment
 	}
 	if output != nil && output.RelPath == target.RelPath {
 		if fragment != "" {
 			return "#" + fragment
 		}
 		return "./"
-	}
-	if source != nil && source.RelPath == target.RelPath {
-		return buildOutputHref(output, target)
 	}
 
 	href := buildOutputHref(output, target)
@@ -690,10 +692,12 @@ func buildSectionHref(output *model.Note, source *model.Note, target *model.Sect
 		return ""
 	}
 	if source != nil && source.RelPath == target.SourcePath && fragment != "" {
-		if headingIDPrefix != "" {
+		if headingIDPrefix == "" {
+			return "#" + fragment
+		}
+		if isRenderedEmbeddedHeading(source, target.SourcePath, fragment, headingIDPrefix) {
 			return "#" + headingIDPrefix + fragment
 		}
-		return "#" + fragment
 	}
 	if output != nil && output.RelPath == target.SourcePath {
 		if fragment != "" {
@@ -938,15 +942,16 @@ func lookupCanvasResource(idx *model.VaultIndex, current *model.Note, target str
 }
 
 // MarkStandardLinkResolved records a successfully resolved ordinary Markdown
-// link on this resolver's render-local link ledger.
-func (r *VaultResolver) MarkStandardLinkResolved(rawTarget string, note *model.Note) {
-	r.markResolved(r.consumeOutLink(false, rawTarget, true), note)
+// link on this resolver's render-local link ledger. embeddedFragment is the
+// resolved heading ID when the rendered destination may be an embedded heading.
+func (r *VaultResolver) MarkStandardLinkResolved(rawTarget string, note *model.Note, embeddedFragment string) {
+	r.markResolved(r.consumeOutLink(false, rawTarget, true), note, embeddedFragment)
 }
 
 // MarkStandardSectionLinkResolved records a section source as the resolved
 // target while retaining its non-article source identity.
-func (r *VaultResolver) MarkStandardSectionLinkResolved(rawTarget string, section *model.Section) {
-	r.markSectionResolved(r.consumeOutLink(false, rawTarget, true), section)
+func (r *VaultResolver) MarkStandardSectionLinkResolved(rawTarget string, section *model.Section, embeddedFragment string) {
+	r.markSectionResolved(r.consumeOutLink(false, rawTarget, true), section, embeddedFragment)
 }
 
 func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string, standard bool) *model.LinkRef {
@@ -966,18 +971,37 @@ func (r *VaultResolver) consumeOutLink(embed bool, rawTarget string, standard bo
 	return nil
 }
 
-func (r *VaultResolver) markResolved(ref *model.LinkRef, note *model.Note) {
+func (r *VaultResolver) markResolved(ref *model.LinkRef, note *model.Note, fragment string) {
 	if ref == nil || note == nil {
 		return
 	}
-	ref.ResolvedRelPath = note.RelPath
+	ref.ResolvedRelPath = r.resolvedLedgerPath(note.RelPath, fragment)
 }
 
-func (r *VaultResolver) markSectionResolved(ref *model.LinkRef, section *model.Section) {
+func (r *VaultResolver) markSectionResolved(ref *model.LinkRef, section *model.Section, fragment string) {
 	if ref == nil || section == nil {
 		return
 	}
-	ref.ResolvedRelPath = section.SourcePath
+	ref.ResolvedRelPath = r.resolvedLedgerPath(section.SourcePath, fragment)
+}
+
+func (r *VaultResolver) resolvedLedgerPath(targetPath string, fragment string) string {
+	if r != nil && r.OutputNote != nil && isRenderedEmbeddedHeading(r.CurrentNote, targetPath, fragment, r.HeadingIDPrefix) {
+		return r.OutputNote.RelPath
+	}
+	return targetPath
+}
+
+func isRenderedEmbeddedHeading(source *model.Note, targetPath string, fragment string, headingIDPrefix string) bool {
+	if source == nil || source.RelPath != targetPath || fragment == "" || headingIDPrefix == "" {
+		return false
+	}
+	for _, heading := range source.Headings {
+		if heading.ID == fragment {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *VaultResolver) recordDeadLink(rawTarget string, ref *model.LinkRef) {

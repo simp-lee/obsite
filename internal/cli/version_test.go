@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestCurrentVersionMetadataUsesInjectedReleaseMetadata(t *testing.T) {
+	setVersionTestState(t)
+	releaseMetadata = "obsite-release-metadata:1.2.3|abcdef123456|2023-11-14T22:13:20Z|release"
+
+	if got, want := formatVersion(), "obsite version=1.2.3 commit=abcdef123456 date=2023-11-14T22:13:20Z type=release"; got != want {
+		t.Fatalf("formatVersion() = %q, want %q", got, want)
+	}
+}
+
 func TestCurrentVersionMetadataUsesInjectedReleaseValues(t *testing.T) {
 	setVersionTestState(t)
 	releaseVersion = "1.2.3"
@@ -74,17 +83,20 @@ func setVersionTestState(t *testing.T) {
 	oldCommit := releaseCommit
 	oldDate := releaseDateEpoch
 	oldType := releaseBuildType
+	oldMetadata := releaseMetadata
 	oldRead := readBuildInfo
 	releaseVersion = ""
 	releaseCommit = ""
 	releaseDateEpoch = ""
 	releaseBuildType = ""
+	releaseMetadata = ""
 	readBuildInfo = func() (*debug.BuildInfo, bool) { return nil, false }
 	t.Cleanup(func() {
 		releaseVersion = oldVersion
 		releaseCommit = oldCommit
 		releaseDateEpoch = oldDate
 		releaseBuildType = oldType
+		releaseMetadata = oldMetadata
 		readBuildInfo = oldRead
 	})
 }

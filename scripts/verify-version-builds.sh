@@ -7,7 +7,13 @@ EPOCH=${SOURCE_DATE_EPOCH:-1700000000}
 trap 'chmod -R u+w "$TMP" 2>/dev/null || true; rm -rf "$TMP"' EXIT HUP INT TERM
 mkdir -p "$TMP/bin-a" "$TMP/bin-b"
 
-LDFLAGS="-s -w -X github.com/simp-lee/obsite/internal/cli.releaseVersion=1.2.3 -X github.com/simp-lee/obsite/internal/cli.releaseCommit=0123456789abcdef -X github.com/simp-lee/obsite/internal/cli.releaseDateEpoch=$EPOCH -X github.com/simp-lee/obsite/internal/cli.releaseBuildType=release"
+EXPECTED_DATE=$(python3 - "$EPOCH" <<'PY'
+from datetime import datetime, timezone
+import sys
+print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
+PY
+)
+LDFLAGS="-s -w -X github.com/simp-lee/obsite/internal/cli.releaseMetadata=obsite-release-metadata:1.2.3|0123456789abcdef|$EXPECTED_DATE|release"
 (
   cd "$ROOT"
   go build -trimpath -ldflags "$LDFLAGS" -o "$TMP/bin-a/obsite" ./cmd/obsite
@@ -19,12 +25,6 @@ cmp -s "$TMP/bin-a/obsite" "$TMP/bin-b/obsite" || {
 }
 VERSION_A=$($TMP/bin-a/obsite version)
 VERSION_B=$($TMP/bin-b/obsite --version)
-EXPECTED_DATE=$(python3 - "$EPOCH" <<'PY'
-from datetime import datetime, timezone
-import sys
-print(datetime.fromtimestamp(int(sys.argv[1]), timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'))
-PY
-)
 EXPECTED="obsite version=1.2.3 commit=0123456789abcdef date=$EXPECTED_DATE type=release"
 [ "$VERSION_A" = "$EXPECTED" ] || { echo "version metadata mismatch: $VERSION_A" >&2; exit 1; }
 [ "$VERSION_B" = "$EXPECTED" ] || { echo "--version metadata mismatch: $VERSION_B" >&2; exit 1; }

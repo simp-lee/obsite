@@ -183,6 +183,55 @@ func TestBuildStrictRelationsConsumesRelatedSemanticOwner(t *testing.T) {
 	}
 }
 
+func TestBuildStrictRelationsPartitionsRecommendationCorpusByVersion(t *testing.T) {
+	index := &model.VaultIndex{Notes: make(map[string]*model.Note)}
+	semantics := make([]model.RelatedSemanticDocument, 0, 4)
+	for _, versionID := range []string{"v1", "v2"} {
+		for _, name := range []string{"a", "b"} {
+			relPath := "docs/" + versionID + "/" + name + ".md"
+			index.Notes[relPath] = &model.Note{
+				RelPath:    relPath,
+				VersionID:  versionID,
+				RawContent: []byte("database protocol"),
+				Frontmatter: model.Frontmatter{
+					Title: versionID + " " + name,
+				},
+			}
+			semantics = append(semantics, model.RelatedSemanticDocument{
+				RelPath: relPath,
+				Title:   versionID + " " + name,
+				Body:    "database protocol",
+			})
+		}
+	}
+	planned := &siteplan.Result{
+		Plan: &model.SitePlan{Config: model.SiteConfig{Related: model.RelatedConfig{
+			Enabled: true,
+			Count:   3,
+		}}},
+		Index:           index,
+		RelatedSemantic: semantics,
+	}
+
+	_, related, err := buildStrictRelations(planned, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(related) != len(index.Notes) {
+		t.Fatalf("related result documents = %d, want %d", len(related), len(index.Notes))
+	}
+	for sourcePath, candidates := range related {
+		source := index.Notes[sourcePath]
+		if len(candidates) != 1 {
+			t.Errorf("related[%q] = %d candidates, want the one same-version peer", sourcePath, len(candidates))
+			continue
+		}
+		if candidates[0].VersionID != source.VersionID {
+			t.Errorf("related[%q] candidate version = %q, want %q", sourcePath, candidates[0].VersionID, source.VersionID)
+		}
+	}
+}
+
 func writeRelatedBuildFixture(tb testing.TB, kind string, count int) string {
 	tb.Helper()
 	fixture, err := relatedfixture.Generate(kind, count)

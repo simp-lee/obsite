@@ -32,11 +32,14 @@ PY
 )
 EXPECTED_OUTPUT="obsite version=$EXPECTED_VERSION commit=$EXPECTED_COMMIT date=$EXPECTED_DATE type=$EXPECTED_TYPE"
 
-python3 - "$ROOT" "$DIST" <<'PY'
+python3 - "$ROOT" "$DIST" "$EXPECTED_VERSION" "$EXPECTED_COMMIT" "$EXPECTED_DATE" "$EXPECTED_TYPE" <<'PY'
 from pathlib import Path
-import hashlib, json, re, subprocess, sys, tarfile, zipfile
+import hashlib, json, platform, re, subprocess, sys, tarfile, tempfile, zipfile
 
-root, dist = map(Path, sys.argv[1:])
+root, dist = map(Path, sys.argv[1:3])
+expected_version, expected_commit, expected_date, expected_type = sys.argv[3:]
+expected_output = f'obsite version={expected_version} commit={expected_commit} date={expected_date} type={expected_type}'
+expected_marker = f'obsite-release-metadata:{expected_version}|{expected_commit}|{expected_date}|{expected_type}'.encode()
 archives = sorted(list(dist.glob('*.tar.gz')) + list(dist.glob('*.zip')))
 if len(archives) != 6:
     raise SystemExit(f'archive count = {len(archives)}, want 6: {[p.name for p in archives]}')
@@ -86,6 +89,41 @@ def matrix_key(name):
     if not os_name or not arch:
         raise SystemExit(f'artifact matrix name is not auditable: {name}')
     return os_name, arch
+
+
+def host_matrix_key():
+    os_name = {'linux': 'linux', 'darwin': 'darwin', 'windows': 'windows'}.get(platform.system().lower())
+    arch = {'x86_64': 'amd64', 'amd64': 'amd64', 'aarch64': 'arm64', 'arm64': 'arm64'}.get(platform.machine().lower())
+    return (os_name, arch) if os_name and arch else None
+
+
+# The release marker is injected into the executable and is also the source of
+# the version command's output. This makes the exact metadata check portable to
+# targets that cannot run on the verifier's host; the matching native target is
+# executed below as an additional behavioral check.
+def verify_version_metadata(binary, path):
+    if binary.count(expected_marker + b'\x00') != 1:
+        raise SystemExit(f'{path}: release version metadata marker does not match {expected_marker.decode()!r}')
+
+
+def verify_native_version(binary, path):
+    with tempfile.TemporaryDirectory(prefix='obsite-release-version-') as directory:
+        executable = Path(directory) / ('obsite.exe' if path[0] == 'windows' else 'obsite')
+        executable.write_bytes(binary)
+        executable.chmod(0o755)
+        for argument in ('version', '--version'):
+            try:
+                result = subprocess.run(
+                    [str(executable), argument],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+            except (OSError, subprocess.CalledProcessError) as error:
+                raise SystemExit(f'{path}: unable to execute archived binary for version check: {error}')
+            output = result.stdout.rstrip('\n')
+            if output != expected_output:
+                raise SystemExit(f'{path} {argument}: {output!r} != {expected_output!r}')
 
 raw_binaries = {}
 for path in dist.rglob('*'):
@@ -146,6 +184,7 @@ for key, binary in sorted(raw_binaries.items()):
         raise SystemExit(f'{binary}: not statically linked: {file_info.strip()}')
 
 seen = set()
+native_key = host_matrix_key()
 for archive in archives:
     key = matrix_key(archive.name)
     seen.add(key)
@@ -174,6 +213,9 @@ for archive in archives:
         expected_mode = 0o755 if name == expected_binary else 0o644
         if mode != expected_mode:
             raise SystemExit(f'{archive.name}: mode for {name} = {mode:o}, want {expected_mode:o}')
+    verify_version_metadata(members[expected_binary], f'{archive.name}:{expected_binary}')
+    if native_key == key:
+        verify_native_version(members[expected_binary], key)
     if members[expected_binary] != raw_binaries[key].read_bytes():
         raise SystemExit(f'{archive.name} executable differs from the audited raw binary')
 if seen != expected_matrix:
@@ -208,12 +250,5 @@ for key, binary in sorted(raw_binaries.items()):
     print(f'{binary.relative_to(dist)} {len(data)} bytes')
 PY
 
-linux_amd64=$(find "$DIST" -type f -path '*linux*amd64*/obsite' | head -n 1)
-[ -n "$linux_amd64" ] || { echo "linux amd64 binary missing" >&2; exit 1; }
-VERSION_OUTPUT=$($linux_amd64 version)
-VERSION_FLAG_OUTPUT=$($linux_amd64 --version)
-[ "$VERSION_OUTPUT" = "$EXPECTED_OUTPUT" ] || { echo "version metadata mismatch: $VERSION_OUTPUT" >&2; exit 1; }
-[ "$VERSION_FLAG_OUTPUT" = "$EXPECTED_OUTPUT" ] || { echo "--version metadata mismatch: $VERSION_FLAG_OUTPUT" >&2; exit 1; }
-
-printf 'release metadata verified: %s\n' "$EXPECTED_OUTPUT"
+printf 'release metadata verified for six archives: %s\n' "$EXPECTED_OUTPUT"
 echo "release artifacts verified"

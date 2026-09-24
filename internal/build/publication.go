@@ -105,7 +105,9 @@ func (registry *strictOutputRegistry) write(outputRoot, relPath, owner string, c
 	registry.claims[cleaned] = owner
 	writeContent := content
 	hash := sha256.Sum256(content)
-	if previous, ok := registry.previous[cleaned]; ok && previous.Owner == owner && previous.OutputHash == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
+	// The producer may change when identical assets share a destination. Reuse
+	// depends on the path and verified bytes; the new record captures ownership.
+	if previous, ok := registry.previous[cleaned]; ok && previous.OutputHash == fmt.Sprintf("%x", hash) && registry.previousRoot != "" {
 		_, previousPath, pathErr := resolveOutputWritePath(registry.previousRoot, cleaned)
 		if pathErr != nil {
 			return pathErr

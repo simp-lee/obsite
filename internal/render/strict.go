@@ -32,7 +32,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		OutLinks: section.OutLinks, Embeds: section.Embeds, ImageRefs: section.ImageRefs,
 		HasMath: section.HasMath, HasMermaid: section.HasMermaid,
 	}
-	content, err := strictMarkdown(index, sectionNote, assets)
+	content, err := strictMarkdown(plan, index, sectionNote, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +88,7 @@ func RenderStrictArticle(plan *model.SitePlan, article *model.Note, previous, ne
 	}
 	renderArticle := *article
 	renderArticle.BasePath = strictBasePath(plan)
-	content, err := strictMarkdown(index, &renderArticle, assets)
+	content, err := strictMarkdown(plan, index, &renderArticle, assets)
 	if err != nil {
 		return nil, err
 	}
@@ -771,10 +771,10 @@ func strictSlotRootRel(route string) string {
 	return strings.Repeat("../", len(segments))
 }
 
-func strictMarkdown(index *model.VaultIndex, note *model.Note, assets markdown.AssetSink) (string, error) {
+func strictMarkdown(plan *model.SitePlan, index *model.VaultIndex, note *model.Note, assets markdown.AssetSink) (string, error) {
 	var output bytes.Buffer
 	collector := diag.NewCollector()
-	md, _ := markdown.NewMarkdown(index, note, assets, collector)
+	md, _ := markdown.NewMarkdownWithPageRoutes(index, note, assets, collector, plan.PublicPageRoutes)
 	if err := md.Convert(note.RawContent, &output); err != nil {
 		return "", err
 	}

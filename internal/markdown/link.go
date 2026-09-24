@@ -19,30 +19,32 @@ import (
 )
 
 type strictLinkExtender struct {
-	index           *model.VaultIndex
-	sourceNote      *model.Note
-	outputNote      *model.Note
-	headingIDPrefix string
-	assetSink       AssetSink
-	diagnostics     *diag.Collector
-	linkResolver    *internalwikilink.VaultResolver
+	index            *model.VaultIndex
+	sourceNote       *model.Note
+	outputNote       *model.Note
+	headingIDPrefix  string
+	assetSink        AssetSink
+	diagnostics      *diag.Collector
+	linkResolver     *internalwikilink.VaultResolver
+	publicPageRoutes map[string]struct{}
 }
 
 func (e strictLinkExtender) Extend(markdown goldmark.Markdown) {
 	markdown.Renderer().AddOptions(renderer.WithNodeRenderers(util.Prioritized(&strictLinkRenderer{
-		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, headingIDPrefix: e.headingIDPrefix, assetSink: e.assetSink, diagnostics: e.diagnostics, linkResolver: e.linkResolver,
+		Config: gmhtml.NewConfig(), index: e.index, sourceNote: e.sourceNote, outputNote: e.outputNote, headingIDPrefix: e.headingIDPrefix, assetSink: e.assetSink, diagnostics: e.diagnostics, linkResolver: e.linkResolver, publicPageRoutes: e.publicPageRoutes,
 	}, 499)))
 }
 
 type strictLinkRenderer struct {
 	gmhtml.Config
-	index           *model.VaultIndex
-	sourceNote      *model.Note
-	outputNote      *model.Note
-	headingIDPrefix string
-	assetSink       AssetSink
-	diagnostics     *diag.Collector
-	linkResolver    *internalwikilink.VaultResolver
+	index            *model.VaultIndex
+	sourceNote       *model.Note
+	outputNote       *model.Note
+	headingIDPrefix  string
+	assetSink        AssetSink
+	diagnostics      *diag.Collector
+	linkResolver     *internalwikilink.VaultResolver
+	publicPageRoutes map[string]struct{}
 }
 
 func (r *strictLinkRenderer) RegisterFuncs(register renderer.NodeRendererFuncRegisterer) {
@@ -109,7 +111,9 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 		vaultPath = ""
 	}
 	lookup := internalwikilink.LookupResult{}
+	publicPageRoute := ""
 	if rootRelative {
+		publicPageRoute = escapedTargetPath
 		lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, escapedTargetPath, fragment)
 		if lookup.Note == nil && lookup.Section == nil && !lookup.MissingFragment {
 			lookup = internalwikilink.LookupPathTarget(r.index, r.sourceNote, strings.TrimPrefix(targetPath, "/"), fragment)
@@ -119,16 +123,14 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 		if lookup.Note == nil && lookup.Section == nil && r.sourceNote.Route != "" {
 			if base, parseErr := url.Parse(r.sourceNote.Route); parseErr == nil {
 				resolved := base.ResolveReference(parsed)
-				lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, resolved.EscapedPath(), fragment)
+				publicPageRoute = resolved.EscapedPath()
+				lookup = internalwikilink.LookupRouteTarget(r.index, r.sourceNote, publicPageRoute, fragment)
 			}
 		}
 	} else {
 		lookup = internalwikilink.LookupTarget(r.index, r.sourceNote, "", fragment)
 	}
 	if lookup.Note == nil {
-		if rootRelative && fragment == "" && isGeneratedTagRoute(r.index, escapedTargetPath) {
-			return prefixRootRelativeDestination(r.outputNote, raw)
-		}
 		section := lookup.Section
 		if section != nil && inLinkVersionScope(r.sourceNote, section) {
 			resolvedFragment := ""
@@ -157,9 +159,16 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 				}
 			}
 			if !lookup.MissingFragment && r.linkResolver != nil {
-				r.linkResolver.MarkStandardSectionLinkResolved(standardLinkLedgerTarget(sourceTarget), section)
+				embeddedFragment := resolvedFragment
+				if rootRelative {
+					embeddedFragment = ""
+				}
+				r.linkResolver.MarkStandardSectionLinkResolved(standardLinkLedgerTarget(sourceTarget), section, embeddedFragment)
 			}
 			return href
+		}
+		if canonicalRoute, ok := lookupPublicPageRoute(r.publicPageRoutes, publicPageRoute); fragment == "" && ok {
+			return publicPageHref(r.outputNote, canonicalRoute, parsed, rootRelative)
 		}
 		resourceLookup := resourcepath.LookupPath(r.sourceNote, r.index.AttachmentFolderPath, escapedTargetPath, r.index.LookupResourcePath)
 		if resource := resourceLookup.Path; resource != "" {
@@ -222,7 +231,11 @@ func (r *strictLinkRenderer) rewriteDestination(raw string, sourceTarget string,
 		return prefixRootRelativeDestination(r.outputNote, raw)
 	}
 	if r.linkResolver != nil {
-		r.linkResolver.MarkStandardLinkResolved(standardLinkLedgerTarget(sourceTarget), lookup.Note)
+		embeddedFragment := lookup.FragmentID
+		if rootRelative {
+			embeddedFragment = ""
+		}
+		r.linkResolver.MarkStandardLinkResolved(standardLinkLedgerTarget(sourceTarget), lookup.Note, embeddedFragment)
 	}
 	href := internalwikilink.BuildNoteHref(r.outputNote, r.sourceNote, lookup.Note, lookup.FragmentID, r.headingIDPrefix)
 	if rootRelative {
@@ -257,16 +270,35 @@ func isMarkdownAttachmentTarget(targetPath string) bool {
 	return extension != "" && extension != ".md"
 }
 
-func isGeneratedTagRoute(index *model.VaultIndex, route string) bool {
-	if index == nil {
-		return false
+func lookupPublicPageRoute(routes map[string]struct{}, route string) (string, bool) {
+	if route == "" {
+		return "", false
 	}
-	for _, tag := range index.Tags {
-		if tag != nil && route == "/"+slug.EncodePath(tag.Slug)+"/" {
-			return true
+	canonical := slug.CanonicalRoute(route)
+	_, ok := routes[canonical]
+	return canonical, ok
+}
+
+func publicPageHref(note *model.Note, route string, parsed *url.URL, rootRelative bool) string {
+	href := route
+	if rootRelative {
+		if note != nil && note.BasePath != "" {
+			href = strings.TrimSuffix(note.BasePath, "/") + route
+		}
+	} else {
+		href = relativeToNoteOutput(note, route)
+		if strings.HasSuffix(route, "/") {
+			if href == "" || href == "." {
+				href = "./"
+			} else if !strings.HasSuffix(href, "/") {
+				href += "/"
+			}
 		}
 	}
-	return false
+	if parsed != nil && (parsed.RawQuery != "" || parsed.ForceQuery) {
+		href += "?" + parsed.RawQuery
+	}
+	return href
 }
 
 func inLinkVersionScope(note *model.Note, section *model.Section) bool {

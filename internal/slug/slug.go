@@ -3,6 +3,7 @@ package slug
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"path"
 	"sort"
 	"strconv"
@@ -55,6 +56,19 @@ func EncodePath(value string) string {
 		parts[index] = EncodeSegment(norm.NFKC.String(part))
 	}
 	return strings.Join(parts, "/")
+}
+
+// CanonicalRoute returns the normalized, percent-encoded key used for a
+// generated page route.
+func CanonicalRoute(route string) string {
+	parts := strings.Split(strings.TrimPrefix(route, "/"), "/")
+	for index, part := range parts {
+		if decoded, err := url.PathUnescape(part); err == nil {
+			part = decoded
+		}
+		parts[index] = EncodeSegment(norm.NFKC.String(part))
+	}
+	return "/" + strings.Join(parts, "/")
 }
 
 // EncodeSourcePath percent-encodes a source path without changing its Unicode

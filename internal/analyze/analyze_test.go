@@ -32,15 +32,42 @@ func TestAnalyzeUsesStrictPlanWithoutWritingVault(t *testing.T) {
 	}
 }
 
-func TestAnalyzeExcludesDefaultPublicationOutputFromVaultInputs(t *testing.T) {
+func TestAnalyzeDoesNotInferOutputBoundaryFromDirectoryNameOrMarker(t *testing.T) {
 	vault := t.TempDir()
 	writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
 	writeAnalyzeFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writeAnalyzeFile(t, vault, "public/.obsite-output", "managed by obsite\n")
 	writeAnalyzeFile(t, vault, "public/old.html", "generated output")
 	writeAnalyzeFile(t, vault, "public/invalid.md", "not strict frontmatter")
 	result, err := Analyze(vault)
 	if err == nil || len(result.Diagnostics) == 0 || !strings.Contains(result.Diagnostics[0].Message, "frontmatter is required") {
-		t.Fatalf("Analyze() error = %v diagnostics = %#v, want unmanaged output diagnosed", err, result.Diagnostics)
+		t.Fatalf("Analyze() error = %v diagnostics = %#v, want named directory content diagnosed", err, result.Diagnostics)
+	}
+}
+
+func TestAnalyzeWithOutputExcludesFixedInputsWithinBoundary(t *testing.T) {
+	tests := []struct {
+		name       string
+		outputPath string
+		badInput   string
+		content    string
+	}{
+		{name: "theme", outputPath: ".obsite", badInput: ".obsite/theme/unsupported.txt", content: "stale output"},
+		{name: "nested theme asset", outputPath: ".obsite/theme/assets/generated", badInput: ".obsite/theme/assets/generated/bad.css", content: "body { background: url(missing.png); }"},
+		{name: "Obsidian metadata", outputPath: ".obsidian", badInput: ".obsidian/app.json", content: "not JSON"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vault := t.TempDir()
+			writeAnalyzeFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+			writeAnalyzeFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+			writeAnalyzeFile(t, vault, test.badInput, test.content)
+
+			result, err := AnalyzeWithOutput(vault, filepath.Join(vault, test.outputPath))
+			if err != nil || len(result.Diagnostics) != 0 {
+				t.Fatalf("AnalyzeWithOutput() error = %v; diagnostics = %#v", err, result.Diagnostics)
+			}
+		})
 	}
 }
 

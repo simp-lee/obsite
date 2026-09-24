@@ -140,10 +140,17 @@ func LessCollectionNote(left *Note, right *Note) bool {
 		return leftTitle < rightTitle
 	}
 	leftPath, rightPath := collectionFold(left.RelPath), collectionFold(right.RelPath)
-	if leftPath != rightPath {
-		return leftPath < rightPath
+	return leftPath < rightPath
+}
+
+// CollectionNotesTie reports whether two notes have identical keys under the
+// canonical collection order. A complete tie is invalid because the contract
+// does not define an additional implementation-dependent tie-breaker.
+func CollectionNotesTie(left *Note, right *Note) bool {
+	if left == nil || right == nil {
+		return false
 	}
-	return left.RelPath < right.RelPath
+	return !LessCollectionNote(left, right) && !LessCollectionNote(right, left)
 }
 
 func collectionTypeRank(typeName string) int {

@@ -77,7 +77,7 @@ func BuildForOutputWithConcurrency(vaultPath, outputPath string, concurrency int
 	if err != nil {
 		return nil, err
 	}
-	cfg, err := internalconfig.LoadForBuild(boundary.VaultPath)
+	cfg, err := internalconfig.LoadForBuildWithOutput(boundary.VaultPath, boundary.OutputPath)
 	if err != nil {
 		return nil, err
 	}
@@ -113,8 +113,9 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 
 	plan := &model.SitePlan{
 		VaultPath: resolvedVault, Config: cfg,
-		Routes:         make(map[string]string),
-		ReservedRoutes: reservedRoutes(),
+		Routes:           make(map[string]string),
+		PublicPageRoutes: map[string]struct{}{routeKey("/404.html"): {}},
+		ReservedRoutes:   reservedRoutes(),
 	}
 	sections := make(map[string]*model.Section, len(sources.Sections))
 	for _, source := range sources.Sections {
@@ -167,32 +168,32 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	computeEffectivePublish(sections, versions, collector)
 	assignSectionRoutes(plan, sections, versions, cfg.Versions, collector)
 	assignArticles(plan, sections, versions, cfg.Versions, sources.AllArticles, collector)
-	validateNavigation(sections, cfg.Navigation, cfg.FieldLines, collector)
+	validateNavigation(sections, cfg.Navigation, cfg.BaseURL, cfg.FieldLines, collector)
 	frontmatterAssets, assetOwners := validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
-	validateStrictOptionalInputs(resolvedVault, plan, collector)
 	buildVersionCorrespondence(versions, collector)
-	finalizeCollections(plan, sections, versions)
+	finalizeCollections(plan, sections, versions, collector)
 	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{Concurrency: concurrency, CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
 	if indexErr != nil {
 		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
 	}
 	planVaultCSS(plan, scan, indexResult.Index, collector)
+	validateStrictOptionalInputs(resolvedVault, outputPath, plan, scan, indexResult.Index, collector)
 	if indexResult.Index != nil {
-		validateStrictMarkdown(plan, indexResult.Index, collector)
 		for _, tag := range sortedStrictTags(indexResult.Index.Tags) {
 			if tag != nil {
-				claimRoute(plan, "/"+encodePath(tag.Slug)+"/", "tag:"+tag.Name, collector)
+				claimPublicPageRoute(plan, "/"+encodePath(tag.Slug)+"/", "tag:"+tag.Name, collector)
 			}
 		}
 		if cfg.Timeline.Enabled {
 			for _, route := range timelineRoutes(cfg.Timeline.Path, cfg.Pagination.PageSize, len(plan.Posts)) {
-				claimRoute(plan, route, "timeline", collector)
+				claimPublicPageRoute(plan, route, "timeline", collector)
 			}
 		}
+		validateStrictMarkdown(plan, indexResult.Index, collector)
 	}
 
-	validateAssetDestinations(resolvedVault, plan, frontmatterAssets, assetOwners, indexResult.Index, collector)
-	validateThemeSlotAssets(plan, indexResult.Index, collector)
+	plannedAssetOutputs := validateAssetDestinations(resolvedVault, plan, frontmatterAssets, assetOwners, indexResult.Index, collector)
+	validateThemeSlotAssets(plan, indexResult.Index, plannedAssetOutputs, collector)
 	result := &Result{Plan: plan, Scan: scan, Sources: sources, Index: indexResult.Index, RelatedSemantic: indexResult.RelatedSemantic, Diagnostics: collector.Diagnostics()}
 	if collector.HasErrors() {
 		return result, fmt.Errorf("site plan has %d error(s)", collector.ErrorCount())
@@ -658,7 +659,7 @@ func assignArticles(plan *model.SitePlan, sections map[string]*model.Section, ve
 	}
 }
 
-func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, lines map[string]int, collector *diag.Collector) {
+func validateNavigation(sections map[string]*model.Section, navigation []model.NavigationItem, baseURL string, lines map[string]int, collector *diag.Collector) {
 	seen := make(map[string]int, len(navigation))
 	for index, item := range navigation {
 		field := fmt.Sprintf("navigation[%d].url", index)
@@ -668,7 +669,7 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 		report := func(format string, args ...any) {
 			collector.Add(diag.Diagnostic{Severity: diag.SeverityError, Kind: diag.KindNavigation, Location: diag.Location{Path: "obsite.yaml", Line: lines[field]}, Field: field, Message: fmt.Sprintf(format, args...)})
 		}
-		targetKey := navigationTargetKey(item, sections)
+		targetKey := navigationTargetKey(item, sections, baseURL)
 		if previous, exists := seen[targetKey]; exists {
 			report("navigation[%d] duplicates navigation[%d] target", index, previous)
 		} else {
@@ -691,7 +692,7 @@ func validateNavigation(sections map[string]*model.Section, navigation []model.N
 	}
 }
 
-func navigationTargetKey(item model.NavigationItem, sections map[string]*model.Section) string {
+func navigationTargetKey(item model.NavigationItem, sections map[string]*model.Section, baseURL string) string {
 	if item.Section != "" {
 		if section := sections[item.Section]; section != nil && section.Route != "" {
 			return "route:" + section.Route
@@ -699,16 +700,41 @@ func navigationTargetKey(item model.NavigationItem, sections map[string]*model.S
 		return "section:" + item.Section
 	}
 	parsed, err := url.Parse(item.URL)
-	if err != nil || !strings.HasPrefix(item.URL, "/") || strings.HasPrefix(item.URL, "//") {
+	if err != nil {
 		return "url:" + item.URL
 	}
-	pathValue := parsed.Path
-	if pathValue == "" || pathValue == "/" {
-		pathValue = "/"
-	} else {
-		pathValue = "/" + encodePath(strings.Trim(pathValue, "/")) + "/"
+	if !parsed.IsAbs() && parsed.Host == "" && strings.HasPrefix(item.URL, "/") && !strings.HasPrefix(item.URL, "//") {
+		return navigationRouteTargetKey(navigationURLPath(parsed), parsed)
 	}
-	key := "route:" + pathValue
+	base, baseErr := url.Parse(baseURL)
+	if baseErr == nil && parsed.IsAbs() && parsed.Host != "" && strings.EqualFold(parsed.Scheme, base.Scheme) && strings.EqualFold(parsed.Host, base.Host) {
+		basePath, targetPath := navigationURLPath(base), navigationURLPath(parsed)
+		if basePath == "/" {
+			return navigationRouteTargetKey(targetPath, parsed)
+		}
+		switch {
+		case targetPath == basePath:
+			return navigationRouteTargetKey("/", parsed)
+		case strings.HasPrefix(targetPath, basePath):
+			return navigationRouteTargetKey("/"+strings.TrimPrefix(targetPath, basePath), parsed)
+		}
+	}
+	normalized := *parsed
+	normalized.Scheme = strings.ToLower(normalized.Scheme)
+	normalized.Host = strings.ToLower(normalized.Host)
+	return "url:" + normalized.String()
+}
+
+func navigationURLPath(parsed *url.URL) string {
+	escapedPath := parsed.EscapedPath()
+	if escapedPath == "" || escapedPath == "/" {
+		return "/"
+	}
+	return routeKey("/" + strings.Trim(escapedPath, "/") + "/")
+}
+
+func navigationRouteTargetKey(route string, parsed *url.URL) string {
+	key := "route:" + route
 	if parsed.RawQuery != "" {
 		key += "?" + parsed.RawQuery
 	}
@@ -718,7 +744,7 @@ func navigationTargetKey(item model.NavigationItem, sections map[string]*model.S
 	return key
 }
 
-func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collector *diag.Collector) {
+func validateStrictOptionalInputs(vaultRoot, outputPath string, plan *model.SitePlan, scan vault.ScanResult, index *model.VaultIndex, collector *diag.Collector) {
 	if plan == nil || collector == nil {
 		return
 	}
@@ -741,6 +767,12 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 	_ = filepath.WalkDir(plan.Config.ThemeDir, func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			record(collector, diag.KindMetadata, current, "theme entry: %v", walkErr)
+			return nil
+		}
+		if outputPath != "" && internalfsutil.SamePath(current, outputPath) {
+			if entry.IsDir() {
+				return fs.SkipDir
+			}
 			return nil
 		}
 		rel, err := filepath.Rel(plan.Config.ThemeDir, current)
@@ -787,7 +819,7 @@ func validateStrictOptionalInputs(vaultRoot string, plan *model.SitePlan, collec
 		inputs[source] = data
 		return nil
 	})
-	planThemeAssets(plan, inputs, assetSources, cssSource, collector)
+	planThemeAssets(plan, scan, index, inputs, assetSources, cssSource, collector)
 }
 
 func portableVaultAssetPath(value string) bool {
@@ -928,9 +960,13 @@ func plannedAssetReference(plan *model.SitePlan, kind, owner string) bool {
 	return false
 }
 
-func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatter map[string]*model.Asset, owners map[string]assetDiagnostic, index *model.VaultIndex, collector *diag.Collector) {
+func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatter map[string]*model.Asset, owners map[string]assetDiagnostic, index *model.VaultIndex, collector *diag.Collector) map[string]struct{} {
+	outputs := make(map[string]struct{})
 	if plan == nil {
-		return
+		return outputs
+	}
+	if plan.Config.CustomCSS != "" {
+		outputs[customCSSDestination] = struct{}{}
 	}
 
 	assets := make(map[string]*model.Asset, len(frontmatter))
@@ -952,7 +988,7 @@ func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatt
 		}
 	}
 	if len(assets) == 0 && len(plan.ThemeAssets) == 0 && len(plan.VaultCSSAssets) == 0 {
-		return
+		return outputs
 	}
 
 	allAssets := make(map[string]*model.Asset, len(assets)+len(plan.ThemeAssets)+len(plan.VaultCSSAssets))
@@ -976,9 +1012,15 @@ func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatt
 	assetCollector, err := internalasset.NewCollectorWithOverrides(vaultRoot, allAssets, nil, nil, overrides)
 	if err != nil {
 		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
-		return
+		return outputs
 	}
-	applyPlannedAssetDestinations(allAssets, assetCollector.PlanDestinations(allAssets))
+	destinations := assetCollector.PlanDestinations(allAssets)
+	applyPlannedAssetDestinations(allAssets, destinations)
+	for _, plannedAsset := range allAssets {
+		if plannedAsset != nil && plannedAsset.DstPath != "" {
+			outputs[plannedAsset.DstPath] = struct{}{}
+		}
+	}
 	distinct := make(map[string]bool, len(allAssets))
 	for source := range frontmatter {
 		distinct[source] = true
@@ -994,10 +1036,11 @@ func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatt
 				owner = assetDiagnosticOwner(plan, collision.FirstSource)
 			}
 			assetRecord(collector, owner.path, owner.line, owner.field, collision.Destination, "%v", err)
-			return
+			return outputs
 		}
 		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
 	}
+	return outputs
 }
 
 type assetDiagnostic struct {
@@ -1057,7 +1100,7 @@ func validateStrictMarkdown(plan *model.SitePlan, index *model.VaultIndex, colle
 		if indexed == nil {
 			continue
 		}
-		validateStrictMarkdownNote(index, indexed, collector)
+		validateStrictMarkdownNote(index, indexed, plan.PublicPageRoutes, collector)
 	}
 	for _, section := range plan.Sections {
 		if section == nil {
@@ -1069,12 +1112,12 @@ func validateStrictMarkdown(plan *model.SitePlan, index *model.VaultIndex, colle
 			HeadingSections: section.HeadingSections, OutLinks: section.OutLinks, Embeds: section.Embeds,
 			ImageRefs: section.ImageRefs, HasMath: section.HasMath, HasMermaid: section.HasMermaid,
 		}
-		validateStrictMarkdownNote(index, note, collector)
+		validateStrictMarkdownNote(index, note, plan.PublicPageRoutes, collector)
 	}
 }
 
-func validateStrictMarkdownNote(index *model.VaultIndex, note *model.Note, collector *diag.Collector) {
-	md, _ := markdown.NewMarkdown(index, note, validationAssetSink{}, collector)
+func validateStrictMarkdownNote(index *model.VaultIndex, note *model.Note, publicPageRoutes map[string]struct{}, collector *diag.Collector) {
+	md, _ := markdown.NewMarkdownWithPageRoutes(index, note, validationAssetSink{}, collector, publicPageRoutes)
 	var rendered bytes.Buffer
 	if err := md.Convert(note.RawContent, &rendered); err != nil {
 		collector.Errorf(diag.KindSchema, diag.Location{Path: note.RelPath}, "render Markdown: %v", err)
@@ -1155,7 +1198,7 @@ func buildVersionCorrespondence(versions []*model.Version, collector *diag.Colle
 				if otherVersion == nil {
 					continue
 				}
-				if otherArticle := byVersionPath[otherVersion.ID][rel]; otherArticle != nil {
+				if otherArticle := byVersionPath[otherVersion.ID][rel]; otherArticle != nil && otherArticle.Frontmatter.Type == article.Frontmatter.Type {
 					article.VersionRoutes[otherVersion.ID] = otherArticle.Route
 				} else if otherVersion.Root != nil && otherVersion.Root.Route != "" {
 					article.VersionRoutes[otherVersion.ID] = otherVersion.Root.Route
@@ -1176,7 +1219,7 @@ func versionCorrespondenceKey(relativeSourcePath string) string {
 	return fold(relativeSourcePath)
 }
 
-func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version) {
+func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Section, versions []*model.Version, collector *diag.Collector) {
 	for _, section := range sections {
 		if section == nil {
 			continue
@@ -1190,6 +1233,7 @@ func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Sectio
 	sortArticles(plan.Documents)
 	sortArticles(plan.Posts)
 	sortArticles(plan.Pages)
+	validateCollectionTies(plan, collector)
 	for _, version := range versions {
 		if version == nil {
 			continue
@@ -1202,6 +1246,44 @@ func finalizeCollections(plan *model.SitePlan, sections map[string]*model.Sectio
 			continue
 		}
 		section.Breadcrumbs = breadcrumbs(section)
+	}
+}
+
+func validateCollectionTies(plan *model.SitePlan, collector *diag.Collector) {
+	if plan == nil || collector == nil {
+		return
+	}
+	for _, collection := range []struct {
+		name  string
+		notes []*model.Note
+	}{
+		{name: "doc", notes: plan.Documents},
+		{name: "post", notes: plan.Posts},
+		{name: "page", notes: plan.Pages},
+	} {
+		for start := 0; start < len(collection.notes); {
+			end := start + 1
+			for end < len(collection.notes) && model.CollectionNotesTie(collection.notes[start], collection.notes[end]) {
+				end++
+			}
+			if end-start > 1 {
+				tied := append([]*model.Note(nil), collection.notes[start:end]...)
+				sort.Slice(tied, func(i, j int) bool { return tied[i].RelPath < tied[j].RelPath })
+				left, right := tied[0], tied[1]
+				collector.Add(diag.Diagnostic{
+					Severity: diag.SeverityError,
+					Kind:     diag.KindOrder,
+					Location: diag.Location{Path: left.RelPath},
+					Field:    "collection",
+					Target:   right.RelPath,
+					Message: fmt.Sprintf(
+						"%s collection has a complete sort-key tie between %q and %q; change one of the collection's prescribed sort keys",
+						collection.name, left.RelPath, right.RelPath,
+					),
+				})
+			}
+			start = end
+		}
 	}
 }
 
@@ -1357,22 +1439,18 @@ func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Colle
 	plan.Routes[key] = owner
 }
 
+func claimPublicPageRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {
+	claimRoute(plan, route, owner, collector)
+	key := routeKey(route)
+	if plan.Routes[key] == owner {
+		plan.PublicPageRoutes[key] = struct{}{}
+	}
+}
+
 // routeKey normalizes source Unicode before percent encoding, so composed and
 // decomposed names claim the same URL. It also canonicalizes percent escapes.
 func routeKey(route string) string {
-	parts := strings.Split(strings.TrimPrefix(route, "/"), "/")
-	for index, part := range parts {
-		decoded, err := url.PathUnescape(part)
-		if err == nil {
-			part = decoded
-		}
-		parts[index] = encodeSegment(norm.NFKC.String(part))
-	}
-	key := "/" + strings.Join(parts, "/")
-	if route == "/" {
-		return "/"
-	}
-	return key
+	return slug.CanonicalRoute(route)
 }
 
 func routeDestination(route string) string {

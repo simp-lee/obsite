@@ -17,6 +17,23 @@ func frontmatterValue(value *string) string {
 	return *value
 }
 
+func TestCanonicalRouteNormalizesEscapesAndUnicode(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		input string
+		want  string
+	}{
+		{input: "/%75pdates/page/2/", want: "/updates/page/2/"},
+		{input: "/tags/Cafe%CC%81/", want: "/tags/Caf%C3%A9/"},
+		{input: "/404.html", want: "/404.html"},
+	} {
+		if got := CanonicalRoute(test.input); got != test.want {
+			t.Errorf("CanonicalRoute(%q) = %q, want %q", test.input, got, test.want)
+		}
+	}
+}
+
 func TestEncodeSourcePathPreservesUnicodeSpelling(t *testing.T) {
 	t.Parallel()
 

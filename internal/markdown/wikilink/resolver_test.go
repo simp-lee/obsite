@@ -636,8 +636,8 @@ func TestNewRenderVaultResolverUsesHostOutputAndNamespacedSelfFragments(t *testi
 		t.Fatalf("ResolveWikilink() = %q, want %q", string(got), "#embed-2-intro")
 	}
 	gotOutLinks = resolver.OutLinks()
-	if gotOutLinks[1].ResolvedRelPath != source.RelPath {
-		t.Fatalf("resolver.OutLinks()[1].ResolvedRelPath = %q, want %q", gotOutLinks[1].ResolvedRelPath, source.RelPath)
+	if gotOutLinks[1].ResolvedRelPath != host.RelPath {
+		t.Fatalf("resolver.OutLinks()[1].ResolvedRelPath = %q, want embedded heading host %q", gotOutLinks[1].ResolvedRelPath, host.RelPath)
 	}
 	for i := range source.OutLinks {
 		if source.OutLinks[i].ResolvedRelPath != "" {

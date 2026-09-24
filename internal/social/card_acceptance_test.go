@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"encoding/hex"
 	"image"
+	"image/color"
 	"image/png"
 	"strings"
 	"testing"
@@ -65,14 +66,12 @@ func TestGenerateTruncatesEachMetadataLine(t *testing.T) {
 		long     = "metadata-value metadata-value metadata-value metadata-value metadata-value metadata-value"
 		wantLine = "metadata-value metadata-value metadata-value metadat…"
 	)
-	for _, field := range []string{"Author", "Date", "Status"} {
+	for _, field := range []string{"Author", "Status"} {
 		t.Run(field, func(t *testing.T) {
 			input := Input{CanonicalURL: "https://example.test/metadata/", SiteTitle: "Site", Title: "Title", Cover: acceptancePNGCover}
 			switch field {
 			case "Author":
 				input.Author = long
-			case "Date":
-				input.Date = long
 			case "Status":
 				input.Status = long
 			}
@@ -84,8 +83,6 @@ func TestGenerateTruncatesEachMetadataLine(t *testing.T) {
 			switch field {
 			case "Author":
 				expected.Author = wantLine
-			case "Date":
-				expected.Date = wantLine
 			case "Status":
 				expected.Status = wantLine
 			}
@@ -97,6 +94,43 @@ func TestGenerateTruncatesEachMetadataLine(t *testing.T) {
 				t.Fatalf("%s was not rendered as its measured truncated line", field)
 			}
 		})
+	}
+}
+
+func TestGenerateKeepsOversizedGraphemeInsideTextRegion(t *testing.T) {
+	input := Input{
+		CanonicalURL: "https://example.test/oversized-grapheme/",
+		SiteTitle:    "Site",
+		Title:        "Title",
+		Author:       strings.Repeat("\u1100", 100),
+		Cover:        acceptancePNGCover,
+	}
+	got, err := Generate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expected := input
+	expected.Author = "…"
+	want, err := Generate(expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.PNG, want.PNG) {
+		t.Fatal("oversized author grapheme was not atomically ellipsized")
+	}
+
+	decoded, err := png.Decode(bytes.NewReader(got.PNG))
+	if err != nil {
+		t.Fatal(err)
+	}
+	outsideText := image.Rect(72+624, 0, 768, Height)
+	for y := outsideText.Min.Y; y < outsideText.Max.Y; y++ {
+		for x := outsideText.Min.X; x < outsideText.Max.X; x++ {
+			pixel := color.RGBAModel.Convert(decoded.At(x, y)).(color.RGBA)
+			if pixel != background {
+				t.Fatalf("pixel outside fixed text region at (%d,%d) = %#v, want %#v", x, y, pixel, background)
+			}
+		}
 	}
 }
 
@@ -122,15 +156,27 @@ func TestGenerateTruncatesContextToOneGraphemeAwareLine(t *testing.T) {
 }
 
 func TestGenerateCanonicalInputMutationsChangeContentAddress(t *testing.T) {
+	order := 3
 	base := Input{
-		CanonicalURL: "https://example.test/canonical/",
-		SiteTitle:    "Site",
-		Title:        "Title",
-		Context:      "Context",
-		Author:       "Author",
-		Date:         "2026-04-06",
-		Status:       "stable",
-		Cover:        acceptancePNGCover,
+		CanonicalURL:   "https://example.test/canonical/",
+		SiteTitle:      "Site",
+		Title:          "Title",
+		Context:        "Context",
+		Description:    "Description",
+		Date:           "2026-04-06",
+		Updated:        "2026-04-07",
+		Tags:           []string{"guide"},
+		Aliases:        []string{"overview"},
+		Slug:           "title",
+		Type:           "doc",
+		Order:          &order,
+		Author:         "Author",
+		Reviewed:       "2026-04-08",
+		Status:         "stable",
+		Audience:       "developers",
+		ProductVersion: "v1",
+		Series:         "guide",
+		Cover:          acceptancePNGCover,
 	}
 	mutations := []struct {
 		name       string
@@ -141,9 +187,20 @@ func TestGenerateCanonicalInputMutationsChangeContentAddress(t *testing.T) {
 		{"site title", func(input *Input) { input.SiteTitle = "Changed site" }, true},
 		{"title", func(input *Input) { input.Title = "Changed title" }, true},
 		{"context", func(input *Input) { input.Context = "Changed context" }, true},
-		{"author", func(input *Input) { input.Author = "Bob" }, true},
+		{"description", func(input *Input) { input.Description = "Changed description" }, false},
 		{"date", func(input *Input) { input.Date = "2026-05-07" }, true},
-		{"status", func(input *Input) { input.Status = "draft" }, true},
+		{"updated", func(input *Input) { input.Updated = "2026-05-08" }, false},
+		{"tags", func(input *Input) { input.Tags = []string{"reference"} }, false},
+		{"aliases", func(input *Input) { input.Aliases = []string{"changed"} }, false},
+		{"slug", func(input *Input) { input.Slug = "changed" }, false},
+		{"type", func(input *Input) { input.Type = "page" }, false},
+		{"order", func(input *Input) { value := 4; input.Order = &value }, false},
+		{"author", func(input *Input) { input.Author = "Bob" }, true},
+		{"reviewed", func(input *Input) { input.Reviewed = "2026-05-09" }, false},
+		{"status", func(input *Input) { input.Status = "experimental" }, true},
+		{"audience", func(input *Input) { input.Audience = "operators" }, false},
+		{"product version", func(input *Input) { input.ProductVersion = "v2" }, false},
+		{"series", func(input *Input) { input.Series = "reference" }, false},
 		{"cover", func(input *Input) { input.Cover = acceptanceJPEGCover }, true},
 	}
 	original, err := Generate(base)
@@ -175,6 +232,33 @@ func TestGenerateCanonicalInputMutationsChangeContentAddress(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGenerateNormalizesCanonicalInputBeforeRendering(t *testing.T) {
+	firstOrder, secondOrder := 1, 1
+	first, err := Generate(Input{
+		CanonicalURL: " https://example.test/normalized/ ", SiteTitle: " Site ", Title: " Title ", Context: " Context ",
+		Description: " Description ", Date: "2026-04-06T02:00:00+02:00", Updated: "2026-04-07",
+		Tags: []string{" guide "}, Aliases: []string{" start "}, Slug: " start ", Type: " doc ", Order: &firstOrder,
+		Author: " Alice ", Reviewed: "2026-04-08T00:00:00+00:00", Status: " stable ", Audience: " developers ",
+		ProductVersion: " v1 ", Series: " guide ", Cover: acceptancePNGCover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := Generate(Input{
+		CanonicalURL: "https://example.test/normalized/", SiteTitle: "Site", Title: "Title", Context: "Context",
+		Description: "Description", Date: "2026-04-06T00:00:00Z", Updated: "2026-04-07T00:00:00Z",
+		Tags: []string{"guide"}, Aliases: []string{"start"}, Slug: "start", Type: "doc", Order: &secondOrder,
+		Author: "Alice", Reviewed: "2026-04-08T00:00:00Z", Status: "stable", Audience: "developers",
+		ProductVersion: "v1", Series: "guide", Cover: acceptancePNGCover,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.CanonicalJSON, second.CanonicalJSON) || first.Path != second.Path || !bytes.Equal(first.PNG, second.PNG) {
+		t.Fatalf("equivalent normalized inputs differ: first=%#v second=%#v", first, second)
 	}
 }
 

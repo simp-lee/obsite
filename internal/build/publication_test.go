@@ -2,7 +2,9 @@ package build
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -270,6 +272,43 @@ func TestPublisherPreservesAllOutputAndCleansStagingOnPublicationFailures(t *tes
 				t.Fatalf("transaction left temporary output: %v", entries)
 			}
 		})
+	}
+}
+
+func TestStrictOutputRegistryReusesUnchangedOutputAfterOwnerChange(t *testing.T) {
+	previousRoot := t.TempDir()
+	const route = "assets/banner.png"
+	content := []byte("shared version asset")
+	if err := writeOutputFile(previousRoot, route, content); err != nil {
+		t.Fatal(err)
+	}
+	previousInfo, err := os.Stat(filepath.Join(previousRoot, filepath.FromSlash(route)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash := fmt.Sprintf("%x", sha256.Sum256(content))
+	manifest := &strictCacheManifest{Outputs: []strictCacheOutput{{
+		Owner: "asset:docs/v1/banner.png", Route: route, OutputHash: hash,
+	}}}
+
+	staging := t.TempDir()
+	registry := newStrictOutputRegistry(previousRoot, manifest)
+	const currentOwner = "asset:docs/v2/banner.png"
+	if err := registry.write(staging, route, currentOwner, content); err != nil {
+		t.Fatal(err)
+	}
+	currentInfo, err := os.Stat(filepath.Join(staging, filepath.FromSlash(route)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !os.SameFile(previousInfo, currentInfo) {
+		t.Fatal("unchanged output with a new owner was physically rewritten")
+	}
+	if len(registry.records) != 1 || registry.records[0].Owner != currentOwner || registry.records[0].Route != route || registry.records[0].OutputHash != hash {
+		t.Fatalf("output records = %#v, want current owner and unchanged output hash", registry.records)
+	}
+	if err := registry.write(staging, route, "asset:docs/v3/banner.png", content); err == nil {
+		t.Fatal("duplicate output write in the current build succeeded")
 	}
 }
 

@@ -23,10 +23,7 @@ builds:
       - -trimpath
     ldflags:
       - -s -w
-      - -X github.com/simp-lee/obsite/internal/cli.releaseVersion={{.Version}}
-      - -X github.com/simp-lee/obsite/internal/cli.releaseCommit={{.Commit}}
-      - -X github.com/simp-lee/obsite/internal/cli.releaseDateEpoch={{.CommitDate}}
-      - -X github.com/simp-lee/obsite/internal/cli.releaseBuildType={{if .IsSnapshot}}snapshot{{else}}release{{end}}
+      - -X github.com/simp-lee/obsite/internal/cli.releaseMetadata=obsite-release-metadata:{{.Version}}|{{.Commit}}|{{.CommitDate}}|{{if .IsSnapshot}}snapshot{{else}}release{{end}}
 
 archives:
   - id: release

@@ -164,7 +164,16 @@ func buildStrictSite(planned *siteplan.Result, vaultPath, outputPath string, dia
 				}
 			}
 		}
-		card, cardErr := social.Generate(social.Input{CanonicalURL: strictBuildCanonicalURL(plan.Config.BaseURL, article.Route), SiteTitle: plan.Config.Title, Title: article.Frontmatter.Title, Context: context, Author: article.Frontmatter.Author, Date: strictCardDate(article.Frontmatter.Date), Status: article.Frontmatter.Status, Cover: cover})
+		card, cardErr := social.Generate(social.Input{
+			CanonicalURL: strictBuildCanonicalURL(plan.Config.BaseURL, article.Route), SiteTitle: plan.Config.Title,
+			Title: article.Frontmatter.Title, Context: context, Description: article.Frontmatter.Description,
+			Date: strictCardDate(article.Frontmatter.Date), Updated: strictCardDate(article.Frontmatter.Updated),
+			Tags: append([]string(nil), article.Frontmatter.Tags...), Aliases: append([]string(nil), article.Frontmatter.Aliases...),
+			Slug: article.Frontmatter.Slug, Type: article.Frontmatter.Type, Order: article.Frontmatter.Order,
+			Author: article.Frontmatter.Author, Reviewed: strictCardDate(article.Frontmatter.Reviewed),
+			Status: article.Frontmatter.Status, Audience: article.Frontmatter.Audience,
+			ProductVersion: article.Frontmatter.ProductVersion, Series: article.Frontmatter.Series, Cover: cover,
+		})
 		if cardErr != nil {
 			return result, fmt.Errorf("generate social card for %q: %w", article.RelPath, cardErr)
 		}
@@ -1381,7 +1390,7 @@ func strictCardDate(value time.Time) string {
 	if value.IsZero() {
 		return ""
 	}
-	return value.UTC().Format(time.RFC3339)
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 func strictArticleSection(plan *model.SitePlan, article *model.Note) *model.Section {

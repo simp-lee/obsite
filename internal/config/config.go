@@ -122,6 +122,16 @@ source: {}
 // LoadForBuild reads exactly <resolvedVault>/obsite.yaml and discovers only the
 // fixed optional vault inputs.
 func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
+	return loadForBuild(resolvedVault, "")
+}
+
+// LoadForBuildWithOutput excludes fixed optional inputs inside the formal
+// output boundary. The required vault configuration itself is never optional.
+func LoadForBuildWithOutput(resolvedVault, resolvedOutput string) (model.SiteConfig, error) {
+	return loadForBuild(resolvedVault, resolvedOutput)
+}
+
+func loadForBuild(resolvedVault, resolvedOutput string) (model.SiteConfig, error) {
 	vaultRoot := filepath.Clean(strings.TrimSpace(resolvedVault))
 	if vaultRoot == "" || !filepath.IsAbs(vaultRoot) {
 		return model.SiteConfig{}, fmt.Errorf("resolved vault path is required")
@@ -155,15 +165,25 @@ func LoadForBuild(resolvedVault string) (model.SiteConfig, error) {
 		return model.SiteConfig{}, fmt.Errorf("validate config %q: %w", configPath, configErrorWithLine(err, lines))
 	}
 
-	cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
-	if err != nil {
-		return model.SiteConfig{}, err
+	customCSSPath := filepath.Join(vaultRoot, CustomCSSFilename)
+	if !insideOutputBoundary(resolvedOutput, customCSSPath) {
+		cfg.CustomCSS, err = discoverOptionalRegularFile(vaultRoot, CustomCSSFilename, "custom CSS")
+		if err != nil {
+			return model.SiteConfig{}, err
+		}
 	}
-	cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, ThemeDirRelPath, "theme directory")
-	if err != nil {
-		return model.SiteConfig{}, err
+	themePath := filepath.Join(vaultRoot, filepath.FromSlash(ThemeDirRelPath))
+	if !insideOutputBoundary(resolvedOutput, themePath) {
+		cfg.ThemeDir, err = discoverOptionalDirectory(vaultRoot, ThemeDirRelPath, "theme directory")
+		if err != nil {
+			return model.SiteConfig{}, err
+		}
 	}
 	return cfg, nil
+}
+
+func insideOutputBoundary(outputPath, candidate string) bool {
+	return strings.TrimSpace(outputPath) != "" && internalfsutil.PathWithinRoot(outputPath, candidate)
 }
 
 // NormalizeSiteConfig normalizes an already-constructed internal config. The

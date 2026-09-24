@@ -1,8 +1,11 @@
 package recommend
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"reflect"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -94,6 +97,40 @@ func TestStopwordsAndSingleHanFiltering(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Tokenize(stopwords) = %#v, want %#v", got, want)
 	}
+}
+
+func TestStopwordResourceIdentity(t *testing.T) {
+	tests := []struct {
+		name  string
+		words map[string]struct{}
+		count int
+		want  string
+	}{
+		{name: "english", words: englishStopwordsV1, count: 124, want: "5f75c34b49090d105f64574def73b416c09734108c11297517b22e2b52b7e6fa"},
+		{name: "supplemental", words: supplementalStopwordsV1, count: 20, want: "30c744ed9a2f87c5dcedb3a49c5471db6517189bc9cbd60dd881fdf77ca17af2"},
+	}
+	for _, test := range tests {
+		if len(test.words) != test.count {
+			t.Errorf("%s stopword count = %d, want %d", test.name, len(test.words), test.count)
+		}
+		if got := stopwordMembershipHash(test.words); got != test.want {
+			t.Errorf("%s stopword membership SHA-256 = %s, want %s", test.name, got, test.want)
+		}
+	}
+}
+
+func stopwordMembershipHash(words map[string]struct{}) string {
+	ordered := make([]string, 0, len(words))
+	for word := range words {
+		ordered = append(ordered, word)
+	}
+	sort.Strings(ordered)
+	hasher := sha256.New()
+	for _, word := range ordered {
+		_, _ = hasher.Write([]byte(word))
+		_, _ = hasher.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(hasher.Sum(nil))
 }
 
 func TestTokenizerConcurrentDeterminism(t *testing.T) {

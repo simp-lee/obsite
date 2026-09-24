@@ -16,13 +16,51 @@ import (
 	xhtml "golang.org/x/net/html"
 )
 
-type visibleHeadingIDTransformer struct {
-	prefix   string
-	headings []model.Heading
+type pageHeadingIDScope struct {
+	used      map[string]struct{}
+	nextEmbed int
 }
 
-func newVisibleHeadingIDTransformer(note *model.Note, prefix string) visibleHeadingIDTransformer {
-	transformer := visibleHeadingIDTransformer{prefix: prefix}
+func newPageHeadingIDScope() *pageHeadingIDScope {
+	return &pageHeadingIDScope{used: make(map[string]struct{})}
+}
+
+func (s *pageHeadingIDScope) reserve(id string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.used[id] = struct{}{}
+}
+
+func (s *pageHeadingIDScope) nextEmbeddedPrefix() string {
+	if s == nil {
+		return "embed-"
+	}
+
+	for {
+		s.nextEmbed++
+		prefix := "embed-" + strconv.Itoa(s.nextEmbed) + "-"
+		available := true
+		for id := range s.used {
+			if strings.HasPrefix(id, prefix) {
+				available = false
+				break
+			}
+		}
+		if available {
+			return prefix
+		}
+	}
+}
+
+type visibleHeadingIDTransformer struct {
+	prefix    string
+	headings  []model.Heading
+	pageScope *pageHeadingIDScope
+}
+
+func newVisibleHeadingIDTransformer(note *model.Note, prefix string, pageScope *pageHeadingIDScope) visibleHeadingIDTransformer {
+	transformer := visibleHeadingIDTransformer{prefix: prefix, pageScope: pageScope}
 	if note != nil && len(note.Headings) > 0 {
 		transformer.headings = append([]model.Heading(nil), note.Headings...)
 	}
@@ -44,7 +82,9 @@ func (t visibleHeadingIDTransformer) Transform(doc *gast.Document, reader text.R
 			return gast.WalkContinue, nil
 		}
 
-		heading.SetAttributeString("id", []byte(t.headingID(headingIndex, VisibleHeadingText(heading, source), used)))
+		id := t.headingID(headingIndex, VisibleHeadingText(heading, source), used)
+		t.pageScope.reserve(id)
+		heading.SetAttributeString("id", []byte(id))
 		headingIndex++
 		return gast.WalkContinue, nil
 	})

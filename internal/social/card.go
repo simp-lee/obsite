@@ -15,6 +15,7 @@ import (
 	"image/png"
 	"strings"
 	"sync"
+	"time"
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
@@ -54,16 +55,32 @@ var (
 	accent     = color.RGBA{R: 0x38, G: 0xbd, B: 0xf8, A: 0xff}
 )
 
-// Input is the visible, normalized article input to the card generator.
+// Input is the normalized article input to the card generator. The article
+// metadata fields are included in the canonical identity even when they are
+// not rendered on the card; banner and cover paths are intentionally not
+// included (only the cover content hash is).
 type Input struct {
 	CanonicalURL string
 	SiteTitle    string
 	Title        string
-	Context      string
-	Author       string
-	Date         string
-	Status       string
-	Cover        []byte
+	// Context is the normalized section title plus the optional version label,
+	// joined with " / ".
+	Context        string
+	Description    string
+	Date           string
+	Updated        string
+	Tags           []string
+	Aliases        []string
+	Slug           string
+	Type           string
+	Order          *int
+	Author         string
+	Reviewed       string
+	Status         string
+	Audience       string
+	ProductVersion string
+	Series         string
+	Cover          []byte
 }
 
 // Result contains the canonical input, PNG bytes, and content-addressed output
@@ -76,23 +93,38 @@ type Result struct {
 	PNGHash       string
 }
 
+// canonicalInput is the R8.6 schema. Struct declaration order is the wire
+// key order; encoding/json emits it without whitespace. Optional metadata is
+// omitted when its normalized value is absent.
 type canonicalInput struct {
-	CanonicalURL string `json:"canonicalURL"`
-	SiteTitle    string `json:"siteTitle"`
-	Title        string `json:"title"`
-	Context      string `json:"context"`
-	Author       string `json:"author,omitempty"`
-	Date         string `json:"date,omitempty"`
-	Status       string `json:"status,omitempty"`
-	CoverHash    string `json:"coverHash,omitempty"`
-	Generator    string `json:"generator"`
+	CanonicalURL   string   `json:"canonicalURL"`
+	SiteTitle      string   `json:"siteTitle"`
+	Title          string   `json:"title"`
+	Context        string   `json:"context"`
+	Description    string   `json:"description,omitempty"`
+	Date           string   `json:"date,omitempty"`
+	Updated        string   `json:"updated,omitempty"`
+	Tags           []string `json:"tags,omitempty"`
+	Aliases        []string `json:"aliases,omitempty"`
+	Slug           string   `json:"slug,omitempty"`
+	Type           string   `json:"type,omitempty"`
+	Order          *int     `json:"order,omitempty"`
+	Author         string   `json:"author,omitempty"`
+	Reviewed       string   `json:"reviewed,omitempty"`
+	Status         string   `json:"status,omitempty"`
+	Audience       string   `json:"audience,omitempty"`
+	ProductVersion string   `json:"productVersion,omitempty"`
+	Series         string   `json:"series,omitempty"`
+	CoverHash      string   `json:"coverHash,omitempty"`
+	Generator      string   `json:"generator"`
 }
 
 // Generate creates a deterministic PNG without system fonts, timestamps, or
 // randomness. A non-empty Cover must be a supported, decodable local image.
 func Generate(input Input) (Result, error) {
-	if strings.TrimSpace(input.CanonicalURL) == "" || strings.TrimSpace(input.Title) == "" {
-		return Result{}, fmt.Errorf("canonical URL and title are required")
+	input, err := normalizeInput(input)
+	if err != nil {
+		return Result{}, err
 	}
 	coverHash := ""
 	var cover image.Image
@@ -108,7 +140,13 @@ func Generate(input Input) (Result, error) {
 		hash := sha256.Sum256(input.Cover)
 		coverHash = hex.EncodeToString(hash[:])
 	}
-	canonical := canonicalInput{CanonicalURL: input.CanonicalURL, SiteTitle: input.SiteTitle, Title: input.Title, Context: input.Context, Author: input.Author, Date: input.Date, Status: input.Status, CoverHash: coverHash, Generator: GeneratorVersion}
+	canonical := canonicalInput{
+		CanonicalURL: input.CanonicalURL, SiteTitle: input.SiteTitle, Title: input.Title, Context: input.Context,
+		Description: input.Description, Date: input.Date, Updated: input.Updated, Tags: input.Tags,
+		Aliases: input.Aliases, Slug: input.Slug, Type: input.Type, Order: input.Order,
+		Author: input.Author, Reviewed: input.Reviewed, Status: input.Status, Audience: input.Audience,
+		ProductVersion: input.ProductVersion, Series: input.Series, CoverHash: coverHash, Generator: GeneratorVersion,
+	}
 	canonicalJSON, err := json.Marshal(canonical)
 	if err != nil {
 		return Result{}, err
@@ -159,6 +197,73 @@ func Generate(input Input) (Result, error) {
 	pngHash := sha256.Sum256(pngBytes)
 	urlHash := sha256.Sum256([]byte(input.CanonicalURL))
 	return Result{CanonicalJSON: append([]byte(nil), canonicalJSON...), PNG: append([]byte(nil), pngBytes...), Path: fmt.Sprintf("assets/social/%x/%x-%x.png", urlHash, inputHash, pngHash), InputHash: hex.EncodeToString(inputHash[:]), PNGHash: hex.EncodeToString(pngHash[:])}, nil
+}
+
+func normalizeInput(input Input) (Input, error) {
+	input.CanonicalURL = strings.TrimSpace(input.CanonicalURL)
+	input.SiteTitle = strings.TrimSpace(input.SiteTitle)
+	input.Title = strings.TrimSpace(input.Title)
+	input.Context = strings.TrimSpace(input.Context)
+	input.Description = strings.TrimSpace(input.Description)
+	var err error
+	if input.Updated, err = normalizeCardTime(input.Updated, "updated"); err != nil {
+		return Input{}, err
+	}
+	if input.Date, err = normalizeCardTime(input.Date, "date"); err != nil {
+		return Input{}, err
+	}
+	if input.Reviewed, err = normalizeCardTime(input.Reviewed, "reviewed"); err != nil {
+		return Input{}, err
+	}
+	input.Slug = strings.TrimSpace(input.Slug)
+	input.Type = strings.TrimSpace(input.Type)
+	input.Author = strings.TrimSpace(input.Author)
+	input.Status = strings.TrimSpace(input.Status)
+	input.Audience = strings.TrimSpace(input.Audience)
+	input.ProductVersion = strings.TrimSpace(input.ProductVersion)
+	input.Series = strings.TrimSpace(input.Series)
+	input.Tags = normalizeCardList(input.Tags)
+	input.Aliases = normalizeCardList(input.Aliases)
+	if input.CanonicalURL == "" || input.Title == "" {
+		return Input{}, fmt.Errorf("canonical URL and title are required")
+	}
+	return input, nil
+}
+
+func normalizeCardList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			normalized = append(normalized, value)
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func normalizeCardTime(value, name string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	if len(value) == len("2006-01-02") {
+		parsed, err := time.Parse("2006-01-02", value)
+		if err != nil {
+			return "", fmt.Errorf("%s must be RFC 3339 or YYYY-MM-DD", name)
+		}
+		return parsed.UTC().Format(time.RFC3339), nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return "", fmt.Errorf("%s must be RFC 3339 or YYYY-MM-DD", name)
+	}
+	return parsed.UTC().Format(time.RFC3339Nano), nil
 }
 
 func drawCover(dst *image.RGBA, src image.Image) {
@@ -263,6 +368,11 @@ func wrapMeasured(text string, maxWidth, maxLines int, face font.Face) []string 
 			}
 			lines = append(lines, current)
 			current, currentWidth = "", 0
+		}
+		if current == "" && width > maxWidth {
+			// The cluster cannot be split without corrupting the grapheme, so
+			// omit it and the remaining text in favor of an ellipsis.
+			return append(lines, truncateMeasured(cluster, maxWidth, face))
 		}
 		current += cluster
 		currentWidth += width

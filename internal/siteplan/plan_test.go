@@ -88,6 +88,12 @@ func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	if result.Plan.Root == nil || result.Plan.Root.Route != "/" {
 		t.Fatalf("root = %#v, want root route", result.Plan.Root)
 	}
+	if _, ok := result.Plan.PublicPageRoutes["/404.html"]; !ok {
+		t.Fatal("PublicPageRoutes is missing the generated 404 page")
+	}
+	if _, ok := result.Plan.PublicPageRoutes["/"]; ok {
+		t.Fatal("PublicPageRoutes contains an indexed section route")
+	}
 	guide := result.Plan.Root.Children[0]
 	if guide.Route != "/guide/" || guide.Banner != "" {
 		t.Fatalf("guide = %#v", guide)
@@ -100,6 +106,89 @@ func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	}
 	if got := guide.Breadcrumbs; len(got) != 2 || got[0].URL != "/" || got[1].URL != "/guide/" {
 		t.Fatalf("breadcrumbs = %#v", got)
+	}
+}
+
+func TestBuildWithConfigRejectsCompleteCollectionSortTies(t *testing.T) {
+	for _, testCase := range []struct {
+		name        string
+		typeName    string
+		frontmatter string
+	}{
+		{name: "doc", typeName: "doc"},
+		{name: "post", typeName: "post", frontmatter: "date: 2026-04-05\n"},
+		{name: "page", typeName: "page"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			vault := t.TempDir()
+			writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+			for _, article := range []struct {
+				path string
+				slug string
+			}{
+				{path: "A.md", slug: "first"},
+				{path: "Ａ.md", slug: "second"},
+			} {
+				writePlanFile(t, vault, article.path, "---\ntitle: Same\npublish: true\ntype: "+testCase.typeName+"\n"+testCase.frontmatter+"slug: "+article.slug+"\n---\n")
+			}
+
+			result, err := BuildWithConfig(vault, model.SiteConfig{Title: "Site", BaseURL: "https://example.test/"})
+			if err == nil {
+				t.Fatalf("BuildWithConfig() error = nil, want complete %s collection tie rejection; diagnostics=%v", testCase.name, result.Diagnostics)
+			}
+			for _, diagnostic := range result.Diagnostics {
+				if diagnostic.Kind == diag.KindOrder && diagnostic.Field == "collection" && strings.Contains(diagnostic.Message, testCase.name+" collection has a complete sort-key tie") && strings.Contains(diagnostic.Message, "A.md") && strings.Contains(diagnostic.Message, "Ａ.md") {
+					return
+				}
+			}
+			t.Fatalf("missing %s collection tie diagnostic: %v", testCase.name, result.Diagnostics)
+		})
+	}
+}
+
+func TestBuildWithConfigRejectsSameSiteAbsoluteNavigationDuplicate(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		baseURL string
+		url     string
+	}{
+		{name: "subpath", baseURL: "https://example.test/sub/", url: "https://example.test/sub/"},
+		{name: "root", baseURL: "https://example.test/", url: "https://example.test/guide/"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			vault := t.TempDir()
+			writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+			if testCase.name == "root" {
+				writePlanFile(t, vault, "guide/_index.md", "---\ntitle: Guide\npublish: true\n---\nGuide\n")
+			}
+			cfg := model.SiteConfig{
+				Title:   "Site",
+				BaseURL: testCase.baseURL,
+				Navigation: []model.NavigationItem{
+					{Name: "Target", Section: func() string {
+						if testCase.name == "root" {
+							return "guide"
+						}
+						return "."
+					}()},
+					{Name: "Absolute target", URL: testCase.url},
+				},
+			}
+
+			result, err := BuildWithConfig(vault, cfg)
+			if err == nil {
+				t.Fatalf("BuildWithConfig() error = nil, want duplicate navigation target; diagnostics=%v", result.Diagnostics)
+			}
+			if got := result.Plan.Config.Navigation[1].URL; got != testCase.url {
+				t.Fatalf("absolute navigation href = %q, want unchanged %q", got, testCase.url)
+			}
+			for _, diagnostic := range result.Diagnostics {
+				if diagnostic.Kind == diag.KindNavigation && diagnostic.Field == "navigation[1].url" && strings.Contains(diagnostic.Message, "duplicates navigation[0] target") {
+					return
+				}
+			}
+			t.Fatalf("missing duplicate navigation diagnostic: %v", result.Diagnostics)
+		})
 	}
 }
 
@@ -238,6 +327,43 @@ func TestBuildWithConfigPlansVersionCorrespondenceBySourcePathAndFallbacks(t *te
 	}
 	if intro == nil || intro.VersionRoutes["v2"] != "/docs/v2/intro-v2/" {
 		t.Fatalf("same-source version routes = %#v, want target version's independent slug", intro)
+	}
+}
+
+func TestBuildWithConfigVersionCorrespondenceRequiresSameArticleType(t *testing.T) {
+	vault := t.TempDir()
+	for _, dir := range []string{"", "docs/", "docs/v1/", "docs/v2/"} {
+		writePlanFile(t, vault, dir+"_index.md", "---\ntitle: Section\npublish: true\n---\n")
+	}
+	writePlanFile(t, vault, "docs/v1/intro.md", "---\ntitle: Intro doc\npublish: true\ntype: doc\nslug: intro-doc\n---\n")
+	writePlanFile(t, vault, "docs/v2/intro.md", "---\ntitle: Intro page\npublish: true\ntype: page\nslug: intro-page\n---\n")
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{
+			{ID: "v1", Label: "One", Source: "v1"}, {ID: "v2", Label: "Two", Source: "v2"},
+		},
+	}}
+	result, err := BuildWithConfig(vault, cfg)
+	if err != nil {
+		t.Fatalf("BuildWithConfig: %v; diagnostics=%v", err, result.Diagnostics)
+	}
+	articles := make(map[string]*model.Note, len(result.Plan.Articles))
+	for _, article := range result.Plan.Articles {
+		articles[article.VersionID] = article
+	}
+	wantRoutes := map[string]map[string]string{
+		"v1": {"v1": "/docs/v1/intro-doc/", "v2": "/docs/v2/"},
+		"v2": {"v1": "/docs/v1/", "v2": "/docs/v2/intro-page/"},
+	}
+	for sourceVersion, routes := range wantRoutes {
+		article := articles[sourceVersion]
+		if article == nil {
+			t.Fatalf("missing %s article", sourceVersion)
+		}
+		for targetVersion, want := range routes {
+			if got := article.VersionRoutes[targetVersion]; got != want {
+				t.Errorf("%s selector to %s = %q, want %q", sourceVersion, targetVersion, got, want)
+			}
+		}
 	}
 }
 

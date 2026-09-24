@@ -2,8 +2,6 @@ package markdown
 
 import (
 	"io"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 
@@ -84,7 +82,7 @@ func NewParser(_ *diag.Collector) goldmark.Markdown {
 	sharedParserOnce.Do(func() {
 		sharedParser = goldmark.New(
 			goldmark.WithParserOptions(
-				newParserOptions(nil, "")...,
+				newParserOptions(nil, "", nil)...,
 			),
 			goldmark.WithExtensions(newCoreExtensions(noopWikilinkResolver{}, nil, "")...),
 		)
@@ -95,8 +93,14 @@ func NewParser(_ *diag.Collector) goldmark.Markdown {
 
 // NewMarkdown returns a per-note goldmark instance plus its render-local result state.
 func NewMarkdown(idx *model.VaultIndex, note *model.Note, assetSink AssetSink, diagCollector *diag.Collector) (goldmark.Markdown, *RenderResult) {
+	return NewMarkdownWithPageRoutes(idx, note, assetSink, diagCollector, nil)
+}
+
+// NewMarkdownWithPageRoutes also resolves links to pages generated outside the
+// vault index, such as tag archives, timeline pages, and the 404 page.
+func NewMarkdownWithPageRoutes(idx *model.VaultIndex, note *model.Note, assetSink AssetSink, diagCollector *diag.Collector, publicPageRoutes map[string]struct{}) (goldmark.Markdown, *RenderResult) {
 	imageCount := new(int)
-	headingPrefixCount := new(int)
+	pageHeadingIDs := newPageHeadingIDScope()
 	visited := make(map[string]struct{}, 1)
 	renderNote := prepareRenderNote(cloneRenderNote(note))
 	if renderNote != nil && renderNote.RelPath != "" {
@@ -104,7 +108,7 @@ func NewMarkdown(idx *model.VaultIndex, note *model.Note, assetSink AssetSink, d
 	}
 	result := &RenderResult{}
 
-	return newMarkdownWithState(idx, renderNote, renderNote, assetSink, diagCollector, imageCount, headingPrefixCount, "", visited, 0, result), result
+	return newMarkdownWithState(idx, renderNote, renderNote, assetSink, diagCollector, publicPageRoutes, imageCount, pageHeadingIDs, "", visited, 0, result), result
 }
 
 func newMarkdownWithState(
@@ -113,8 +117,9 @@ func newMarkdownWithState(
 	outputNote *model.Note,
 	assetSink AssetSink,
 	diagCollector *diag.Collector,
+	publicPageRoutes map[string]struct{},
 	imageCount *int,
-	headingPrefixCount *int,
+	pageHeadingIDs *pageHeadingIDScope,
 	headingIDPrefix string,
 	visited map[string]struct{},
 	depth int,
@@ -132,7 +137,7 @@ func newMarkdownWithState(
 	hashtagResolver := newRenderHashtagResolver(idx, outputNote)
 	extensions := append(
 		newCoreExtensions(resolver, hashtagResolver, headingIDPrefix),
-		strictLinkExtender{index: idx, sourceNote: sourceNote, outputNote: outputNote, headingIDPrefix: headingIDPrefix, assetSink: assetSink, diagnostics: diagCollector, linkResolver: resolverState},
+		strictLinkExtender{index: idx, sourceNote: sourceNote, outputNote: outputNote, headingIDPrefix: headingIDPrefix, assetSink: assetSink, diagnostics: diagCollector, linkResolver: resolverState, publicPageRoutes: publicPageRoutes},
 		figure.Figure,
 		newMathTrackingExtender(sourceNote),
 		newCodeBlockExtender(sourceNote, diagCollector),
@@ -154,15 +159,17 @@ func newMarkdownWithState(
 		func(target *model.Note, source []byte, writer io.Writer, childVisited map[string]struct{}, childDepth int) error {
 			childNote := prepareRenderNote(cloneRenderNote(target))
 			childResult := &RenderResult{}
+			childHeadingIDPrefix := pageHeadingIDs.nextEmbeddedPrefix()
 			if err := newMarkdownWithState(
 				idx,
 				childNote,
 				outputNote,
 				assetSink,
 				diagCollector,
+				publicPageRoutes,
 				imageCount,
-				headingPrefixCount,
-				nextEmbeddedHeadingIDPrefix(headingPrefixCount),
+				pageHeadingIDs,
+				childHeadingIDPrefix,
 				childVisited,
 				childDepth,
 				childResult,
@@ -171,7 +178,7 @@ func newMarkdownWithState(
 			}
 
 			if result != nil {
-				result.appendEmbeddedOutLinks(rewriteEmbeddedOutLinks(childNote, outputNote, childResult.OutLinks()))
+				result.appendEmbeddedOutLinks(childResult.OutLinks())
 				if childNote != nil && strings.TrimSpace(childNote.RelPath) != "" {
 					result.appendEmbeddedOutLinks([]model.LinkRef{{ResolvedRelPath: childNote.RelPath}})
 				}
@@ -192,7 +199,7 @@ func newMarkdownWithState(
 
 	md = goldmark.New(
 		goldmark.WithParserOptions(
-			newParserOptions(sourceNote, headingIDPrefix)...,
+			newParserOptions(sourceNote, headingIDPrefix, pageHeadingIDs)...,
 		),
 		goldmark.WithExtensions(extensions...),
 	)
@@ -200,10 +207,10 @@ func newMarkdownWithState(
 	return md
 }
 
-func newParserOptions(note *model.Note, headingIDPrefix string) []parser.Option {
+func newParserOptions(note *model.Note, headingIDPrefix string, pageHeadingIDs *pageHeadingIDScope) []parser.Option {
 	return []parser.Option{
 		parser.WithASTTransformers(
-			util.Prioritized(newVisibleHeadingIDTransformer(note, headingIDPrefix), 1000),
+			util.Prioritized(newVisibleHeadingIDTransformer(note, headingIDPrefix, pageHeadingIDs), 1000),
 		),
 	}
 }
@@ -277,48 +284,4 @@ func prepareRenderNote(note *model.Note) *model.Note {
 	note.HasMath = false
 	note.HasMermaid = false
 	return note
-}
-
-func nextEmbeddedHeadingIDPrefix(counter *int) string {
-	if counter == nil {
-		return "embed-"
-	}
-
-	(*counter)++
-	return "embed-" + strconv.Itoa(*counter) + "-"
-}
-
-func rewriteEmbeddedOutLinks(sourceNote *model.Note, outputNote *model.Note, links []model.LinkRef) []model.LinkRef {
-	if len(links) == 0 {
-		return nil
-	}
-
-	rewritten := append([]model.LinkRef(nil), links...)
-	if sourceNote == nil || sourceNote.RelPath == "" || outputNote == nil || outputNote.RelPath == "" {
-		return rewritten
-	}
-
-	for i := range rewritten {
-		if rewritten[i].ResolvedRelPath != sourceNote.RelPath {
-			continue
-		}
-		if !linkRefHasFragment(rewritten[i]) {
-			continue
-		}
-		rewritten[i].ResolvedRelPath = outputNote.RelPath
-	}
-
-	return rewritten
-}
-
-func linkRefHasFragment(ref model.LinkRef) bool {
-	if ref.Standard {
-		parsed, err := url.Parse(NormalizeDestination(ref.RawTarget))
-		return err == nil && strings.TrimSpace(parsed.Fragment) != ""
-	}
-	if strings.TrimSpace(ref.Fragment) != "" {
-		return true
-	}
-	_, fragment, found := strings.Cut(strings.TrimSpace(ref.RawTarget), "#")
-	return found && strings.TrimSpace(fragment) != ""
 }

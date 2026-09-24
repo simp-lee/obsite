@@ -10,7 +10,6 @@ import (
 	"strconv"
 
 	diagnostic "github.com/simp-lee/obsite/internal/diag"
-	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/siteplan"
 )
 
@@ -22,23 +21,10 @@ type Result struct {
 }
 
 // Analyze runs the strict configuration, source, section, route, collection,
-// and version checks before publication.
+// and version checks without inferring an output boundary. Callers that plan
+// to publish must use AnalyzeWithOutput with their formal output path.
 func Analyze(vaultPath string) (Result, error) {
-	resolved, err := internalfsutil.ResolveVaultPath(vaultPath)
-	if err != nil {
-		collector := diagnostic.NewCollector()
-		collector.Errorf(diagnostic.KindSchema, analyzeErrorLocation(vaultPath, err), "%v", err)
-		return Result{Diagnostics: collector.Diagnostics()}, err
-	}
-	// Only a publication directory carrying Obsite's management marker is an
-	// output boundary. An unmanaged public/ tree remains vault input and is
-	// therefore validated instead of being silently ignored.
-	publicPath := filepath.Join(resolved, "public")
-	_, marker, _, markerErr := internalfsutil.ReadContainedRegularFile(resolved, filepath.Join(publicPath, ".obsite-output"))
-	if markerErr == nil && string(marker) == "managed by obsite\n" {
-		return AnalyzeWithOutput(resolved, publicPath)
-	}
-	return AnalyzeWithOutput(resolved, "")
+	return AnalyzeWithOutput(vaultPath, "")
 }
 
 // AnalyzeWithOutput uses the same strict plan for publication while excluding

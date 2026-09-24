@@ -12,10 +12,23 @@ func TestValidateLocalSVGAcceptsInternalReferences(t *testing.T) {
 		`<svg><text aria-label='@import "guide" image-set("one") url(https://example.test/label)'>Label</text></svg>`,
 		`<svg xmlns:meta="urn:example:metadata"><metadata meta:href="https://example.test/info" meta:style="url(https://example.test/info)"/><path meta:fill="url(https://example.test/info)"/><meta:style>@import "https://example.test/info"</meta:style></svg>`,
 		`<svg xmlns="http://www.w3.org/2000/svg"><metadata><style xmlns="">@import "https://example.test/info"</style><path xmlns="" href="https://example.test/info" fill="url(https://example.test/info)"/></metadata></svg>`,
+		`<svg xmlns:a="urn:one" xmlns:b="urn:two"><rect width="16" a:width="8" b:width="4"/></svg>`,
 		" \n<!-- before --><svg><style><![CDATA[/* url(old.css) */ .shape { fill: url(\\23 gradient) }]]></style></svg><!-- after -->\n",
 	} {
 		if err := ValidateLocalSVG([]byte(source)); err != nil {
 			t.Fatalf("ValidateLocalSVG(%q) error = %v", source, err)
+		}
+	}
+}
+
+func TestValidateLocalSVGRejectsDuplicateExpandedAttributes(t *testing.T) {
+	for _, source := range []string{
+		`<svg><rect width="16" width="8" height="5"/></svg>`,
+		`<svg xmlns:a="urn:example" xmlns:b="urn:example"><rect a:width="16" b:width="8"/></svg>`,
+		`<svg xmlns:a="urn:one" xmlns:a="urn:two"/>`,
+	} {
+		if err := ValidateLocalSVG([]byte(source)); err == nil {
+			t.Fatalf("ValidateLocalSVG(%q) error = nil", source)
 		}
 	}
 }

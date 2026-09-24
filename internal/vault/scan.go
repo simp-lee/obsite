@@ -59,11 +59,11 @@ func ScanWithOptions(vaultPath string, options ScanOptions) (ScanResult, error) 
 	}
 
 	excludedOutput := filepath.Clean(strings.TrimSpace(options.OutputPath))
-	if excludedOutput != "." && !internalfsutil.PathWithinRoot(absVaultPath, excludedOutput) {
+	if excludedOutput == "." || !internalfsutil.PathWithinRoot(absVaultPath, excludedOutput) {
 		excludedOutput = ""
 	}
 
-	attachmentFolderPath, err := readAttachmentFolderPath(absVaultPath)
+	attachmentFolderPath, err := readAttachmentFolderPath(absVaultPath, excludedOutput)
 	if err != nil {
 		return ScanResult{}, err
 	}
@@ -167,7 +167,12 @@ func normalizeVaultPath(vaultPath string) (string, error) {
 	return internalfsutil.ResolveVaultPath(vaultPath)
 }
 
-func readAttachmentFolderPath(vaultPath string) (string, error) {
+func readAttachmentFolderPath(vaultPath, outputPath string) (string, error) {
+	appConfigPath := filepath.Join(vaultPath, filepath.FromSlash(obsidianAppJSON))
+	if outputPath != "" && internalfsutil.PathWithinRoot(outputPath, appConfigPath) {
+		return "", nil
+	}
+
 	configDirPath := filepath.Join(vaultPath, obsidianConfigDir)
 	if _, _, err := internalfsutil.InspectContainedDirectory(vaultPath, configDirPath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -182,7 +187,6 @@ func readAttachmentFolderPath(vaultPath string) (string, error) {
 		return "", err
 	}
 
-	appConfigPath := filepath.Join(vaultPath, filepath.FromSlash(obsidianAppJSON))
 	_, data, _, err := internalfsutil.ReadContainedRegularFile(vaultPath, appConfigPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

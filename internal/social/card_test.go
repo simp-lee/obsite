@@ -11,11 +11,18 @@ import (
 )
 
 func TestGenerateHasFixedCanonicalInputAndPNGSnapshot(t *testing.T) {
-	result, err := Generate(Input{CanonicalURL: "https://example.test/docs/start/", SiteTitle: "Obsite", Title: "Deterministic title", Context: "Docs / v1", Author: "Alice", Date: "2026-04-06T00:00:00Z", Status: "stable"})
+	order := 7
+	result, err := Generate(Input{
+		CanonicalURL: "https://example.test/docs/start/", SiteTitle: "Obsite", Title: "Deterministic title", Context: "Docs / v1",
+		Description: "A description", Date: "2026-04-06T00:00:00Z", Updated: "2026-04-07T00:00:00Z",
+		Tags: []string{"guide", "go"}, Aliases: []string{"start"}, Slug: "start", Type: "doc", Order: &order,
+		Author: "Alice", Reviewed: "2026-04-08T00:00:00Z", Status: "stable", Audience: "developers",
+		ProductVersion: "v1", Series: "getting-started",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantJSON = `{"canonicalURL":"https://example.test/docs/start/","siteTitle":"Obsite","title":"Deterministic title","context":"Docs / v1","author":"Alice","date":"2026-04-06T00:00:00Z","status":"stable","generator":"obsite-social-card-v1"}`
+	const wantJSON = `{"canonicalURL":"https://example.test/docs/start/","siteTitle":"Obsite","title":"Deterministic title","context":"Docs / v1","description":"A description","date":"2026-04-06T00:00:00Z","updated":"2026-04-07T00:00:00Z","tags":["guide","go"],"aliases":["start"],"slug":"start","type":"doc","order":7,"author":"Alice","reviewed":"2026-04-08T00:00:00Z","status":"stable","audience":"developers","productVersion":"v1","series":"getting-started","generator":"obsite-social-card-v1"}`
 	const wantPNGHash = "278d7c15699d84b77d8b69e30e2007c827a8c81ede047610ed7b8fadee8eb8c7"
 	if string(result.CanonicalJSON) != wantJSON {
 		t.Fatalf("canonical JSON = %s, want %s", result.CanonicalJSON, wantJSON)
@@ -24,7 +31,7 @@ func TestGenerateHasFixedCanonicalInputAndPNGSnapshot(t *testing.T) {
 	if got := hex.EncodeToString(hash[:]); got != wantPNGHash {
 		t.Fatalf("PNG hash = %s, want %s", got, wantPNGHash)
 	}
-	if want := "assets/social/2647f899c632ffe86c58d0dc5bea3d840e2aaec648cbcac1706defb3f772b7ea/135aae56e0b483dbe9d00d16d19016f01bd8b40d7f2005c25c8f93508c602f0a-" + wantPNGHash + ".png"; result.Path != want {
+	if want := "assets/social/2647f899c632ffe86c58d0dc5bea3d840e2aaec648cbcac1706defb3f772b7ea/77d0f3547dd6a4747f4aad9e0631d88ee3bcbfcb26a33844896dcb06f7057067-" + wantPNGHash + ".png"; result.Path != want {
 		t.Fatalf("path = %s, want %s", result.Path, want)
 	}
 }
@@ -33,6 +40,10 @@ func TestGenerateEnforcesFixedColorsAndNoCoverGeometry(t *testing.T) {
 	result, err := Generate(Input{CanonicalURL: "https://example.test/no-cover/", SiteTitle: "Site", Title: "Title"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	const wantJSON = `{"canonicalURL":"https://example.test/no-cover/","siteTitle":"Site","title":"Title","context":"","generator":"obsite-social-card-v1"}`
+	if string(result.CanonicalJSON) != wantJSON {
+		t.Fatalf("canonical JSON = %s, want %s", result.CanonicalJSON, wantJSON)
 	}
 	decoded, err := png.Decode(bytes.NewReader(result.PNG))
 	if err != nil {
@@ -83,7 +94,7 @@ func TestGenerateTruncatesLongGraphemeTextDeterministically(t *testing.T) {
 	if !bytes.Equal(first.PNG, second.PNG) {
 		t.Fatal("long grapheme input was not stable PNG output")
 	}
-	const wantHash = "ea44797781746d84ed2d9240774e3926e778befeff47eec0a4d438d7d775b3f6"
+	const wantHash = "699af2b604d7d18837d564aa7151ebcc8ddb96c76d4a5900b146e4afd5228b65"
 	if first.PNGHash != wantHash {
 		t.Fatalf("long grapheme PNG hash = %s, want %s", first.PNGHash, wantHash)
 	}

@@ -12,6 +12,7 @@ var (
 	releaseCommit    string
 	releaseDateEpoch string
 	releaseBuildType string
+	releaseMetadata  string
 	readBuildInfo    = debug.ReadBuildInfo
 )
 
@@ -22,7 +23,12 @@ type versionMetadata struct {
 	Type    string
 }
 
+const releaseMetadataPrefix = "obsite-release-metadata:"
+
 func currentVersionMetadata() versionMetadata {
+	if metadata, ok := injectedVersionMetadata(); ok {
+		return metadata
+	}
 	if version := strings.TrimSpace(releaseVersion); version != "" {
 		buildType := strings.TrimSpace(releaseBuildType)
 		if buildType == "" {
@@ -61,6 +67,27 @@ func currentVersionMetadata() versionMetadata {
 		}
 	}
 	return metadata
+}
+
+func injectedVersionMetadata() (versionMetadata, bool) {
+	value := strings.TrimSpace(releaseMetadata)
+	if !strings.HasPrefix(value, releaseMetadataPrefix) {
+		return versionMetadata{}, false
+	}
+	fields := strings.Split(strings.TrimPrefix(value, releaseMetadataPrefix), "|")
+	if len(fields) != 4 || strings.TrimSpace(fields[0]) == "" {
+		return versionMetadata{}, false
+	}
+	buildType := strings.TrimSpace(fields[3])
+	if buildType == "" {
+		buildType = "release"
+	}
+	return versionMetadata{
+		Version: strings.TrimSpace(fields[0]),
+		Commit:  knownValue(fields[1]),
+		Date:    normalizeBuildDate(fields[2]),
+		Type:    buildType,
+	}, true
 }
 
 func formatVersion() string {

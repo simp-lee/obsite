@@ -2238,6 +2238,67 @@ func TestNewMarkdownHeadingEmbedsOnlyPropagateRenderedSectionFeatures(t *testing
 	}
 }
 
+func TestNewMarkdownAllocatesEmbedHeadingPrefixesOutsideHostHeadingIDs(t *testing.T) {
+	t.Parallel()
+
+	host := &model.Note{
+		Slug:       "posts/host",
+		RelPath:    "notes/host.md",
+		RawContent: []byte("![[Guide]]\n\n## Embed 1 Intro\n"),
+		Headings: []model.Heading{
+			{Level: 2, Text: "Embed 1 Intro", ID: "embed-1-intro"},
+		},
+		Embeds: []model.EmbedRef{{Target: "Guide", Line: 1}},
+	}
+	guide := &model.Note{
+		Slug:       "guides/guide",
+		RelPath:    "guides/guide.md",
+		RawContent: []byte("## Intro\n\n[[#Intro|Back]]\n"),
+		Headings: []model.Heading{
+			{Level: 2, Text: "Intro", ID: "intro"},
+		},
+		OutLinks: []model.LinkRef{{RawTarget: "#Intro", Display: "Back", Fragment: "Intro", Line: 3}},
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			host.RelPath:  host,
+			guide.RelPath: guide,
+		},
+		NoteBySlug: map[string]*model.Note{
+			host.Slug:  host,
+			guide.Slug: guide,
+		},
+		NoteByName: map[string][]*model.Note{
+			"host":  {host},
+			"guide": {guide},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, _ := NewMarkdown(idx, host, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert(host.RawContent, &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
+	}
+
+	html := buf.String()
+	for _, id := range []string{"embed-1-intro", "embed-2-intro"} {
+		if count := strings.Count(html, `id="`+id+`"`); count != 1 {
+			t.Fatalf("HTML id %q count = %d, want 1: %s", id, count, html)
+		}
+	}
+	if !strings.Contains(html, `<a href="#embed-2-intro">Back</a>`) {
+		t.Fatalf("HTML = %q, want embedded self-link to share the allocated heading prefix", html)
+	}
+	if strings.Contains(html, `<a href="#embed-1-intro">Back</a>`) {
+		t.Fatalf("HTML = %q, want embedded self-link not to target the host heading", html)
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
+	}
+}
+
 func TestNewMarkdownKeepsEmbeddedLinksAssetsAndHeadingsInHostContext(t *testing.T) {
 	t.Parallel()
 
@@ -2463,21 +2524,81 @@ func TestNewMarkdownAllowsSameNoteSectionEmbeds(t *testing.T) {
 	}
 }
 
-func TestRewriteEmbeddedOutLinksPreservesEmptySelfFragmentTarget(t *testing.T) {
+func TestNewMarkdownKeepsOutOfSectionExplicitLinksOnSourceRoute(t *testing.T) {
 	t.Parallel()
 
-	source := &model.Note{RelPath: "notes/child.md"}
-	output := &model.Note{RelPath: "notes/host.md"}
-	links := []model.LinkRef{
-		{RawTarget: "child.md#", ResolvedRelPath: source.RelPath, Standard: true},
-		{RawTarget: "child.md#%20", Fragment: "%20", ResolvedRelPath: source.RelPath, Standard: true},
+	rawContent := "## Inside\n\n[[Guide#Inside|Inside Wiki]]\n\n[[Guide#Outside|Outside Wiki]]\n\n[Outside Markdown](guide.md#Outside)\n\n## Outside\n\nBody.\n"
+	host := &model.Note{
+		Slug:    "posts/host",
+		Route:   "/posts/host/",
+		RelPath: "notes/host.md",
+		Embeds:  []model.EmbedRef{{Target: "Guide", Fragment: "Inside", Line: 1}},
+	}
+	guide := &model.Note{
+		Slug:       "guides/guide",
+		Route:      "/guides/guide/",
+		RelPath:    "guides/guide.md",
+		RawContent: []byte(rawContent),
+		Headings: []model.Heading{
+			{Level: 2, Text: "Inside", ID: "inside"},
+			{Level: 2, Text: "Outside", ID: "outside"},
+		},
+		HeadingSections: map[string]model.SectionRange{
+			"inside":  sectionRangeForTest(t, rawContent, "## Inside", "## Outside"),
+			"outside": sectionRangeForTest(t, rawContent, "## Outside", ""),
+		},
+		OutLinks: []model.LinkRef{
+			{RawTarget: "Guide#Inside", Display: "Inside Wiki", Fragment: "Inside", Line: 3, Offset: strings.Index(rawContent, "[[Guide#Inside|Inside Wiki]]")},
+			{RawTarget: "Guide#Outside", Display: "Outside Wiki", Fragment: "Outside", Line: 5, Offset: strings.Index(rawContent, "[[Guide#Outside|Outside Wiki]]")},
+			{RawTarget: "guide.md#Outside", Display: "Outside Markdown", Fragment: "Outside", Standard: true, Line: 7, Offset: strings.Index(rawContent, "[Outside Markdown](guide.md#Outside)")},
+		},
+	}
+	idx := &model.VaultIndex{
+		Notes: map[string]*model.Note{
+			host.RelPath:  host,
+			guide.RelPath: guide,
+		},
+		NoteBySlug: map[string]*model.Note{
+			host.Slug:  host,
+			guide.Slug: guide,
+		},
+		NoteByName: map[string][]*model.Note{
+			"host":  {host},
+			"guide": {guide},
+		},
+		AliasByName: map[string][]*model.Note{},
+	}
+	collector := diag.NewCollector()
+	md, renderResult := NewMarkdown(idx, host, nil, collector)
+
+	var buf bytes.Buffer
+	if err := md.Convert([]byte("![[Guide#Inside]]\n"), &buf); err != nil {
+		t.Fatalf("Convert() error = %v", err)
 	}
 
-	rewritten := rewriteEmbeddedOutLinks(source, output, links)
-	for index, link := range rewritten {
-		if link.ResolvedRelPath != source.RelPath {
-			t.Fatalf("rewritten[%d].ResolvedRelPath = %q, want empty-fragment target %q preserved", index, link.ResolvedRelPath, source.RelPath)
+	html := buf.String()
+	if !strings.Contains(html, `<a href="#embed-1-inside">Inside Wiki</a>`) {
+		t.Fatalf("HTML = %q, want in-section heading link to use embedded anchor", html)
+	}
+	if got := strings.Count(html, `<a href="../../guides/guide/#outside">`); got != 2 {
+		t.Fatalf("out-of-section article link count = %d, want 2: %s", got, html)
+	}
+	if strings.Contains(html, `href="#embed-1-outside"`) {
+		t.Fatalf("HTML = %q, want no dead embedded anchor for out-of-section heading", html)
+	}
+
+	links := renderResult.OutLinks()
+	wantTargets := []string{host.RelPath, guide.RelPath, guide.RelPath, guide.RelPath}
+	if len(links) != len(wantTargets) {
+		t.Fatalf("len(renderResult.OutLinks()) = %d, want %d", len(links), len(wantTargets))
+	}
+	for i, want := range wantTargets {
+		if links[i].ResolvedRelPath != want {
+			t.Fatalf("renderResult.OutLinks()[%d].ResolvedRelPath = %q, want %q", i, links[i].ResolvedRelPath, want)
 		}
+	}
+	if got := collector.Diagnostics(); len(got) != 0 {
+		t.Fatalf("collector.Diagnostics() = %#v, want no diagnostics", got)
 	}
 }
 

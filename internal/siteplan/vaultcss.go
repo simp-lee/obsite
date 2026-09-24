@@ -63,55 +63,7 @@ func planVaultCSS(plan *model.SitePlan, scan vault.ScanResult, index *model.Vaul
 		}
 		if strings.EqualFold(path.Ext(source), ".css") {
 			data, err = asset.RewriteCSSURLs(data, func(raw string) (string, error) {
-				if !resourcepath.IsLocalTarget(raw) {
-					return raw, nil
-				}
-				targetPath := raw
-				if position := strings.IndexAny(targetPath, "?#"); position >= 0 {
-					targetPath = targetPath[:position]
-				}
-				if targetPath == "" {
-					return raw, nil
-				}
-				if decoded, err := url.PathUnescape(targetPath); err == nil {
-					targetPath = decoded
-				}
-				targetPath = strings.ReplaceAll(targetPath, `\`, "/")
-				candidate := path.Clean(path.Join(path.Dir(source), targetPath))
-				if rootRelative, ok := strings.CutPrefix(targetPath, "/"); ok {
-					candidate = path.Clean(rootRelative)
-				}
-				if candidate == "." || candidate == ".." || strings.HasPrefix(candidate, "../") {
-					return "", fmt.Errorf("CSS asset %q escapes the vault", raw)
-				}
-				lookup := scan.LookupResourcePath(candidate)
-				if len(lookup.Ambiguous) > 0 {
-					for _, candidate := range lookup.Ambiguous {
-						plan.CSSInputFiles[candidate] = struct{}{}
-					}
-					return "", fmt.Errorf("CSS asset %q matched multiple vault resources after canonical path normalization (%s)", raw, strings.Join(lookup.Ambiguous, ", "))
-				}
-				if lookup.Path == "" {
-					return "", fmt.Errorf("CSS asset %q was not found", raw)
-				}
-				plan.CSSInputFiles[lookup.Path] = struct{}{}
-				sourceVersion, targetVersion := "", ""
-				if index != nil {
-					sourceVersion = index.ResourceVersions[source]
-					targetVersion = index.ResourceVersions[lookup.Path]
-				}
-				if targetVersion != "" && targetVersion != sourceVersion {
-					return "", fmt.Errorf("CSS asset %q belongs to version %q and cannot be used from version %q", raw, targetVersion, sourceVersion)
-				}
-				dependency, err := resolve(lookup.Path)
-				if err != nil {
-					return "", err
-				}
-				suffix := ""
-				if position := strings.IndexAny(raw, "?#"); position >= 0 {
-					suffix = raw[position:]
-				}
-				return path.Base(dependency.DstPath) + suffix, nil
+				return rewriteVaultCSSURL(plan, scan, index, source, raw, resolve)
 			})
 			if err != nil {
 				return nil, err
@@ -155,6 +107,58 @@ func planVaultCSS(plan *model.SitePlan, scan vault.ScanResult, index *model.Vaul
 			recordCustomCSSError(collector, source, "", "CSS asset: %v", err)
 		}
 	}
+}
+
+func rewriteVaultCSSURL(plan *model.SitePlan, scan vault.ScanResult, index *model.VaultIndex, source, raw string, resolve func(string) (*model.PlannedAsset, error)) (string, error) {
+	if !resourcepath.IsLocalTarget(raw) {
+		return raw, nil
+	}
+	targetPath := raw
+	if position := strings.IndexAny(targetPath, "?#"); position >= 0 {
+		targetPath = targetPath[:position]
+	}
+	if targetPath == "" {
+		return raw, nil
+	}
+	if decoded, err := url.PathUnescape(targetPath); err == nil {
+		targetPath = decoded
+	}
+	targetPath = strings.ReplaceAll(targetPath, `\`, "/")
+	candidate := path.Clean(path.Join(path.Dir(source), targetPath))
+	if rootRelative, ok := strings.CutPrefix(targetPath, "/"); ok {
+		candidate = path.Clean(rootRelative)
+	}
+	if candidate == "." || candidate == ".." || strings.HasPrefix(candidate, "../") {
+		return "", fmt.Errorf("CSS asset %q escapes the vault", raw)
+	}
+	lookup := scan.LookupResourcePath(candidate)
+	if len(lookup.Ambiguous) > 0 {
+		for _, candidate := range lookup.Ambiguous {
+			plan.CSSInputFiles[candidate] = struct{}{}
+		}
+		return "", fmt.Errorf("CSS asset %q matched multiple vault resources after canonical path normalization (%s)", raw, strings.Join(lookup.Ambiguous, ", "))
+	}
+	if lookup.Path == "" {
+		return "", fmt.Errorf("CSS asset %q was not found", raw)
+	}
+	plan.CSSInputFiles[lookup.Path] = struct{}{}
+	sourceVersion, targetVersion := "", ""
+	if index != nil {
+		sourceVersion = index.ResourceVersions[source]
+		targetVersion = index.ResourceVersions[lookup.Path]
+	}
+	if targetVersion != "" && targetVersion != sourceVersion {
+		return "", fmt.Errorf("CSS asset %q belongs to version %q and cannot be used from version %q", raw, targetVersion, sourceVersion)
+	}
+	dependency, err := resolve(lookup.Path)
+	if err != nil {
+		return "", err
+	}
+	suffix := ""
+	if position := strings.IndexAny(raw, "?#"); position >= 0 {
+		suffix = raw[position:]
+	}
+	return path.Base(dependency.DstPath) + suffix, nil
 }
 
 func recordCustomCSSError(collector *diag.Collector, source, target, format string, args ...any) {
