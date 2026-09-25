@@ -3,13 +3,16 @@ package edit
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -19,6 +22,7 @@ import (
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/model"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"golang.org/x/term"
 )
@@ -33,10 +37,13 @@ const (
 // Server combines the read-only generated-site server with the isolated edit
 // control boundary. It never writes editor state into generated output.
 type Server struct {
-	static   *internalserver.Server
-	port     int
-	username string
-	hash     string
+	static      *internalserver.Server
+	port        int
+	vault       string
+	catalog     *model.SourceCatalog
+	coordinator *Coordinator
+	username    string
+	hash        string
 
 	mu       sync.Mutex
 	sessions map[string]session
@@ -52,8 +59,12 @@ type session struct {
 
 // New validates the configured account and generated output before returning a
 // server. It does not listen or modify the vault.
-func New(vaultPath, outputPath string, port int) (*Server, error) {
-	cfg, err := internalconfig.LoadForBuildWithOutput(vaultPath, outputPath)
+func New(vaultPath, outputPath string, port int, catalogs ...*model.SourceCatalog) (*Server, error) {
+	resolvedVault, err := internalfsutil.ResolveVaultPath(vaultPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := internalconfig.LoadForBuildWithOutput(resolvedVault, outputPath)
 	if err != nil {
 		return nil, err
 	}
@@ -64,12 +75,23 @@ func New(vaultPath, outputPath string, port int) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	var catalog *model.SourceCatalog
+	if len(catalogs) > 0 {
+		catalog = catalogs[0]
+	}
+	coordinator, err := NewCoordinator(resolvedVault, outputPath, catalog)
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		static:   static,
-		port:     port,
-		username: cfg.Edit.Username,
-		hash:     cfg.Edit.PasswordHash,
-		sessions: make(map[string]session),
+		static:      static,
+		port:        port,
+		vault:       resolvedVault,
+		catalog:     catalog,
+		coordinator: coordinator,
+		username:    cfg.Edit.Username,
+		hash:        cfg.Edit.PasswordHash,
+		sessions:    make(map[string]session),
 	}, nil
 }
 
@@ -113,6 +135,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	if _, ok := s.sessionForRequest(r); ok {
+		if entry := s.catalogEntryForRequest(r); entry != nil && entry.Route != "" {
+			s.serveDecoratedStatic(w, r, entry)
+			return
+		}
+	}
 	s.static.ServeHTTP(w, r)
 }
 
@@ -121,6 +149,12 @@ func (s *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 	switch path {
 	case "login":
 		s.serveLogin(w, r)
+	case "editor":
+		s.serveEditor(w, r)
+	case "sources":
+		s.serveSources(w, r)
+	case "source":
+		s.serveSource(w, r)
 	case "logout":
 		s.serveLogout(w, r)
 	case "session":
@@ -129,6 +163,291 @@ func (s *Server) serveControl(w http.ResponseWriter, r *http.Request) {
 		s.serveCSRF(w, r)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func (s *Server) serveEditor(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.sessionForRequest(r); !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	selectedJSON, _ := json.Marshal(r.URL.Query().Get("path"))
+	body := `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Obsite editor</title><style>body{font:16px sans-serif;max-width:72rem;margin:2rem auto;padding:0 1rem}main{display:grid;gap:1rem}textarea{min-height:24rem;width:100%;font:14px monospace}button{padding:.4rem .7rem}</style></head><body><main><h1>Obsite editor</h1><p id="status" role="status">Loading sources…</p><select id="source" aria-label="Source"></select><textarea id="content" aria-label="Markdown source"></textarea><div><button id="save" type="button">Save</button><button id="new" type="button">New article</button><button id="delete" type="button">Delete article</button></div><p>Source edits are validated and rebuilt before publication.</p></main><script>(async function(){const status=document.getElementById('status'),select=document.getElementById('source'),content=document.getElementById('content');try{const response=await fetch('/_obsite/sources');if(!response.ok)throw new Error('sources');const data=await response.json();for(const source of data.sources||[]){const option=document.createElement('option');option.value=source.relPath;option.textContent=(source.effectivePublish?'':'[draft] ')+source.relPath;select.appendChild(option)}if(` + string(selectedJSON) + `)select.value=` + string(selectedJSON) + `;async function load(){const response=await fetch('/_obsite/source?path='+encodeURIComponent(select.value));if(!response.ok)throw new Error('source');content.value=await response.text();window.obsiteSourceHash=response.headers.get('X-Obsite-Source-Hash')||'';status.textContent='Loaded '+select.value}select.onchange=load;if(select.value)await load();else status.textContent='No Markdown sources'}catch(error){status.textContent='Editor unavailable'}})();</script><script>(async function(){const status=document.getElementById('status'),select=document.getElementById('source'),content=document.getElementById('content');const csrf=async()=>((await (await fetch('/_obsite/session')).json()).csrf||'');const mutation=async(method,url,body,expectedHash=window.obsiteSourceHash||'')=>{const response=await fetch(url,{method,headers:{'X-Obsite-CSRF':await csrf(),'X-Obsite-Source-Hash':expectedHash},body});if(!response.ok)throw new Error(await response.text());return response.json()};document.getElementById('save').onclick=async()=>{try{status.textContent='Saving and rebuilding…';const result=await mutation('PUT','/_obsite/source?path='+encodeURIComponent(select.value),content.value);window.obsiteSourceHash=result.sourceHash;status.textContent=result.warningCount?'Saved and rebuilt with warnings':'Saved and rebuilt'}catch(error){status.textContent='Save failed: '+error.message}};document.getElementById('delete').onclick=async()=>{if(!confirm('Delete this article?'))return;try{status.textContent='Deleting and rebuilding…';const result=await mutation('DELETE','/_obsite/source?path='+encodeURIComponent(select.value)+'&confirm=true');status.textContent=result.warningCount?'Deleted and rebuilt with warnings':'Deleted and rebuilt';location.reload()}catch(error){status.textContent='Delete failed: '+error.message}};document.getElementById('new').onclick=async()=>{const path=prompt('New article path (for example notes/new.md)');const title=prompt('Title');if(!path||!title)return;const type=prompt('Type (doc or post)','doc')||'doc';const date=type==='post'?(prompt('Date (YYYY-MM-DD or RFC3339)')||''):'';const form=new URLSearchParams({path,title,type,date});try{status.textContent='Creating and rebuilding…';const result=await mutation('POST','/_obsite/source',form,'absent');status.textContent=result.warningCount?'Created and rebuilt with warnings':'Created and rebuilt';location.reload()}catch(error){status.textContent='Create failed: '+error.message}}})()</script></body></html>`
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = io.WriteString(w, body)
+}
+
+type sourceCatalogResponse struct {
+	RelPath          string `json:"relPath"`
+	Route            string `json:"route,omitempty"`
+	Title            string `json:"title"`
+	Kind             string `json:"kind"`
+	Type             string `json:"type,omitempty"`
+	Publish          bool   `json:"publish"`
+	EffectivePublish bool   `json:"effectivePublish"`
+	SectionPath      string `json:"sectionPath"`
+	VersionID        string `json:"versionID,omitempty"`
+}
+
+func (s *Server) serveSources(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", "GET")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.sessionForRequest(r); !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	catalog := s.sourceCatalog()
+	response := make([]sourceCatalogResponse, 0)
+	if catalog != nil {
+		response = make([]sourceCatalogResponse, 0, len(catalog.Entries))
+		for _, entry := range catalog.Entries {
+			response = append(response, sourceCatalogResponse{RelPath: entry.RelPath, Route: entry.Route, Title: entry.Title, Kind: entry.Kind, Type: entry.Type, Publish: entry.Publish, EffectivePublish: entry.EffectivePublish, SectionPath: entry.SectionPath, VersionID: entry.VersionID})
+		}
+	}
+	writeJSON(w, map[string]any{"sources": response})
+}
+
+func (s *Server) serveSource(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.serveSourceRead(w, r)
+	case http.MethodPut:
+		s.serveSourceSave(w, r)
+	case http.MethodPost:
+		s.serveSourceCreate(w, r)
+	case http.MethodDelete:
+		s.serveSourceDelete(w, r)
+	default:
+		w.Header().Set("Allow", "GET, PUT, POST, DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) serveSourceRead(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.sessionForRequest(r); !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return
+	}
+	entry := s.catalogEntryByRelPath(r.URL.Query().Get("path"))
+	if entry == nil || (entry.Kind != "article" && entry.Kind != "section") {
+		http.NotFound(w, r)
+		return
+	}
+	_, data, _, err := internalfsutil.ReadContainedRegularFile(s.vault, entry.RelPath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	hash := sha256.Sum256(data)
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("X-Obsite-Source-Hash", hex.EncodeToString(hash[:]))
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(data)
+}
+
+func (s *Server) serveSourceSave(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	pathValue := r.URL.Query().Get("path")
+	if s.catalogEntryByRelPath(pathValue) == nil {
+		http.NotFound(w, r)
+		return
+	}
+	content, err := readSourceBody(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return
+	}
+	result, err := s.coordinator.Save(pathValue, r.Header.Get("X-Obsite-Source-Hash"), content)
+	if err != nil {
+		s.writeMutationError(w, err)
+		return
+	}
+	s.NotifyReload()
+	s.writeMutationResult(w, result)
+}
+
+func (s *Server) serveSourceCreate(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid create request", http.StatusBadRequest)
+		return
+	}
+	pathValue, title, typeValue, dateValue := r.Form.Get("path"), r.Form.Get("title"), r.Form.Get("type"), r.Form.Get("date")
+	content, err := NewArticleSource(title, typeValue, dateValue)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.coordinator.Create(pathValue, r.Header.Get("X-Obsite-Source-Hash"), content)
+	if err != nil {
+		s.writeMutationError(w, err)
+		return
+	}
+	s.NotifyReload()
+	s.writeMutationResult(w, result)
+}
+
+func (s *Server) serveSourceDelete(w http.ResponseWriter, r *http.Request) {
+	if !s.authorizeMutation(w, r) {
+		return
+	}
+	if r.URL.Query().Get("confirm") != "true" {
+		http.Error(w, "delete confirmation is required", http.StatusBadRequest)
+		return
+	}
+	result, err := s.coordinator.Delete(r.URL.Query().Get("path"), r.Header.Get("X-Obsite-Source-Hash"))
+	if err != nil {
+		s.writeMutationError(w, err)
+		return
+	}
+	s.NotifyReload()
+	s.writeMutationResult(w, result)
+}
+
+func (s *Server) writeMutationResult(w http.ResponseWriter, result TransactionResult) {
+	response := map[string]any{"ok": true, "sourceHash": result.SourceHash}
+	if result.Build != nil {
+		response["warningCount"] = result.Build.WarningCount
+		response["diagnostics"] = result.Build.Diagnostics
+	}
+	writeJSON(w, response)
+}
+
+func (s *Server) authorizeMutation(w http.ResponseWriter, r *http.Request) bool {
+	sess, ok := s.sessionForRequest(r)
+	if !ok {
+		http.Error(w, "authentication required", http.StatusUnauthorized)
+		return false
+	}
+	if !sameOrigin(r) || !validCSRF(r, sess.csrf) {
+		http.Error(w, "csrf validation failed", http.StatusForbidden)
+		return false
+	}
+	if s.coordinator == nil {
+		http.Error(w, "edit coordinator is unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+func (s *Server) writeMutationError(w http.ResponseWriter, err error) {
+	status := http.StatusUnprocessableEntity
+	var conflict *ConflictError
+	if errors.As(err, &conflict) {
+		status = http.StatusConflict
+	}
+	var buildErr *CandidateBuildError
+	if errors.As(err, &buildErr) && buildErr.Result != nil {
+		writeJSONStatus(w, status, map[string]any{"ok": false, "path": buildErr.Path, "error": err.Error(), "diagnostics": buildErr.Result.Diagnostics})
+		return
+	}
+	writeJSONStatus(w, status, map[string]any{"ok": false, "error": err.Error()})
+}
+
+func readSourceBody(r *http.Request) ([]byte, error) {
+	const maxSourceBytes = 8 << 20
+	data, err := io.ReadAll(io.LimitReader(r.Body, maxSourceBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("could not read source")
+	}
+	if len(data) > maxSourceBytes {
+		return nil, fmt.Errorf("source exceeds 8 MiB limit")
+	}
+	return data, nil
+}
+
+func (s *Server) sourceCatalog() *model.SourceCatalog {
+	if s == nil {
+		return nil
+	}
+	if s.coordinator != nil {
+		return s.coordinator.CatalogSnapshot()
+	}
+	return cloneCatalog(s.catalog)
+}
+
+func (s *Server) catalogEntryByRelPath(relPath string) *model.SourceCatalogEntry {
+	catalog := s.sourceCatalog()
+	if catalog == nil || relPath == "" {
+		return nil
+	}
+	for index := range catalog.Entries {
+		if catalog.Entries[index].RelPath == relPath {
+			entry := catalog.Entries[index]
+			return &entry
+		}
+	}
+	return nil
+}
+
+func (s *Server) catalogEntryForRequest(r *http.Request) *model.SourceCatalogEntry {
+	catalog := s.sourceCatalog()
+	if catalog == nil || r == nil {
+		return nil
+	}
+	route := r.URL.EscapedPath()
+	base := catalog.BasePath
+	if base == "" {
+		base = "/"
+	}
+	if base != "/" {
+		baseRoot := strings.TrimSuffix(base, "/")
+		if route == baseRoot {
+			route = "/"
+		} else if strings.HasPrefix(route, base) {
+			route = strings.TrimPrefix(route, baseRoot)
+		} else {
+			return nil
+		}
+	}
+	if route == "" {
+		route = "/"
+	}
+	for index := range catalog.Entries {
+		entry := &catalog.Entries[index]
+		if entry.Route == route && entry.EffectivePublish {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *Server) serveDecoratedStatic(w http.ResponseWriter, r *http.Request, entry *model.SourceCatalogEntry) {
+	recorder := httptest.NewRecorder()
+	s.static.ServeHTTP(recorder, r)
+	status := recorder.Code
+	body := append([]byte(nil), recorder.Body.Bytes()...)
+	contentType := strings.ToLower(recorder.Header().Get("Content-Type"))
+	if r.Method != http.MethodHead && status >= 200 && status < 300 && strings.Contains(contentType, "text/html") {
+		link := `<a class="edit-page-link" href="/_obsite/editor?path=` + url.QueryEscape(entry.RelPath) + `">编辑</a>`
+		lower := strings.ToLower(string(body))
+		if index := strings.LastIndex(lower, "</body>"); index >= 0 {
+			body = append(append(append([]byte(nil), body[:index]...), []byte(link)...), body[index:]...)
+		} else {
+			body = append(body, []byte(link)...)
+		}
+	}
+	for name, values := range recorder.Header() {
+		w.Header()[name] = append([]string(nil), values...)
+	}
+	if r.Method != http.MethodHead {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(body)))
+	}
+	w.WriteHeader(status)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(body)
 	}
 }
 
@@ -282,6 +601,12 @@ func sameOrigin(r *http.Request) bool {
 	return strings.EqualFold(u.Scheme, expectedScheme) && strings.EqualFold(u.Host, r.Host)
 }
 
+func writeJSONStatus(w http.ResponseWriter, status int, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	writeJSON(w, value)
+}
+
 func writeJSON(w http.ResponseWriter, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -410,7 +735,7 @@ func atomicReplaceConfig(vaultRoot, configPath string, expected, updated []byte)
 		return fmt.Errorf("create atomic config file: %w", err)
 	}
 	temporaryName := temporary.Name()
-	defer os.Remove(temporaryName)
+	defer func() { _ = os.Remove(temporaryName) }()
 	if err := temporary.Chmod(0o600); err != nil {
 		_ = temporary.Close()
 		return fmt.Errorf("set atomic config permissions: %w", err)

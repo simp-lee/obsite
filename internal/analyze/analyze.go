@@ -36,12 +36,24 @@ func AnalyzeWithOutput(vaultPath, outputPath string) (Result, error) {
 // AnalyzeWithOutputAndConcurrency uses the same strict plan for publication,
 // optionally selecting the worker bound used by independent indexing work.
 func AnalyzeWithOutputAndConcurrency(vaultPath, outputPath string, concurrency int) (Result, error) {
+	return AnalyzeWithOutputAndConcurrencyAndOverlay(vaultPath, outputPath, concurrency, nil, nil)
+}
+
+// AnalyzeWithOutputAndConcurrencyAndOverlay shares the normal analyzer while
+// reading candidate Markdown bytes from an immutable edit overlay.
+func AnalyzeWithOutputAndConcurrencyAndOverlay(vaultPath, outputPath string, concurrency int, overlay map[string][]byte, deleted map[string]bool) (Result, error) {
 	var planned *siteplan.Result
 	var err error
-	if outputPath == "" {
+	if len(overlay) == 0 && len(deleted) == 0 && outputPath == "" {
 		planned, err = siteplan.BuildWithConcurrency(vaultPath, concurrency)
-	} else {
+	} else if len(overlay) == 0 && len(deleted) == 0 {
 		planned, err = siteplan.BuildForOutputWithConcurrency(vaultPath, outputPath, concurrency)
+	} else if outputPath == "" {
+		// Overlay builds always use an explicit output boundary so the
+		// candidate cannot accidentally scan generated output.
+		planned, err = siteplan.BuildForOutputWithOverlay(vaultPath, filepath.Join(vaultPath, "public"), overlay, deleted, concurrency)
+	} else {
+		planned, err = siteplan.BuildForOutputWithOverlay(vaultPath, outputPath, overlay, deleted, concurrency)
 	}
 	if planned == nil {
 		collector := diagnostic.NewCollector()

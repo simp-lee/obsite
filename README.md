@@ -13,11 +13,30 @@ obsite init [--vault PATH]
 obsite build [--vault PATH] [--output PATH] [--strict]
 obsite validate [--vault PATH] [--output PATH]
 obsite serve [--vault PATH] [--output PATH] [--port NUM] [--watch]
+obsite edit [--vault PATH] [--output PATH] [--port NUM] [--setup]
 obsite version
 obsite --version
 ```
 
-`init` accepts only a nonexistent or completely empty directory. It creates a strict `obsite.yaml` and a root `_index.md`, and never overwrites existing files. `validate` is read-only and returns a failure for either errors or warnings. It resolves `--output` exactly like `build` (default `<vault>/public`); pass the same value when validating a custom-output build. Only that resolved path is excluded as the formal output boundary. Obsite does not infer additional output boundaries from directory names or existing `.obsite-output` markers; the normal fixed vault-input exclusions still apply. Normal builds show warnings and continue; `build --strict` fails before publication for either severity. `serve --watch` uses the same strict build and reloads only after a successful rebuild.
+`init` accepts only a nonexistent or completely empty directory. It creates a strict `obsite.yaml` and a root `_index.md`, and never overwrites existing files. `validate` is read-only and returns a failure for either errors or warnings. It resolves `--output` exactly like `build` (default `<vault>/public`); pass the same value when validating a custom-output build. Only that resolved path is excluded as the formal output boundary. Obsite does not infer additional output boundaries from directory names or existing `.obsite-output` markers; the normal fixed vault-input exclusions still apply. Normal builds show warnings and continue; `build --strict` fails before publication for either severity. `serve --watch` uses the same strict build and reloads only after a successful rebuild. `serve` never registers editor or login routes.
+
+### Optional edit mode
+
+Enable the single-account editor explicitly with:
+
+```bash
+obsite edit --vault ./vault --port 8080
+```
+
+The command builds before listening and serves the generated site anonymously. Configure an account interactively once with `obsite edit --setup --vault ./vault`; setup requires a terminal, refuses an existing or invalid account, writes only an Argon2id PHC hash atomically, and never prints the password. The strict `edit` section contains only `username` and `passwordHash`:
+
+```yaml
+edit:
+  username: admin
+  passwordHash: $argon2id$v=19$m=65536,t=3,p=1$...
+```
+
+After login, mapped article and section pages show an in-memory edit link. The embedded editor lists published and draft Markdown sources, preserves the submitted source bytes, validates and rebuilds before an atomic source/output transaction, and reports warnings or build failures. New articles are drafts by default (`title`, `publish: false`, `type: doc`); posts require an explicit date. Deletes are limited to ordinary articles and require confirmation. Every source read/save/create/delete uses a SHA-256 version and stale requests are rejected; failures do not reload the public site. `serve`, including `serve --watch`, remains read-only.
 
 ## Vault and section model
 

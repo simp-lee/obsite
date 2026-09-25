@@ -52,6 +52,27 @@ type EditConfig struct {
 	PasswordHash string
 }
 
+// SourceCatalog is the immutable source mapping handed from analysis to the
+// editor. RelPath is always vault-relative and Route is empty for unpublished
+// sources.
+type SourceCatalog struct {
+	BasePath string
+	Entries  []SourceCatalogEntry
+}
+
+// SourceCatalogEntry identifies one exact article or section source.
+type SourceCatalogEntry struct {
+	RelPath          string
+	Route            string
+	Title            string
+	Kind             string
+	Type             string
+	Publish          bool
+	EffectivePublish bool
+	SectionPath      string
+	VersionID        string
+}
+
 // VersionsConfig describes an explicitly configured set of document versions.
 type VersionsConfig struct {
 	Root    string

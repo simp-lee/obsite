@@ -30,6 +30,10 @@ type ScanResult struct {
 	AttachmentFolderPath string
 	MarkdownFiles        []string
 	ResourceFiles        []string
+	// OverlayMarkdown and OverlayDeleted are candidate-only inputs used by
+	// edit transactions; they never write or replace vault files.
+	OverlayMarkdown map[string][]byte
+	OverlayDeleted  map[string]bool
 
 	markdownSet       map[string]struct{}
 	resourceSet       map[string]string
@@ -39,7 +43,9 @@ type ScanResult struct {
 
 // ScanOptions carries the already-resolved output exclusion shared with build and watch.
 type ScanOptions struct {
-	OutputPath string
+	OutputPath      string
+	OverlayMarkdown map[string][]byte
+	OverlayDeleted  map[string]bool
 }
 
 // Scan walks a vault once without an output exclusion.
@@ -71,6 +77,8 @@ func ScanWithOptions(vaultPath string, options ScanOptions) (ScanResult, error) 
 	result := ScanResult{
 		VaultPath:            absVaultPath,
 		AttachmentFolderPath: attachmentFolderPath,
+		OverlayMarkdown:      cloneOverlay(options.OverlayMarkdown),
+		OverlayDeleted:       cloneDeleted(options.OverlayDeleted),
 		markdownSet:          make(map[string]struct{}),
 	}
 
@@ -135,6 +143,28 @@ func ScanWithOptions(vaultPath string, options ScanOptions) (ScanResult, error) 
 		return ScanResult{}, fmt.Errorf("scan vault %q: %w", absVaultPath, err)
 	}
 
+	for relPath := range result.OverlayMarkdown {
+		if result.OverlayDeleted[relPath] || !isMarkdownFile(path.Base(relPath)) || shouldSkipPath(relPath) {
+			continue
+		}
+		if _, exists := result.markdownSet[relPath]; exists {
+			continue
+		}
+		result.markdownSet[relPath] = struct{}{}
+		result.MarkdownFiles = append(result.MarkdownFiles, relPath)
+	}
+	for relPath := range result.OverlayDeleted {
+		if _, exists := result.markdownSet[relPath]; !exists {
+			continue
+		}
+		delete(result.markdownSet, relPath)
+		for index, candidate := range result.MarkdownFiles {
+			if candidate == relPath {
+				result.MarkdownFiles = append(result.MarkdownFiles[:index], result.MarkdownFiles[index+1:]...)
+				break
+			}
+		}
+	}
 	sort.Strings(result.MarkdownFiles)
 	sort.Strings(result.ResourceFiles)
 	result.resourceSet = model.BuildExactLookupPaths(result.ResourceFiles)
@@ -161,6 +191,30 @@ func (r ScanResult) LookupResourcePath(relPath string) model.PathLookupResult {
 	}
 
 	return model.PathLookupResult{Path: r.resourceLookup[canonicalKey]}
+}
+
+func cloneOverlay(input map[string][]byte) map[string][]byte {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make(map[string][]byte, len(input))
+	for relPath, data := range input {
+		output[relPath] = append([]byte(nil), data...)
+	}
+	return output
+}
+
+func cloneDeleted(input map[string]bool) map[string]bool {
+	if len(input) == 0 {
+		return nil
+	}
+	output := make(map[string]bool, len(input))
+	for relPath, deleted := range input {
+		if deleted {
+			output[relPath] = true
+		}
+	}
+	return output
 }
 
 func normalizeVaultPath(vaultPath string) (string, error) {

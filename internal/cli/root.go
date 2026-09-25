@@ -12,6 +12,7 @@ import (
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internaledit "github.com/simp-lee/obsite/internal/edit"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
+	"github.com/simp-lee/obsite/internal/model"
 	internalserver "github.com/simp-lee/obsite/internal/server"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +28,7 @@ type previewServer interface {
 type commandDependencies struct {
 	buildSiteWithOptions func(vaultPath string, outputPath string, options internalbuild.Options) (*internalbuild.BuildResult, error)
 	newPreviewServer     func(outputPath string, port int) (previewServer, error)
-	newEditServer        func(vaultPath string, outputPath string, port int) (previewServer, error)
+	newEditServer        func(vaultPath string, outputPath string, port int, catalog *model.SourceCatalog) (previewServer, error)
 	newFileWatcher       func() (fileWatcher, error)
 }
 
@@ -55,8 +56,8 @@ func defaultCommandDependencies() commandDependencies {
 		newPreviewServer: func(outputPath string, port int) (previewServer, error) {
 			return internalserver.New(outputPath, port)
 		},
-		newEditServer: func(vaultPath string, outputPath string, port int) (previewServer, error) {
-			return internaledit.New(vaultPath, outputPath, port)
+		newEditServer: func(vaultPath string, outputPath string, port int, catalog *model.SourceCatalog) (previewServer, error) {
+			return internaledit.New(vaultPath, outputPath, port, catalog)
 		},
 		newFileWatcher: newFSNotifyWatcher,
 	}

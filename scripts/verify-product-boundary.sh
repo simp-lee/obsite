@@ -45,7 +45,7 @@ check_packages() {
     exit 1
   fi
 
-  invalid_build=$(printf '%s\n' "$imports" | awk -F'|' '$1 != "github.com/simp-lee/obsite/internal/build" && $1 != "github.com/simp-lee/obsite/internal/cli" && $2 ~ /github.com\/simp-lee\/obsite\/internal\/build/ {print $1}')
+  invalid_build=$(printf '%s\n' "$imports" | awk -F'|' '$1 != "github.com/simp-lee/obsite/internal/build" && $1 != "github.com/simp-lee/obsite/internal/cli" && $1 != "github.com/simp-lee/obsite/internal/edit" && $2 ~ /github.com\/simp-lee\/obsite\/internal\/build/ {print $1}')
   if [ -n "$invalid_build" ]; then
     printf 'lower packages import internal/build:\n%s\n' "$invalid_build" >&2
     exit 1

@@ -69,6 +69,20 @@ func BuildForOutput(vaultPath, outputPath string) (*Result, error) {
 	return BuildForOutputWithConcurrency(vaultPath, outputPath, 0)
 }
 
+// BuildForOutputWithOverlay analyzes a candidate Markdown overlay without
+// replacing any source file. It is the planning handoff used by edit CAS.
+func BuildForOutputWithOverlay(vaultPath, outputPath string, overlay map[string][]byte, deleted map[string]bool, concurrency int) (*Result, error) {
+	boundary, err := internalfsutil.ResolveVaultOutput(vaultPath, outputPath)
+	if err != nil {
+		return nil, err
+	}
+	cfg, err := internalconfig.LoadForBuildWithOutput(boundary.VaultPath, boundary.OutputPath)
+	if err != nil {
+		return nil, err
+	}
+	return buildWithConfigAndOutputAndOverlay(boundary.VaultPath, cfg, boundary.OutputPath, overlay, deleted, concurrency)
+}
+
 // BuildForOutputWithConcurrency creates a strict plan with an optional bound
 // on independent Markdown indexing workers. A non-positive value preserves the
 // default worker selection.
@@ -91,6 +105,10 @@ func BuildWithConfig(vaultPath string, cfg model.SiteConfig) (*Result, error) {
 }
 
 func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath string, concurrency int) (*Result, error) {
+	return buildWithConfigAndOutputAndOverlay(vaultPath, cfg, outputPath, nil, nil, concurrency)
+}
+
+func buildWithConfigAndOutputAndOverlay(vaultPath string, cfg model.SiteConfig, outputPath string, overlay map[string][]byte, deleted map[string]bool, concurrency int) (*Result, error) {
 	collector := diag.NewCollector()
 	cfg, err := internalconfig.NormalizeSiteConfig(cfg)
 	if err != nil {
@@ -100,7 +118,7 @@ func buildWithConfigAndOutput(vaultPath string, cfg model.SiteConfig, outputPath
 	if err != nil {
 		return nil, err
 	}
-	scan, err := vault.ScanWithOptions(resolvedVault, vault.ScanOptions{OutputPath: outputPath})
+	scan, err := vault.ScanWithOptions(resolvedVault, vault.ScanOptions{OutputPath: outputPath, OverlayMarkdown: overlay, OverlayDeleted: deleted})
 	if err != nil {
 		return &Result{Diagnostics: diagnosticsWithError(collector, diag.Location{Path: resolvedVault}, diag.KindSchema, err)}, err
 	}

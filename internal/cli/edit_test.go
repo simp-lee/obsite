@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	internalbuild "github.com/simp-lee/obsite/internal/build"
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 func TestEditCommandBuildsBeforeListeningAndEnablesReload(t *testing.T) {
@@ -18,7 +19,7 @@ func TestEditCommandBuildsBeforeListeningAndEnablesReload(t *testing.T) {
 		builtVault, builtOutput = gotVault, gotOutput
 		return &internalbuild.BuildResult{}, nil
 	}
-	deps.newEditServer = func(gotVault, gotOutput string, port int) (previewServer, error) {
+	deps.newEditServer = func(gotVault, gotOutput string, port int, _ *model.SourceCatalog) (previewServer, error) {
 		if gotVault != vault || gotOutput != output || port != 9090 {
 			t.Fatalf("edit server args = %q, %q, %d", gotVault, gotOutput, port)
 		}

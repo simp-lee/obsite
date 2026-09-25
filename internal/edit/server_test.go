@@ -12,9 +12,10 @@ import (
 	"testing"
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
+	"github.com/simp-lee/obsite/internal/model"
 )
 
-func TestServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
+func TestEditServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 	vault := t.TempDir()
 	output := t.TempDir()
 	hash, err := internalconfig.HashArgon2idPassword("secret")
@@ -22,11 +23,23 @@ func TestServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeEditFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\nedit:\n  username: admin\n  passwordHash: "+hash+"\n")
-	if err := os.WriteFile(filepath.Join(output, "index.html"), []byte("public"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(output, "index.html"), []byte("<!doctype html><body>public</body></html>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.MkdirAll(filepath.Join(output, "article"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(output, "article", "index.html"), []byte("<!doctype html><body>article</body></html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeEditFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeEditFile(t, vault, "article.md", "---\ntitle: Article\npublish: true\ntype: doc\n---\nBody\n")
+	catalog := &model.SourceCatalog{BasePath: "/", Entries: []model.SourceCatalogEntry{
+		{RelPath: "article.md", Route: "/article/", Title: "Article", Kind: "article", Type: "doc", Publish: true, EffectivePublish: true},
+		{RelPath: "draft.md", Route: "", Title: "Draft", Kind: "article", Type: "doc", Publish: false},
+	}}
 
-	server, err := New(vault, output, 0)
+	server, err := New(vault, output, 0, catalog)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,9 +58,18 @@ func TestServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 	}
 	body, _ := io.ReadAll(response.Body)
 	_ = response.Body.Close()
-	if response.StatusCode != http.StatusOK || string(body) != "public" {
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "public") || strings.Contains(string(body), "edit-page-link") {
 		t.Fatalf("anonymous public response = %d %q", response.StatusCode, body)
 	}
+
+	response, err = httpClient.Get(listener.URL + "/_obsite/sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("anonymous sources status = %d", response.StatusCode)
+	}
+	_ = response.Body.Close()
 
 	response, err = httpClient.Get(listener.URL + "/_obsite/session")
 	if err != nil {
@@ -80,6 +102,44 @@ func TestServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 	if !strings.Contains(string(sessionBody), `"authenticated":true`) || !strings.Contains(string(sessionBody), `"csrf":`) {
 		t.Fatalf("session body = %s", sessionBody)
 	}
+
+	response, err = httpClient.Get(listener.URL + "/article/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	articleBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(string(articleBody), "edit-page-link") {
+		t.Fatalf("authenticated article response = %d %q", response.StatusCode, articleBody)
+	}
+
+	response, err = httpClient.Get(listener.URL + "/_obsite/sources")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourcesBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if !strings.Contains(string(sourcesBody), "draft.md") || !strings.Contains(string(sourcesBody), "article.md") {
+		t.Fatalf("sources body = %s", sourcesBody)
+	}
+
+	response, err = httpClient.Get(listener.URL + "/_obsite/source?path=article.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceBody, _ := io.ReadAll(response.Body)
+	sourceHash := response.Header.Get("X-Obsite-Source-Hash")
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(sourceBody) != "---\ntitle: Article\npublish: true\ntype: doc\n---\nBody\n" || sourceHash == "" {
+		t.Fatalf("source response = %d %q", response.StatusCode, sourceBody)
+	}
+
+	response, err = httpClient.Get(listener.URL + "/_obsite/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionBody, _ = io.ReadAll(response.Body)
+	_ = response.Body.Close()
 	var sessionData struct {
 		CSRF string `json:"csrf"`
 	}
@@ -87,7 +147,28 @@ func TestServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 		t.Fatalf("session JSON = %s; err=%v", sessionBody, err)
 	}
 
-	request, err := http.NewRequest(http.MethodPost, listener.URL+"/_obsite/logout", nil)
+	request, err := http.NewRequest(http.MethodPut, listener.URL+"/_obsite/source?path=article.md", strings.NewReader("---\ntitle: Article\npublish: true\ntype: doc\n---\nChanged\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", listener.URL)
+	request.Header.Set(csrfHeaderName, sessionData.CSRF)
+	request.Header.Set("X-Obsite-Source-Hash", sourceHash)
+	response, err = httpClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		t.Fatalf("source save response = %d %s", response.StatusCode, body)
+	}
+	_ = response.Body.Close()
+	if got, err := os.ReadFile(filepath.Join(vault, "article.md")); err != nil || !strings.Contains(string(got), "Changed") {
+		t.Fatalf("saved source = %q, err=%v", got, err)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, listener.URL+"/_obsite/logout", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

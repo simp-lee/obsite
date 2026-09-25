@@ -37,13 +37,14 @@ func newEditCommand(deps commandDependencies) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if _, err := deps.buildSiteWithOptions(boundary.VaultPath, boundary.OutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()}); err != nil {
+			buildResult, err := deps.buildSiteWithOptions(boundary.VaultPath, boundary.OutputPath, internalbuild.Options{DiagnosticsWriter: cmd.ErrOrStderr()})
+			if err != nil {
 				return fmt.Errorf("build site: %w", err)
 			}
 			if deps.newEditServer == nil {
 				return fmt.Errorf("edit server is unavailable")
 			}
-			srv, err := deps.newEditServer(boundary.VaultPath, boundary.OutputPath, port)
+			srv, err := deps.newEditServer(boundary.VaultPath, boundary.OutputPath, port, buildResult.Catalog)
 			if err != nil {
 				return fmt.Errorf("create edit server: %w", err)
 			}

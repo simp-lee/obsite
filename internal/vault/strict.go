@@ -72,7 +72,7 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 	}
 
 	for _, relPath := range append([]string(nil), scanResult.MarkdownFiles...) {
-		_, content, info, err := internalfsutil.ReadContainedRegularFile(scanResult.VaultPath, relPath)
+		content, info, err := readStrictSource(scanResult, relPath)
 		if err != nil {
 			return StrictFrontmatterResult{}, fmt.Errorf("read %q: %w", relPath, err)
 		}
@@ -111,6 +111,21 @@ func ParseStrictFrontmatter(scanResult ScanResult) (StrictFrontmatterResult, err
 		}
 	}
 	return result, nil
+}
+
+type overlayFileInfo struct{}
+
+func (overlayFileInfo) ModTime() time.Time { return time.Time{} }
+
+func readStrictSource(scanResult ScanResult, relPath string) ([]byte, interface{ ModTime() time.Time }, error) {
+	if data, ok := scanResult.OverlayMarkdown[relPath]; ok && !scanResult.OverlayDeleted[relPath] {
+		return append([]byte(nil), data...), overlayFileInfo{}, nil
+	}
+	_, data, info, err := internalfsutil.ReadContainedRegularFile(scanResult.VaultPath, relPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	return data, info, nil
 }
 
 func splitFrontmatter(content []byte) ([]byte, []byte, int, bool, error) {
