@@ -73,6 +73,27 @@ func TestBuildWithConfigVersionCorrespondenceIgnoresHiddenSectionIdentity(t *tes
 	}
 }
 
+func TestBuildWithConfigRejectsHiddenVersionRoot(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/v1/_index.md", "---\ntitle: Version 1\npublish: false\n---\n")
+
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{{ID: "v1", Label: "Version 1", Source: "v1"}},
+	}}
+	result, err := BuildWithConfig(vault, cfg)
+	if err == nil {
+		t.Fatal("BuildWithConfig() error = nil, want hidden version root rejection")
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Kind == diag.KindVersion && strings.Contains(diagnostic.Message, `version source "docs/v1" must set publish: true`) {
+			return
+		}
+	}
+	t.Fatalf("missing hidden version root diagnostic: %v", result.Diagnostics)
+}
+
 func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\norder: 0\n---\nHome\n")

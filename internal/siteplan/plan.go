@@ -400,8 +400,13 @@ func planVersions(config *model.VersionsConfig, vaultRoot string, sections map[s
 		if _, _, statErr := internalfsutil.InspectContainedDirectory(vaultRoot, fullSource); statErr != nil {
 			record(collector, diag.KindVersion, "obsite.yaml", "version %q source %q: %v", entry.ID, fullSource, statErr)
 		}
-		if _, ok := sections[fullSource]; !ok {
+		if section, ok := sections[fullSource]; !ok {
 			record(collector, diag.KindVersion, sectionSourcePath(fullSource), "version source %q must contain _index.md", fullSource)
+		} else if !section.Publish {
+			// A configured version root is the selector destination for that
+			// entry, so it must be explicitly public even when its ancestor
+			// tree is otherwise valid.
+			record(collector, diag.KindVersion, section.SourcePath, "version source %q must set publish: true", fullSource)
 		}
 		versions = append(versions, &model.Version{ID: entry.ID, Label: entry.Label, Source: fullSource})
 	}
