@@ -341,7 +341,7 @@ func commitSource(vault, relPath, expected string, content []byte, deleting, cre
 			return err
 		}
 		if err := os.Remove(displaced); err != nil {
-			return fmt.Errorf("delete source %q: %w", relPath, err)
+			return errors.Join(fmt.Errorf("delete source %q: %w", relPath, err), restoreMovedSource(displaced, filename))
 		}
 		return nil
 	}
@@ -378,11 +378,10 @@ func commitSource(vault, relPath, expected string, content []byte, deleting, cre
 		return fmt.Errorf("replace source %q: %w", relPath, err)
 	}
 	if err := verifySnapshotBytes(casName, expected, relPath); err != nil {
-		preserveCandidateAndSource(filename, displaced)
-		return err
+		return errors.Join(err, rollbackReplacedSource(filename, displaced, hashForAbsentOrBytes(content), relPath))
 	}
 	if err := os.Remove(displaced); err != nil {
-		return fmt.Errorf("finalize source %q: %w", relPath, err)
+		return errors.Join(fmt.Errorf("finalize source %q: %w", relPath, err), rollbackReplacedSource(filename, displaced, hashForAbsentOrBytes(content), relPath))
 	}
 	return nil
 }
@@ -414,23 +413,27 @@ func preserveMovedSource(displaced, filename string) {
 	_ = os.Remove(displaced)
 }
 
-func preserveCandidateAndSource(filename, displaced string) {
-	candidate, err := os.CreateTemp(filepath.Dir(filename), ".obsite-candidate-*")
+func restoreMovedSource(displaced, filename string) error {
+	if _, err := os.Lstat(filename); err == nil {
+		return fmt.Errorf("source changed before rollback")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(displaced, filename)
+}
+
+func rollbackReplacedSource(filename, displaced, expected, relPath string) error {
+	if actual := currentSourceHashFromPath(filename); actual != expected {
+		return &ConflictError{Path: relPath, Expected: expected, Actual: actual}
+	}
+	candidate, err := moveSourceForCAS(filename)
 	if err != nil {
-		return
+		return err
 	}
-	candidateName := candidate.Name()
-	if err := candidate.Close(); err != nil {
-		_ = os.Remove(candidateName)
-		return
+	if err := restoreMovedSource(displaced, filename); err != nil {
+		return errors.Join(err, restoreMovedSource(candidate, filename))
 	}
-	_ = os.Remove(candidateName)
-	if err := os.Rename(filename, candidateName); err != nil {
-		preserveMovedSource(displaced, filename)
-		return
-	}
-	preserveMovedSource(displaced, filename)
-	_ = os.Remove(candidateName)
+	return os.Remove(candidate)
 }
 
 func createSourceNoReplace(filename, relPath string, content []byte) error {
@@ -583,9 +586,30 @@ func publishOutput(stage, output string) (func() error, func() error, error) {
 		_ = os.RemoveAll(backupRoot)
 		return nil, nil, fmt.Errorf("publish formal output: %w", err)
 	}
+	restorePublishedOutput := func() error {
+		var rollbackErr error
+		if _, err := os.Lstat(output); err == nil {
+			if err := os.RemoveAll(output); err != nil {
+				rollbackErr = err
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			rollbackErr = err
+		}
+		if hadOutput {
+			if _, err := os.Lstat(output); errors.Is(err, os.ErrNotExist) {
+				if err := os.Rename(backup, output); err != nil {
+					rollbackErr = errors.Join(rollbackErr, err)
+				}
+			}
+		}
+		if err := os.RemoveAll(backupRoot); err != nil {
+			rollbackErr = errors.Join(rollbackErr, err)
+		}
+		return rollbackErr
+	}
 	publishedInfo, err := os.Lstat(output)
 	if err != nil {
-		return nil, nil, fmt.Errorf("inspect published formal output: %w", err)
+		return nil, nil, errors.Join(fmt.Errorf("inspect published formal output: %w", err), restorePublishedOutput())
 	}
 	rolledBack := false
 	rollback := func() error {
