@@ -21,6 +21,7 @@ import (
 	"time"
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
+	"github.com/simp-lee/obsite/internal/diag"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
 	"github.com/simp-lee/obsite/internal/model"
 	internalserver "github.com/simp-lee/obsite/internal/server"
@@ -320,7 +321,7 @@ func (s *Server) writeMutationResult(w http.ResponseWriter, result TransactionRe
 	response := map[string]any{"ok": true, "sourceHash": result.SourceHash}
 	if result.Build != nil {
 		response["warningCount"] = result.Build.WarningCount
-		response["diagnostics"] = result.Build.Diagnostics
+		response["diagnostics"] = s.editorDiagnostics(result.Build.Diagnostics)
 	}
 	writeJSON(w, response)
 }
@@ -350,10 +351,55 @@ func (s *Server) writeMutationError(w http.ResponseWriter, err error) {
 	}
 	var buildErr *CandidateBuildError
 	if errors.As(err, &buildErr) && buildErr.Result != nil {
-		writeJSONStatus(w, status, map[string]any{"ok": false, "path": buildErr.Path, "error": err.Error(), "diagnostics": buildErr.Result.Diagnostics})
+		writeJSONStatus(w, status, map[string]any{"ok": false, "path": buildErr.Path, "error": s.editorDiagnosticText(err.Error()), "diagnostics": s.editorDiagnostics(buildErr.Result.Diagnostics)})
 		return
 	}
-	writeJSONStatus(w, status, map[string]any{"ok": false, "error": err.Error()})
+	writeJSONStatus(w, status, map[string]any{"ok": false, "error": s.editorDiagnosticText(err.Error())})
+}
+
+func (s *Server) editorDiagnostics(diagnostics []diag.Diagnostic) []diag.Diagnostic {
+	result := append([]diag.Diagnostic(nil), diagnostics...)
+	root, err := filepath.Abs(s.vault)
+	if err != nil {
+		return result
+	}
+	for index := range result {
+		result[index].Location.Path = editorDiagnosticPath(root, result[index].Location.Path)
+		result[index].Target = editorDiagnosticText(root, result[index].Target)
+		result[index].Message = editorDiagnosticText(root, result[index].Message)
+	}
+	return result
+}
+
+func (s *Server) editorDiagnosticText(value string) string {
+	root, err := filepath.Abs(s.vault)
+	if err != nil {
+		return value
+	}
+	return editorDiagnosticText(root, value)
+}
+
+func editorDiagnosticPath(root, value string) string {
+	if value == "" || !filepath.IsAbs(value) {
+		return filepath.ToSlash(value)
+	}
+	relative, err := filepath.Rel(root, value)
+	if err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(relative)
+	}
+	return filepath.ToSlash(filepath.Base(value))
+}
+
+func editorDiagnosticText(root, value string) string {
+	if value == "" {
+		return value
+	}
+	for _, prefix := range []string{root + string(filepath.Separator), filepath.ToSlash(root) + "/", root} {
+		if prefix != "" {
+			value = strings.ReplaceAll(value, prefix, "")
+		}
+	}
+	return value
 }
 
 func readSourceBody(r *http.Request) ([]byte, error) {

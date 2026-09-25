@@ -1,6 +1,8 @@
 package edit
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -168,6 +170,23 @@ func TestEditServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 		t.Fatalf("saved source = %q, err=%v", got, err)
 	}
 
+	request, err = http.NewRequest(http.MethodPut, listener.URL+"/_obsite/source?path=article.md", strings.NewReader("---\ntitle: Article\npublish: true\ntype: invalid\n---\nRejected\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Origin", listener.URL)
+	request.Header.Set(csrfHeaderName, sessionData.CSRF)
+	request.Header.Set("X-Obsite-Source-Hash", sourceHashForTest([]byte("---\ntitle: Article\npublish: true\ntype: doc\n---\nChanged\n")))
+	response, err = httpClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnosticBody, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode == http.StatusOK || strings.Contains(string(diagnosticBody), vault) || !strings.Contains(string(diagnosticBody), "article.md") {
+		t.Fatalf("diagnostic response = %d %s", response.StatusCode, diagnosticBody)
+	}
+
 	request, err = http.NewRequest(http.MethodPost, listener.URL+"/_obsite/logout", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -196,6 +215,11 @@ func TestEditServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 		t.Fatalf("logout with csrf status = %d", response.StatusCode)
 	}
 	_ = response.Body.Close()
+}
+
+func sourceHashForTest(data []byte) string {
+	hash := sha256.Sum256(data)
+	return hex.EncodeToString(hash[:])
 }
 
 func writeEditFile(t *testing.T, root, rel, content string) {
