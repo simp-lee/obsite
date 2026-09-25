@@ -64,6 +64,9 @@ func newServeCommand(deps commandDependencies) *cobra.Command {
 		Short: "Serve a generated site for local preview",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := validateCommandPort(port, cmd.Flags().Changed("port")); err != nil {
+				return err
+			}
 			boundary, err := resolveVaultOutputPaths(vaultPath, outputPath)
 			if err != nil {
 				return err

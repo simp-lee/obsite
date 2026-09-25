@@ -1404,7 +1404,7 @@ func timelineRoutes(rawPath string, pageSize, total int) []string {
 }
 
 func reservedRoutes() map[string]struct{} {
-	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output", "/.obsite-cache/", "/_popover/"}
+	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output", "/.obsite-cache/", "/_popover/", "/_obsite/"}
 	result := make(map[string]struct{}, len(values))
 	for _, v := range values {
 		result[v] = struct{}{}

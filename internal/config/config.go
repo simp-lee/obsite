@@ -46,6 +46,7 @@ type fileConfig struct {
 	Related     relatedFileConfig    `yaml:"related"`
 	RSS         enabledFileConfig    `yaml:"rss"`
 	Timeline    timelineFileConfig   `yaml:"timeline"`
+	Edit        *editFileConfig      `yaml:"edit"`
 }
 
 type navigationFileItem struct {
@@ -87,6 +88,11 @@ type relatedFileConfig struct {
 type timelineFileConfig struct {
 	Enabled *bool  `yaml:"enabled"`
 	Path    string `yaml:"path"`
+}
+
+type editFileConfig struct {
+	Username     string `yaml:"username"`
+	PasswordHash string `yaml:"passwordHash"`
 }
 
 // Defaults returns the single canonical product default set.
@@ -205,6 +211,28 @@ func NormalizeSiteConfig(cfg model.SiteConfig) (model.SiteConfig, error) {
 	return normalizeAndValidate(cfg)
 }
 
+// ValidateConfigBytes parses and normalizes a strict obsite.yaml document
+// without discovering vault files. It is used before an atomic config write.
+func ValidateConfigBytes(data []byte) (model.SiteConfig, error) {
+	if err := validateStrictConfigDocument(data); err != nil {
+		return model.SiteConfig{}, err
+	}
+	parsed, err := parseFileConfig(data)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	lines, err := configFieldLines(data)
+	if err != nil {
+		return model.SiteConfig{}, err
+	}
+	if err := validateParsedFileConfig(parsed); err != nil {
+		return model.SiteConfig{}, configErrorWithLine(err, lines)
+	}
+	cfg := applyFileConfig(Defaults(), parsed)
+	cfg.FieldLines = lines
+	return normalizeAndValidate(cfg)
+}
+
 func parseFileConfig(data []byte) (fileConfig, error) {
 	if err := validateYAMLStructure(data); err != nil {
 		return fileConfig{}, err
@@ -301,6 +329,11 @@ func validateParsedFileConfig(parsed fileConfig) error {
 	if parsed.Related.Count != nil && (*parsed.Related.Count < 1 || *parsed.Related.Count > 20) {
 		return fmt.Errorf("related.count must be between 1 and 20")
 	}
+	if parsed.Edit != nil {
+		if err := validateEditConfig(parsed.Edit.Username, parsed.Edit.PasswordHash); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -363,6 +396,11 @@ func applyFileConfig(cfg model.SiteConfig, parsed fileConfig) model.SiteConfig {
 	}
 	if value := strings.TrimSpace(parsed.Timeline.Path); value != "" {
 		cfg.Timeline.Path = value
+	}
+	if parsed.Edit != nil {
+		cfg.Edit = &model.EditConfig{Username: strings.TrimSpace(parsed.Edit.Username), PasswordHash: strings.TrimSpace(parsed.Edit.PasswordHash)}
+	} else {
+		cfg.Edit = nil
 	}
 	return cfg
 }
@@ -449,6 +487,9 @@ func configDocumentSchema() *configYAMLSchema {
 		"rss": enabled(),
 		"timeline": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
 			"enabled": boolValue, "path": stringValue,
+		}},
+		"edit": {kind: yaml.MappingNode, typeName: "mapping", fields: map[string]*configYAMLSchema{
+			"username": stringValue, "passwordHash": stringValue,
 		}},
 	}}
 }
@@ -586,6 +627,13 @@ func normalizeAndValidate(cfg model.SiteConfig) (model.SiteConfig, error) {
 		return model.SiteConfig{}, err
 	}
 	cfg.Timeline.Path = timelinePath
+	if cfg.Edit != nil {
+		if err := validateEditConfig(cfg.Edit.Username, cfg.Edit.PasswordHash); err != nil {
+			return model.SiteConfig{}, err
+		}
+		cfg.Edit.Username = strings.TrimSpace(cfg.Edit.Username)
+		cfg.Edit.PasswordHash = strings.TrimSpace(cfg.Edit.PasswordHash)
+	}
 	cfg.Versions, err = NormalizeVersionsConfig(cfg.Versions)
 	if err != nil {
 		return model.SiteConfig{}, err

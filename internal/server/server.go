@@ -132,7 +132,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if requestPath == "" {
 		requestPath = r.URL.Path
 	}
-	if cleanPath, _ := cleanRequestPath(requestPath); cleanPath == s.externalOutputPath(liveReloadEndpoint) && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
+	cleanPath, _ := cleanRequestPath(requestPath)
+	if isEditControlPath(cleanPath) {
+		http.NotFound(w, r)
+		return
+	}
+	if cleanPath == s.externalOutputPath(liveReloadEndpoint) && s.liveReload != nil && shouldServeLiveReloadRequest(r) {
 		s.serveLiveReload(w, r)
 		return
 	}
@@ -829,6 +834,10 @@ func canonicalPreviewOutputPath(decodedPath string, directory bool) string {
 		return ensureDirectoryPath(encoded)
 	}
 	return encoded
+}
+
+func isEditControlPath(cleanPath string) bool {
+	return cleanPath == "/_obsite" || strings.HasPrefix(cleanPath, "/_obsite/")
 }
 
 func cleanRequestPath(requestPath string) (cleanPath string, hasTrailingSlash bool) {

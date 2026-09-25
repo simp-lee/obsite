@@ -24,6 +24,7 @@ type SiteConfig struct {
 	Related            RelatedConfig
 	RSS                RSSConfig
 	Timeline           TimelineConfig
+	Edit               *EditConfig
 
 	RuntimeJSURL string
 	// FieldLines preserves YAML source locations for semantic diagnostics.
@@ -42,6 +43,13 @@ type NavigationItem struct {
 type SourceConfig struct {
 	EditURL string
 	ViewURL string
+}
+
+// EditConfig is the optional single-account editor credential configuration.
+// PasswordHash contains only a PHC Argon2id password hash.
+type EditConfig struct {
+	Username     string
+	PasswordHash string
 }
 
 // VersionsConfig describes an explicitly configured set of document versions.

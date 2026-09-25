@@ -90,6 +90,23 @@ func TestNewDefaultsZeroPortToDefaultPort(t *testing.T) {
 	}
 }
 
+func TestServerKeepsReservedEditControlUnavailable(t *testing.T) {
+	outputPath := t.TempDir()
+	writeServerTestFile(t, outputPath, "index.html", "home")
+	writeServerTestFile(t, outputPath, "_obsite/login/index.html", "must not be served")
+
+	srv, err := New(outputPath, DefaultPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/_obsite/login/", nil)
+	recorder := httptest.NewRecorder()
+	srv.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("reserved edit route status = %d, want %d", recorder.Code, http.StatusNotFound)
+	}
+}
+
 func TestServerServesCleanURLsAndCustom404(t *testing.T) {
 	t.Parallel()
 
