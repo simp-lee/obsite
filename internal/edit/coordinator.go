@@ -207,12 +207,10 @@ func (coordinator *Coordinator) mutate(relPath, expectedHash string, content []b
 		actualAfterCommit = hashForAbsentOrBytes(currentAfterCommit)
 	}
 	if readErr != nil {
-		_ = rollbackOutput()
-		return TransactionResult{}, errors.Join(rollbackSource(), readErr)
+		return TransactionResult{}, errors.Join(rollbackOutput(), rollbackSource(), readErr)
 	}
 	if actualAfterCommit != committedHash {
-		_ = rollbackOutput()
-		return TransactionResult{}, errors.Join(rollbackSource(), &ConflictError{Path: relPath, Expected: committedHash, Actual: actualAfterCommit})
+		return TransactionResult{}, errors.Join(rollbackOutput(), rollbackSource(), &ConflictError{Path: relPath, Expected: committedHash, Actual: actualAfterCommit})
 	}
 	if err := verifyCommittedSource(coordinator.vault, relPath, committedHash); err != nil {
 		return TransactionResult{}, errors.Join(rollbackOutput(), rollbackSource(), err)
