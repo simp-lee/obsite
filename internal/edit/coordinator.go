@@ -111,7 +111,10 @@ func (coordinator *Coordinator) mutate(relPath, expectedHash string, content []b
 	}
 	entry := catalogEntry(coordinator.catalog, relPath)
 	if creating {
-		if entry != nil || path.Base(relPath) == "_index.md" {
+		if !strings.EqualFold(path.Ext(relPath), ".md") {
+			return TransactionResult{}, fmt.Errorf("source path %q must be a contained normalized Markdown path", relPath)
+		}
+		if entry != nil || strings.EqualFold(path.Base(relPath), "_index.md") {
 			return TransactionResult{}, fmt.Errorf("cannot create existing or section source %q", relPath)
 		}
 		if err := coordinator.validateCreateParent(relPath); err != nil {
@@ -121,6 +124,10 @@ func (coordinator *Coordinator) mutate(relPath, expectedHash string, content []b
 		if entry == nil || (entry.Kind != "article" && entry.Kind != "section") {
 			return TransactionResult{}, fmt.Errorf("source %q is not an editable Markdown source", relPath)
 		}
+		// The catalog is the source of truth for the exact vault-relative path.
+		// In particular, do not reconstruct or normalize its extension: the
+		// scanner accepts Markdown extensions case-insensitively.
+		relPath = entry.RelPath
 		if deleting && entry.Kind != "article" {
 			return TransactionResult{}, fmt.Errorf("cannot delete section source %q", relPath)
 		}
@@ -238,7 +245,7 @@ func (coordinator *Coordinator) validateCreateParent(relPath string) error {
 }
 
 func validateSourceRelPath(relPath string) error {
-	if strings.TrimSpace(relPath) == "" || strings.Contains(relPath, `\`) || strings.HasPrefix(relPath, "/") || path.Clean(relPath) != relPath || strings.HasPrefix(relPath, "../") || path.Ext(relPath) != ".md" || strings.Contains(relPath, "?") || strings.Contains(relPath, "#") {
+	if strings.TrimSpace(relPath) == "" || strings.Contains(relPath, `\`) || strings.HasPrefix(relPath, "/") || path.Clean(relPath) != relPath || strings.HasPrefix(relPath, "../") || strings.Contains(relPath, "?") || strings.Contains(relPath, "#") {
 		return fmt.Errorf("source path %q must be a contained normalized Markdown path", relPath)
 	}
 	for _, segment := range strings.Split(relPath, "/") {
@@ -578,11 +585,31 @@ func publishOutput(stage, output string) (func() error, func() error, error) {
 		}
 	}
 	if err := os.Rename(stage, output); err != nil {
+		publishErr := fmt.Errorf("publish formal output: %w", err)
+		var restoreErr error
+		restored := !hadOutput
 		if hadOutput {
-			_ = os.Rename(backup, output)
+			if _, statErr := os.Lstat(output); statErr == nil {
+				restoreErr = fmt.Errorf("formal output changed while restoring after failed publication")
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				restoreErr = fmt.Errorf("inspect formal output before restore: %w", statErr)
+			} else if renameErr := os.Rename(backup, output); renameErr != nil {
+				restoreErr = fmt.Errorf("restore formal output: %w", renameErr)
+			} else if restoredInfo, inspectErr := os.Lstat(output); inspectErr != nil {
+				restoreErr = fmt.Errorf("confirm restored formal output: %w", inspectErr)
+			} else if !os.SameFile(outputInfo, restoredInfo) {
+				restoreErr = fmt.Errorf("formal output restore identity changed")
+			} else {
+				restored = true
+			}
 		}
-		_ = os.RemoveAll(backupRoot)
-		return nil, nil, fmt.Errorf("publish formal output: %w", err)
+		var cleanupErr error
+		if restored {
+			if err := os.RemoveAll(backupRoot); err != nil {
+				cleanupErr = fmt.Errorf("cleanup formal output backup: %w", err)
+			}
+		}
+		return nil, nil, errors.Join(publishErr, restoreErr, cleanupErr)
 	}
 	restorePublishedOutput := func() error {
 		var rollbackErr error

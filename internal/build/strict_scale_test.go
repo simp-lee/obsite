@@ -9,11 +9,10 @@ import (
 	"github.com/simp-lee/obsite/internal/render"
 )
 
-func TestStrictBuildSidebarFallbackHTMLGrowthIsLinear(t *testing.T) {
-	buildFallbackBytes := func(articleCount int) int {
-		t.Helper()
-		vault := t.TempDir()
-		writeStrictFile(t, vault, "obsite.yaml", `title: Sidebar Scale
+func TestStrictBuildSidebarFallbackHTMLContainsCompleteTree(t *testing.T) {
+	const articleCount = 8
+	vault := t.TempDir()
+	writeStrictFile(t, vault, "obsite.yaml", `title: Sidebar Scale
 baseURL: https://scale.example/
 navigation: []
 sidebar:
@@ -27,40 +26,37 @@ rss:
 timeline:
   enabled: false
 `)
-		writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
-		for index := 0; index < articleCount; index++ {
-			name := fmt.Sprintf("article-%03d", index)
-			writeStrictFile(t, vault, name+".md", fmt.Sprintf("---\ntitle: Article %03d\npublish: true\ntype: page\n---\nBody\n", index))
-		}
-
-		output := filepath.Join(t.TempDir(), "site")
-		if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
-			t.Fatalf("BuildWithOptions(%d articles) error = %v", articleCount, err)
-		}
-		total := 0
-		for index := -1; index < articleCount; index++ {
-			route := "index.html"
-			if index >= 0 {
-				route = fmt.Sprintf("article-%03d/index.html", index)
-			}
-			page := string(readBuildOutputFile(t, output, route))
-			start := strings.Index(page, "data-sidebar-root")
-			if start < 0 {
-				t.Fatalf("page %q has no Sidebar fallback", route)
-			}
-			end := strings.Index(page[start:], "</nav>")
-			if end < 0 {
-				t.Fatalf("page %q has an unterminated Sidebar fallback", route)
-			}
-			total += end
-		}
-		return total
+	writeStrictFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	for index := 0; index < articleCount; index++ {
+		name := fmt.Sprintf("article-%03d", index)
+		writeStrictFile(t, vault, name+".md", fmt.Sprintf("---\ntitle: Article %03d\npublish: true\ntype: page\n---\nBody\n", index))
 	}
 
-	small := buildFallbackBytes(8)
-	large := buildFallbackBytes(16)
-	if large >= small*3 {
-		t.Fatalf("Sidebar fallback HTML grew superlinearly: 8 articles = %d bytes, 16 articles = %d bytes", small, large)
+	output := filepath.Join(t.TempDir(), "site")
+	if _, err := BuildWithOptions(vault, output, Options{}); err != nil {
+		t.Fatalf("BuildWithOptions() error = %v", err)
+	}
+	for index := -1; index < articleCount; index++ {
+		route := "index.html"
+		if index >= 0 {
+			route = fmt.Sprintf("article-%03d/index.html", index)
+		}
+		page := string(readBuildOutputFile(t, output, route))
+		start := strings.Index(page, "data-sidebar-root")
+		if start < 0 {
+			t.Fatalf("page %q has no Sidebar fallback", route)
+		}
+		end := strings.Index(page[start:], "</nav>")
+		if end < 0 {
+			t.Fatalf("page %q has an unterminated Sidebar fallback", route)
+		}
+		fallback := page[start : start+end]
+		for article := 0; article < articleCount; article++ {
+			want := fmt.Sprintf("Article %03d", article)
+			if !strings.Contains(fallback, want) {
+				t.Fatalf("page %q Sidebar fallback missing complete-tree entry %q: %s", route, want, fallback)
+			}
+		}
 	}
 }
 

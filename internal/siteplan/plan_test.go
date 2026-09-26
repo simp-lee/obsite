@@ -94,6 +94,28 @@ func TestBuildWithConfigRejectsHiddenVersionRoot(t *testing.T) {
 	t.Fatalf("missing hidden version root diagnostic: %v", result.Diagnostics)
 }
 
+func TestBuildWithConfigRequiresIntermediateVersionContainerIndex(t *testing.T) {
+	vault := t.TempDir()
+	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/v1/guide/_index.md", "---\ntitle: Guide\npublish: true\n---\n")
+	writePlanFile(t, vault, "docs/v1/guide/article.md", "---\ntitle: Article\npublish: true\ntype: doc\n---\n")
+	cfg := model.SiteConfig{Title: "Site", BaseURL: "https://example.test/", Versions: &model.VersionsConfig{
+		Root: "docs", Default: "v1", Entries: []model.VersionEntry{{ID: "v1", Label: "Version 1", Source: "v1/guide"}},
+	}}
+
+	result, err := BuildWithConfig(vault, cfg)
+	if err == nil {
+		t.Fatal("BuildWithConfig() error = nil, want missing intermediate section index rejection")
+	}
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Kind == diag.KindSection && diagnostic.Location.Path == "docs/v1/_index.md" && strings.Contains(diagnostic.Message, "missing required _index.md") {
+			return
+		}
+	}
+	t.Fatalf("missing intermediate section index diagnostic: %v", result.Diagnostics)
+}
+
 func TestBuildWithConfigPlansSectionsAndDocumentOrder(t *testing.T) {
 	vault := t.TempDir()
 	writePlanFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\norder: 0\n---\nHome\n")

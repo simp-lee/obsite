@@ -26,22 +26,65 @@ async function waitForHTTP(url) {
   while (Date.now() < deadline) {
     try {
       const response = await fetch(url);
-      if (response.status < 500) return;
+      if (response.status < 500) return response;
     } catch {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   throw new Error(`timed out waiting for ${url}`);
 }
 
-test.beforeEach(async () => {
-  tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'obsite-edit-e2e-'));
-  binaryPath = path.join(tempRoot, process.platform === 'win32' ? 'obsite.exe' : 'obsite');
-  execFileSync('go', ['build', '-o', binaryPath, './cmd/obsite'], {cwd: repoRoot});
+async function waitForExit(process) {
+  if (process.exitCode !== null) return;
+  await new Promise(resolve => process.once('exit', resolve));
+}
+
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+async function login(page) {
+  await page.goto(`${origin}/_obsite/login`);
+  await page.locator('input[name="username"]').fill('admin');
+  await page.locator('input[name="password"]').fill('secret');
+  await page.getByRole('button', {name: 'Log in'}).click();
+  await expect(page.locator('body')).toContainText('authenticated');
+}
+
+async function session(context) {
+  const response = await context.request.get(`${origin}/_obsite/session`);
+  expect(response.status()).toBe(200);
+  return response.json();
+}
+
+async function source(context, relPath) {
+  const response = await context.request.get(`${origin}/_obsite/source?path=${encodeURIComponent(relPath)}`);
+  return {
+    response,
+    body: await response.text(),
+    hash: response.headers()['x-obsite-source-hash'] || ''
+  };
+}
+
+async function mutate(context, method, url, csrf, hash, data, contentType = '') {
+  const headers = {
+    Origin: origin,
+    'X-Obsite-CSRF': csrf,
+    'X-Obsite-Source-Hash': hash
+  };
+  if (contentType) headers['Content-Type'] = contentType;
+  return context.request.fetch(`${origin}${url}`, {method, headers, data});
+}
+
+async function startConfiguredEditor() {
   vault = path.join(tempRoot, 'vault');
   await fs.mkdir(vault);
   await fs.writeFile(path.join(vault, 'obsite.yaml'), `title: Edit E2E\nbaseURL: http://127.0.0.1/\nnavigation: []\nedit:\n  username: admin\n  passwordHash: ${passwordHash}\n`);
   await fs.writeFile(path.join(vault, '_index.md'), '---\ntitle: Home\npublish: true\n---\nHome\n');
-  await fs.writeFile(path.join(vault, 'article.md'), '---\ntitle: Article\npublish: true\ntype: doc\n---\nOriginal\n');
+  await fs.writeFile(path.join(vault, 'guide.md'), '---\ntitle: Guide\npublish: true\ntype: doc\n---\nGuide\n');
+  await fs.mkdir(path.join(vault, 'section'));
+  await fs.writeFile(path.join(vault, 'section', '_index.md'), '---\ntitle: Section\npublish: true\n---\nSection\n');
+  await fs.writeFile(path.join(vault, 'article.md'), '---\n# preserve this comment\ntitle: "Article"\npublish: true\ntype: doc\n---\n\nOriginal\n');
+  await fs.writeFile(path.join(vault, 'draft.md'), '---\ntitle: Draft\npublish: false\ntype: doc\n---\nPrivate\n');
   const port = await freePort();
   origin = `http://127.0.0.1:${port}`;
   const configPath = path.join(vault, 'obsite.yaml');
@@ -49,6 +92,13 @@ test.beforeEach(async () => {
   await fs.writeFile(configPath, config);
   child = spawn(binaryPath, ['edit', '--vault', vault, '--port', String(port)], {cwd: repoRoot, stdio: 'ignore'});
   await waitForHTTP(`${origin}/_obsite/login`);
+}
+
+test.beforeEach(async () => {
+  tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'obsite-edit-e2e-'));
+  binaryPath = path.join(tempRoot, process.platform === 'win32' ? 'obsite.exe' : 'obsite');
+  execFileSync('go', ['build', '-o', binaryPath, './cmd/obsite'], {cwd: repoRoot});
+  await startConfiguredEditor();
 });
 
 test.afterEach(async () => {
@@ -57,7 +107,24 @@ test.afterEach(async () => {
   child = undefined;
 });
 
-test('offline edit journey keeps serve public and saves complete Markdown', async ({browser}) => {
+test('anonymous public pages remain usable without JavaScript or external network', async ({browser}) => {
+  const context = await browser.newContext({javaScriptEnabled: false});
+  const blocked = [];
+  await context.route('**/*', async route => {
+    if (new URL(route.request().url()).origin === origin) await route.continue();
+    else { blocked.push(route.request().url()); await route.abort('blockedbyclient'); }
+  });
+  const page = await context.newPage();
+  await page.goto(`${origin}/article/`);
+  await expect(page.locator('body')).toContainText('Original');
+  await expect(page.locator('.edit-page-link')).toHaveCount(0);
+  expect(blocked).toEqual([]);
+  const sourceResponse = await context.request.get(`${origin}/_obsite/source?path=article.md`);
+  expect(sourceResponse.status()).toBe(401);
+  await context.close();
+});
+
+test('authenticated catalog maps articles, sections, drafts, and preserves full Markdown on save', async ({browser}) => {
   const context = await browser.newContext();
   const blocked = [];
   await context.route('**/*', async route => {
@@ -67,24 +134,170 @@ test('offline edit journey keeps serve public and saves complete Markdown', asyn
   const page = await context.newPage();
   await page.goto(`${origin}/article/`);
   await expect(page.locator('.edit-page-link')).toHaveCount(0);
-  expect(await (await context.request.get(`${origin}/_obsite/source?path=article.md`)).status()).toBe(401);
+  await login(page);
 
-  await page.goto(`${origin}/_obsite/login`);
-  await page.locator('input[name="username"]').fill('admin');
-  await page.locator('input[name="password"]').fill('secret');
-  await page.getByRole('button', {name: 'Log in'}).click();
-  await page.goto(`${origin}/_obsite/session`);
-  await expect(page.locator('body')).toContainText('"authenticated":true');
-  await page.goto(`${origin}/article/?edit=1`);
-  await expect(page.locator('.edit-page-link')).toBeVisible();
+  await page.goto(`${origin}/article/`);
+  await expect(page.locator('.edit-page-link')).toHaveAttribute('href', /path=article\.md/);
+  await page.goto(`${origin}/section/`);
+  await expect(page.locator('.edit-page-link')).toHaveAttribute('href', /path=section%2F_index\.md/);
   await page.goto(`${origin}/_obsite/editor?path=article.md`);
-  await expect(page.locator('textarea')).toHaveValue(/Original/);
-  await expect(page.getByRole('button', {name: 'Save'})).toBeVisible();
-  await page.locator('textarea').fill('---\ntitle: Article\npublish: true\ntype: doc\n---\nChanged\n');
+  await expect(page.locator('textarea')).toHaveValue(/preserve this comment/);
+  await expect(page.locator('select option')).toHaveCount(5);
+  await expect(page.locator('select')).toContainText('[draft] draft.md');
+
+  const updated = '---\n# preserve this comment\ntitle: "Article"\npublish: true\ntype: doc\n---\n\nChanged from editor\n';
+  await page.locator('textarea').fill(updated);
   await page.getByRole('button', {name: 'Save'}).click();
   await expect(page.locator('#status')).toContainText('Saved and rebuilt');
+  const saved = await fs.readFile(path.join(vault, 'article.md'), 'utf8');
+  expect(saved).toBe(updated);
   await page.goto(`${origin}/article/`);
-  await expect(page.locator('body')).toContainText('Changed');
+  await expect(page.locator('body')).toContainText('Changed from editor');
   expect(blocked).toEqual([]);
   await context.close();
+});
+
+test('browser create defaults to a private draft, rejects bad posts, and deletes after confirmation', async ({browser}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page);
+  await page.goto(`${origin}/_obsite/editor?path=article.md`);
+
+  const prompts = ['new-browser.md', 'Browser draft', 'doc'];
+  const handlePrompts = async dialog => {
+    expect(dialog.type()).toBe('prompt');
+    await dialog.accept(prompts.shift());
+  };
+  page.on('dialog', handlePrompts);
+  await page.getByRole('button', {name: 'New article'}).click();
+  await expect.poll(async () => (await fs.access(path.join(vault, 'new-browser.md')).then(() => true).catch(() => false))).toBe(true);
+  const draft = await fs.readFile(path.join(vault, 'new-browser.md'), 'utf8');
+  expect(draft).toBe('---\ntitle: "Browser draft"\npublish: false\ntype: doc\n---\n\n');
+  const draftPage = await context.request.get(`${origin}/new-browser/`);
+  expect(draftPage.status()).toBe(404);
+  expect(await draftPage.text()).not.toContain('Browser draft');
+
+  page.off('dialog', handlePrompts);
+  await page.goto(`${origin}/_obsite/editor?path=new-browser.md`);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', {name: 'Delete article'}).click();
+  await expect.poll(async () => (await fs.access(path.join(vault, 'new-browser.md')).then(() => true).catch(() => false))).toBe(false);
+  expect((await context.request.get(`${origin}/new-browser/`)).status()).toBe(404);
+
+  const csrf = (await session(context)).csrf;
+  const badPost = await mutate(context, 'POST', '/_obsite/source', csrf, 'absent', new URLSearchParams({path: 'missing-date.md', title: 'Bad post', type: 'post'}).toString(), 'application/x-www-form-urlencoded');
+  expect(badPost.status()).toBe(400);
+  expect(await badPost.text()).toContain('date is required');
+  await context.close();
+});
+
+test('failed builds and stale hashes are visible and leave source and output unchanged', async ({browser}) => {
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  await login(page);
+  const before = await source(context, 'article.md');
+  const beforePage = await context.request.get(`${origin}/article/`);
+  const beforeHTML = await beforePage.text();
+
+  await page.goto(`${origin}/_obsite/editor?path=article.md`);
+  await page.locator('textarea').fill('---\ntitle: Broken\npublish: true\ntype: invalid\n---\nFailure\n');
+  await page.getByRole('button', {name: 'Save'}).click();
+  await expect(page.locator('#status')).toContainText('Save failed');
+  const afterFailure = await source(context, 'article.md');
+  expect(afterFailure.body).toBe(before.body);
+  expect((await (await context.request.get(`${origin}/article/`)).text())).toBe(beforeHTML);
+
+  const external = '---\ntitle: External\npublish: true\ntype: doc\n---\nExternal\n';
+  await fs.writeFile(path.join(vault, 'article.md'), external);
+  const stale = await mutate(context, 'PUT', '/_obsite/source?path=article.md', (await session(context)).csrf, before.hash, 'stale');
+  expect(stale.status()).toBe(409);
+  expect(await stale.text()).toContain('source conflict');
+  expect(await fs.readFile(path.join(vault, 'article.md'), 'utf8')).toBe(external);
+  await context.close();
+});
+
+test('successful edit sends one live reload and serve remains read-only', async ({browser}) => {
+  const context = await browser.newContext();
+  const publicPage = await context.newPage();
+  await publicPage.goto(`${origin}/article/`);
+  await expect(publicPage.locator('body')).toContainText('Original');
+
+  const editorPage = await context.newPage();
+  await login(editorPage);
+  await editorPage.goto(`${origin}/_obsite/editor?path=article.md`);
+  await editorPage.locator('textarea').fill('---\ntitle: Article\npublish: true\ntype: doc\n---\nReloaded\n');
+  const navigations = [];
+  publicPage.on('framenavigated', frame => {
+    if (frame === publicPage.mainFrame()) navigations.push(frame.url());
+  });
+  await editorPage.getByRole('button', {name: 'Save'}).click();
+  await expect(editorPage.locator('#status')).toContainText('Saved and rebuilt');
+  await expect.poll(() => navigations.length, {timeout: 5_000}).toBe(1);
+  await expect(publicPage.locator('body')).toContainText('Reloaded');
+
+  const servePort = await freePort();
+  const serveOrigin = `http://127.0.0.1:${servePort}`;
+  const readOnly = spawn(binaryPath, ['serve', '--vault', vault, '--output', path.join(vault, 'public'), '--port', String(servePort)], {cwd: repoRoot, stdio: 'ignore'});
+  try {
+    await waitForHTTP(`${serveOrigin}/article/`);
+    const control = await fetch(`${serveOrigin}/_obsite/login`);
+    expect(control.status).toBe(404);
+    const sourceResponse = await fetch(`${serveOrigin}/_obsite/source?path=article.md`);
+    expect(sourceResponse.status).toBe(404);
+    const servedPage = await (await fetch(`${serveOrigin}/article/`)).text();
+    expect(servedPage).not.toContain('edit-page-link');
+  } finally {
+    if (!readOnly.killed) readOnly.kill('SIGTERM');
+    await waitForExit(readOnly);
+  }
+  await context.close();
+});
+
+test('edit setup initializes one account and failed setup does not write', async () => {
+  test.skip(process.platform !== 'linux', 'the interactive setup check uses a Linux pseudo-terminal');
+  try {
+    execFileSync('script', ['--version'], {stdio: 'ignore'});
+  } catch {
+    test.skip(true, 'script is required for the interactive setup check');
+  }
+  const setupVault = path.join(tempRoot, 'setup-vault');
+  await fs.mkdir(setupVault);
+  const config = 'title: Setup\nbaseURL: https://example.test/\nnavigation: []\n';
+  await fs.writeFile(path.join(setupVault, 'obsite.yaml'), config);
+  await fs.writeFile(path.join(setupVault, '_index.md'), '---\ntitle: Home\npublish: true\n---\nHome\n');
+  const setupOutput = execFileSync('script', ['-qef', '--echo', 'never', '-c', `${shellQuote(binaryPath)} edit --setup --vault ${shellQuote(setupVault)}`, '/dev/null'], {input: 'admin\nsecret\n', encoding: 'utf8'});
+  expect(setupOutput).not.toContain('secret');
+  const configured = await fs.readFile(path.join(setupVault, 'obsite.yaml'), 'utf8');
+  expect(configured).toContain('username: "admin"');
+  expect(configured).toContain('passwordHash: $argon2id$');
+
+  const before = configured;
+  let failed = false;
+  try {
+    execFileSync(binaryPath, ['edit', '--setup', '--vault', setupVault], {input: 'other\nother\n', encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe']});
+  } catch (error) {
+    failed = true;
+    expect(`${error.stdout || ''}${error.stderr || ''}`).toContain('already configured');
+  }
+  expect(failed).toBe(true);
+  expect(await fs.readFile(path.join(setupVault, 'obsite.yaml'), 'utf8')).toBe(before);
+});
+
+test('edit startup fails before listening when the account is missing', async () => {
+  const missingVault = path.join(tempRoot, 'missing-account');
+  await fs.mkdir(missingVault);
+  await fs.writeFile(path.join(missingVault, 'obsite.yaml'), 'title: Missing\nbaseURL: https://example.test/\nnavigation: []\n');
+  await fs.writeFile(path.join(missingVault, '_index.md'), '---\ntitle: Home\npublish: true\n---\nHome\n');
+  const port = await freePort();
+  const failed = spawn(binaryPath, ['edit', '--vault', missingVault, '--port', String(port)], {cwd: repoRoot, stdio: ['ignore', 'pipe', 'pipe']});
+  let stdout = '';
+  let stderr = '';
+  failed.stdout.on('data', data => { stdout += data; });
+  failed.stderr.on('data', data => { stderr += data; });
+  await waitForExit(failed);
+  expect(failed.exitCode).not.toBe(0);
+  expect(`${stdout}${stderr}`).toContain('edit.username and edit.passwordHash');
+  await expect.poll(async () => {
+    try { return (await fetch(`http://127.0.0.1:${port}/`)).status; } catch { return 0; }
+  }).toBe(0);
 });

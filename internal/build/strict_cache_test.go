@@ -1,9 +1,12 @@
 package build
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/simp-lee/obsite/internal/model"
 )
 
 func TestStrictCacheManifestSeparatesInputsFromOutputs(t *testing.T) {
@@ -69,6 +72,83 @@ func TestStrictCacheTracksRecursiveCustomCSSDependencies(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(output, filepath.FromSlash(oldNested))); !os.IsNotExist(err) {
 		t.Fatalf("stale transformed stylesheet remains after rebuild: %v", err)
+	}
+}
+
+func TestStrictCacheHTMLConfigScopesPageDependencies(t *testing.T) {
+	plan := &model.SitePlan{
+		VaultPath: t.TempDir(),
+		Config: model.SiteConfig{
+			Title:    "Cache scope",
+			BaseURL:  "https://example.test/",
+			Language: "en",
+			Source:   model.SourceConfig{EditURL: "https://edit.example/{path}"},
+			Related:  model.RelatedConfig{Enabled: true, Count: 3},
+			RSS:      model.RSSConfig{Enabled: true},
+		},
+	}
+	section := &model.Section{
+		RelPath: "other", SourcePath: "other/_index.md", Route: "/other/", Title: "Other",
+		EffectivePublish: true,
+	}
+	article := &model.Note{
+		RelPath: "other/article.md", Route: "/other/article/", SectionPath: "other",
+		Frontmatter: model.Frontmatter{Title: "Article"},
+	}
+	sectionInput := func() strictCacheHTMLInput {
+		return strictCacheSectionPageInput(plan, section, "lookup", nil)
+	}
+	articleInput := func() strictCacheHTMLInput {
+		return strictCacheArticlePageInput(plan, article, section, nil, nil, 1, 1, nil, nil, "lookup", nil)
+	}
+	tagInput := func() strictCacheHTMLInput {
+		return strictCacheHTMLBase(plan, "/tags/topic/", "Tag: topic", "", "", "", true)
+	}
+	marshal := func(value any) []byte {
+		data, err := json.Marshal(value)
+		if err != nil {
+			t.Fatalf("marshal cache input: %v", err)
+		}
+		return data
+	}
+
+	beforeSection, beforeArticle, beforeTag := marshal(sectionInput()), marshal(articleInput()), marshal(tagInput())
+	plan.Config.Source.ViewURL = "https://view.example/{path}"
+	afterSection, afterArticle, afterTag := marshal(sectionInput()), marshal(articleInput()), marshal(tagInput())
+	if string(beforeSection) == string(afterSection) || string(beforeArticle) == string(afterArticle) {
+		t.Fatal("source URL change did not invalidate source-bearing pages")
+	}
+	if string(beforeTag) != string(afterTag) {
+		t.Fatal("source URL change invalidated a page without source links")
+	}
+
+	versionRoot := &model.Section{RelPath: "docs/v1", Route: "/docs/v1/", EffectivePublish: true}
+	plan.Versions = []*model.Version{{ID: "v1", Label: "Version 1", Root: versionRoot}}
+	versionArticle := *article
+	versionArticle.VersionID = "v1"
+	versionArticleInput := func() strictCacheHTMLInput {
+		return strictCacheArticlePageInput(plan, &versionArticle, section, nil, nil, 1, 1, nil, nil, "lookup", nil)
+	}
+	unrelatedSectionBefore := marshal(sectionInput())
+	versionArticleBefore := marshal(versionArticleInput())
+	plan.Versions[0].Label = "Renamed version"
+	if string(unrelatedSectionBefore) != string(marshal(sectionInput())) {
+		t.Fatal("unrelated version change invalidated a section without version output")
+	}
+	if string(versionArticleBefore) == string(marshal(versionArticleInput())) {
+		t.Fatal("version change did not invalidate a version page")
+	}
+
+	beforeSection = marshal(sectionInput())
+	beforeArticle = marshal(articleInput())
+	beforeTag = marshal(tagInput())
+	plan.Config.Related.Count++
+	plan.Config.RSS.Enabled = !plan.Config.RSS.Enabled
+	if string(beforeSection) != string(marshal(sectionInput())) || string(beforeTag) != string(marshal(tagInput())) {
+		t.Fatal("related or RSS config invalidated an unrelated HTML page")
+	}
+	if string(beforeArticle) != string(marshal(articleInput())) {
+		t.Fatal("related or RSS config changed an article without changed rendered related content")
 	}
 }
 

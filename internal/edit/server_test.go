@@ -82,7 +82,28 @@ func TestEditServerAuthenticatesBelowReservedControlBoundary(t *testing.T) {
 	}
 	_ = response.Body.Close()
 
-	response, err = httpClient.PostForm(listener.URL+"/_obsite/login", map[string][]string{"username": {"admin"}, "password": {"secret"}})
+	loginRequest, err := http.NewRequest(http.MethodPost, listener.URL+"/_obsite/login", strings.NewReader("username=admin&password=secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRequest.Header.Set("Origin", "https://evil.example")
+	response, err = httpClient.Do(loginRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("cross-origin login status = %d, want %d", response.StatusCode, http.StatusForbidden)
+	}
+	_ = response.Body.Close()
+
+	loginRequest, err = http.NewRequest(http.MethodPost, listener.URL+"/_obsite/login", strings.NewReader("username=admin&password=secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	loginRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	loginRequest.Header.Set("Origin", listener.URL)
+	response, err = httpClient.Do(loginRequest)
 	if err != nil {
 		t.Fatal(err)
 	}

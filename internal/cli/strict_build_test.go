@@ -43,6 +43,162 @@ func TestStrictBuildPublishesSectionAndArticlePages(t *testing.T) {
 	}
 }
 
+func TestCLICommandsPublishSectionReadingFlow(t *testing.T) {
+	vault := t.TempDir()
+	output := filepath.Join(t.TempDir(), "public")
+	writeValidateFile(t, vault, `obsite.yaml`, `title: Reading Site
+baseURL: https://example.test/
+navigation:
+  - name: Home
+    section: .
+  - name: Guide
+    section: guide
+`)
+	writeValidateFile(t, vault, `_index.md`, "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeValidateFile(t, vault, `guide/_index.md`, "---\ntitle: Guide\npublish: true\n---\nGuide landing\n")
+	writeValidateFile(t, vault, `guide/01-first.md`, "---\ntitle: First\npublish: true\ntype: doc\nslug: first\n---\nFirst body\n")
+	writeValidateFile(t, vault, `guide/02-second.md`, "---\ntitle: Second\npublish: true\ntype: doc\nslug: second\n---\nSecond body\n")
+
+	stdout, stderr, err := executeForTest(t, defaultCommandDependencies(), []string{"validate", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("validate = stdout %q, stderr %q, error %v; want successful silent validation", stdout, stderr, err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("validate changed output boundary: %v", statErr)
+	}
+
+	stdout, stderr, err = executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("build = stdout %q, stderr %q, error %v; want successful silent build", stdout, stderr, err)
+	}
+	beforeStrict := snapshotCLIOutput(t, output)
+
+	stdout, stderr, err = executeForTest(t, defaultCommandDependencies(), []string{"build", "--strict", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("build --strict = stdout %q, stderr %q, error %v; want successful silent build", stdout, stderr, err)
+	}
+	if afterStrict := snapshotCLIOutput(t, output); !reflect.DeepEqual(afterStrict, beforeStrict) {
+		t.Fatal("build --strict changed the already-published reading-flow output")
+	}
+
+	section := string(readCLIOutputFile(t, output, "guide/index.html"))
+	articleListStart := strings.Index(section, `<ul class=section-articles>`)
+	if articleListStart < 0 {
+		t.Fatalf("section page has no article list:\n%s", section)
+	}
+	articleListEnd := strings.Index(section[articleListStart:], `</ul>`)
+	if articleListEnd < 0 {
+		t.Fatalf("section article list is unterminated:\n%s", section)
+	}
+	articleList := section[articleListStart : articleListStart+articleListEnd]
+	firstLink := strings.Index(articleList, `href=/guide/first/>First</a>`)
+	secondLink := strings.Index(articleList, `href=/guide/second/>Second</a>`)
+	if firstLink < 0 || secondLink < 0 || firstLink >= secondLink {
+		t.Fatalf("section article order = %s, want First then Second", articleList)
+	}
+
+	first := string(readCLIOutputFile(t, output, "guide/first/index.html"))
+	if !strings.Contains(first, `<span class=position>1 of 2</span>`) || !strings.Contains(first, `<a class=next rel=next href=/guide/second/>Next</a>`) {
+		t.Fatalf("first reading flow = %s", first)
+	}
+	if strings.Contains(first, `class=previous`) {
+		t.Fatalf("first article has an unusable previous link: %s", first)
+	}
+
+	second := string(readCLIOutputFile(t, output, "guide/second/index.html"))
+	if !strings.Contains(second, `<span class=position>2 of 2</span>`) || !strings.Contains(second, `<a class=previous rel=prev href=/guide/first/>Previous</a>`) {
+		t.Fatalf("second reading flow = %s", second)
+	}
+	if strings.Contains(second, `class=next`) {
+		t.Fatalf("last article has an unusable next link: %s", second)
+	}
+}
+
+func TestCLICommandsPublishSectionAndArticleBanners(t *testing.T) {
+	vault := t.TempDir()
+	output := filepath.Join(t.TempDir(), "public")
+	writeValidateFile(t, vault, `obsite.yaml`, "title: Banner Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeValidateFile(t, vault, `_index.md`, "---\ntitle: Home\npublish: true\n---\nHome\n")
+	writeValidateFile(t, vault, `guide/_index.md`, "---\ntitle: Guide\npublish: true\nbanner: images/guide.png\nbannerAlt: Guide banner\n---\nGuide\n")
+	writeValidateFile(t, vault, `guide/article.md`, "---\ntitle: Article\npublish: true\ntype: page\nbanner: images/article.png\nbannerAlt: Article banner\n---\nArticle\n")
+
+	for _, fixture := range []struct {
+		name  string
+		color color.RGBA
+		path  string
+	}{
+		{name: "guide", color: color.RGBA{R: 255, A: 255}, path: "images/guide.png"},
+		{name: "article", color: color.RGBA{B: 255, A: 255}, path: "images/article.png"},
+	} {
+		var data bytes.Buffer
+		img := image.NewRGBA(image.Rect(0, 0, 2, 2))
+		img.Set(0, 0, fixture.color)
+		if err := png.Encode(&data, img); err != nil {
+			t.Fatal(err)
+		}
+		writeValidateFile(t, vault, fixture.path, data.String())
+	}
+
+	stdout, stderr, err := executeForTest(t, defaultCommandDependencies(), []string{"validate", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("validate = stdout %q, stderr %q, error %v; want successful silent validation", stdout, stderr, err)
+	}
+	if _, statErr := os.Stat(output); !os.IsNotExist(statErr) {
+		t.Fatalf("validate changed output boundary: %v", statErr)
+	}
+
+	stdout, stderr, err = executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("build = stdout %q, stderr %q, error %v; want successful silent build", stdout, stderr, err)
+	}
+	beforeStrict := snapshotCLIOutput(t, output)
+
+	stdout, stderr, err = executeForTest(t, defaultCommandDependencies(), []string{"build", "--strict", "--vault", vault, "--output", output})
+	if err != nil || stdout != "" || stderr != "" {
+		t.Fatalf("build --strict = stdout %q, stderr %q, error %v; want successful silent build", stdout, stderr, err)
+	}
+	if afterStrict := snapshotCLIOutput(t, output); !reflect.DeepEqual(afterStrict, beforeStrict) {
+		t.Fatal("build --strict changed the already-published banner output")
+	}
+
+	root := string(readCLIOutputFile(t, output, "index.html"))
+	section := string(readCLIOutputFile(t, output, "guide/index.html"))
+	article := string(readCLIOutputFile(t, output, "guide/article/index.html"))
+	if strings.Contains(root, `alt="Guide banner"`) || strings.Contains(root, `alt="Article banner"`) {
+		t.Fatalf("root page inherited a nested banner: %s", root)
+	}
+	if strings.Count(section, `alt="Guide banner"`) != 1 || strings.Contains(section, `alt="Article banner"`) {
+		t.Fatalf("section banner placement = %s", section)
+	}
+	if strings.Count(article, `alt="Article banner"`) != 1 || strings.Contains(article, `alt="Guide banner"`) {
+		t.Fatalf("article banner placement = %s", article)
+	}
+	for _, banner := range []struct {
+		name string
+		page string
+	}{
+		{name: "guide", page: section},
+		{name: "article", page: article},
+	} {
+		entries, globErr := filepath.Glob(filepath.Join(output, "assets", banner.name+".*.png"))
+		if globErr != nil || len(entries) != 1 {
+			t.Fatalf("published %s banner assets = %v, error = %v; want one", banner.name, entries, globErr)
+		}
+		if !strings.Contains(banner.page, `src=/assets/`+filepath.Base(entries[0])) {
+			t.Fatalf("%s banner asset is not referenced on its page: %s", banner.name, banner.page)
+		}
+	}
+}
+
+func readCLIOutputFile(t *testing.T, root, relPath string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(relPath)))
+	if err != nil {
+		t.Fatalf("read output %q: %v", relPath, err)
+	}
+	return data
+}
+
 func TestBuildCommandPublishesVersionSwitchingAndEscapedSourceTemplates(t *testing.T) {
 	vault := t.TempDir()
 	output := filepath.Join(t.TempDir(), "public")
@@ -171,7 +327,7 @@ func TestBuildCommandPreservesPublishedOutputWhenSocialGenerationFails(t *testin
 	assertNoCLITransactionResidue(t, outputRoot, output)
 }
 
-func TestCLIRejectsStrictInputFailuresWithSharedDiagnosticsAndPreservesOutput(t *testing.T) {
+func TestCLIRejectsInputFailuresWithSharedDiagnosticsAndPreservesOutput(t *testing.T) {
 	type expectedDiagnostic struct {
 		kind       diag.Kind
 		pathSuffix string
@@ -185,6 +341,37 @@ func TestCLIRejectsStrictInputFailuresWithSharedDiagnosticsAndPreservesOutput(t 
 		mutate func(t *testing.T, vault string)
 		want   expectedDiagnostic
 	}{
+		{
+			name: "missing section index",
+			mutate: func(t *testing.T, vault string) {
+				if err := os.Remove(filepath.Join(vault, "guide", "_index.md")); err != nil {
+					t.Fatal(err)
+				}
+			},
+			want: expectedDiagnostic{kind: diag.KindSection, pathSuffix: "guide/_index.md", field: "_index.md", message: "missing required _index.md"},
+		},
+		{
+			name: "missing navigation target",
+			mutate: func(t *testing.T, vault string) {
+				writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation:\n  - name: Missing\n    section: missing\n")
+			},
+			want: expectedDiagnostic{kind: diag.KindNavigation, pathSuffix: "obsite.yaml", line: 5, field: "navigation[0].section", message: `targets missing section "missing"`},
+		},
+		{
+			name: "collection sort tie",
+			mutate: func(t *testing.T, vault string) {
+				for _, article := range []struct {
+					path string
+					slug string
+				}{
+					{path: "A.md", slug: "first"},
+					{path: "Ａ.md", slug: "second"},
+				} {
+					writeValidateFile(t, vault, article.path, "---\ntitle: Same\npublish: true\ntype: doc\nslug: "+article.slug+"\n---\nTie\n")
+				}
+			},
+			want: expectedDiagnostic{kind: diag.KindOrder, pathSuffix: "A.md", field: "collection", target: "Ａ.md", message: "doc collection has a complete sort-key tie"},
+		},
 		{
 			name: "duplicate configuration key",
 			mutate: func(t *testing.T, vault string) {
@@ -263,13 +450,15 @@ versions:
 			output := filepath.Join(outputRoot, "public")
 			writeValidateFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
 			writeValidateFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nPublished baseline\n")
+			writeValidateFile(t, vault, "guide/_index.md", "---\ntitle: Guide\npublish: true\n---\nGuide baseline\n")
+			writeValidateFile(t, vault, "guide/article.md", "---\ntitle: Guide article\npublish: true\ntype: doc\n---\nGuide article baseline\n")
 			if _, stderr, err := executeForTest(t, defaultCommandDependencies(), []string{"build", "--strict", "--vault", vault, "--output", output}); err != nil {
 				t.Fatalf("baseline build error = %v; stderr=%q", err, stderr)
 			}
 			before := snapshotCLIOutput(t, output)
 			test.mutate(t, vault)
 
-			stdout, validateStderr, validateErr := executeForTest(t, defaultCommandDependencies(), []string{"validate", "--vault", vault})
+			stdout, validateStderr, validateErr := executeForTest(t, defaultCommandDependencies(), []string{"validate", "--vault", vault, "--output", output})
 			if validateErr == nil {
 				t.Fatal("validate error = nil, want strict input failure")
 			}
@@ -280,6 +469,20 @@ versions:
 			assertExpectedCLIDiagnostic(t, validateDiagnostics, test.want.kind, test.want.pathSuffix, test.want.line, test.want.field, test.want.target, test.want.message)
 			assertCLIOutputUnchanged(t, output, before, "validate failure")
 
+			stdout, normalStderr, normalErr := executeForTest(t, defaultCommandDependencies(), []string{"build", "--vault", vault, "--output", output})
+			if normalErr == nil {
+				t.Fatal("build error = nil, want input failure")
+			}
+			if stdout != "" {
+				t.Fatalf("build stdout = %q, want empty", stdout)
+			}
+			normalDiagnostics := parseCLIDiagnostics(t, normalStderr)
+			if !reflect.DeepEqual(normalDiagnostics, validateDiagnostics) {
+				t.Fatalf("build diagnostics = %#v, want validate diagnostics %#v", normalDiagnostics, validateDiagnostics)
+			}
+			assertCLIOutputUnchanged(t, output, before, "normal build failure")
+			assertNoCLITransactionResidue(t, outputRoot, output)
+
 			stdout, buildStderr, buildErr := executeForTest(t, defaultCommandDependencies(), []string{"build", "--strict", "--vault", vault, "--output", output})
 			if buildErr == nil {
 				t.Fatal("build --strict error = nil, want strict input failure")
@@ -289,7 +492,7 @@ versions:
 			}
 			buildDiagnostics := parseCLIDiagnostics(t, buildStderr)
 			if !reflect.DeepEqual(buildDiagnostics, validateDiagnostics) {
-				t.Fatalf("build diagnostics = %#v, want validate diagnostics %#v", buildDiagnostics, validateDiagnostics)
+				t.Fatalf("build --strict diagnostics = %#v, want validate diagnostics %#v", buildDiagnostics, validateDiagnostics)
 			}
 			assertCLIOutputUnchanged(t, output, before, "build --strict failure")
 			assertNoCLITransactionResidue(t, outputRoot, output)

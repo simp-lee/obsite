@@ -259,7 +259,8 @@ func (s *Server) serveSourceSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pathValue := r.URL.Query().Get("path")
-	if s.catalogEntryByRelPath(pathValue) == nil {
+	entry := s.catalogEntryByRelPath(pathValue)
+	if entry == nil {
 		http.NotFound(w, r)
 		return
 	}
@@ -268,7 +269,7 @@ func (s *Server) serveSourceSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
 		return
 	}
-	result, err := s.coordinator.Save(pathValue, r.Header.Get("X-Obsite-Source-Hash"), content)
+	result, err := s.coordinator.Save(entry.RelPath, r.Header.Get("X-Obsite-Source-Hash"), content)
 	if err != nil {
 		s.writeMutationError(w, err)
 		return
@@ -504,6 +505,10 @@ func (s *Server) serveLogin(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = io.WriteString(w, htmlBody)
 	case http.MethodPost:
+		if !sameOrigin(r) {
+			http.Error(w, "csrf validation failed", http.StatusForbidden)
+			return
+		}
 		if err := r.ParseForm(); err != nil {
 			http.Error(w, "invalid login request", http.StatusBadRequest)
 			return

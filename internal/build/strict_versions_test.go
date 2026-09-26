@@ -48,6 +48,8 @@ Only in version 1.
 		{label: "Version 1", href: "/docs/docs/v1/start-v1/"},
 		{label: "Version 2", href: "/docs/docs/v2/start-v2/", current: true},
 	})
+	assertStrictHTMLSidebarMatchesPayload(t, output, "docs/v1/start-v1/index.html", "v1", "/docs/")
+	assertStrictHTMLSidebarMatchesPayload(t, output, "docs/v2/start-v2/index.html", "v2", "/docs/")
 	v1Only := readBuildOutputFile(t, output, "docs/v1/only-v1/index.html")
 	assertStrictVersionDocument(t, v1Only, "https://example.test/docs/docs/v1/only-v1/", []strictExpectedVersionLink{
 		{label: "Version 1", href: "/docs/docs/v1/only-v1/", current: true},

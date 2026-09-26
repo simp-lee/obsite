@@ -2,12 +2,17 @@ package build
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/simp-lee/obsite/internal/model"
+	xhtml "golang.org/x/net/html"
 )
 
 func copyFixtureVault(t *testing.T, fixtureName string) string {
@@ -95,10 +100,10 @@ func TestStrictBuildUsesCanonicalSectionPlanAndRichMarkdown(t *testing.T) {
 	}
 }
 
-func TestStrictBuildKeepsHTMLSidebarFallbackPageLocal(t *testing.T) {
+func TestStrictBuildRendersCompleteHTMLSidebarTree(t *testing.T) {
 	vaultPath := t.TempDir()
 	writeStrictFile(t, vaultPath, "obsite.yaml", `title: Nested Sidebar
-baseURL: https://example.test/
+baseURL: https://example.test/blog/
 navigation: []
 sidebar:
   enabled: true
@@ -107,6 +112,8 @@ sidebar:
 	writeStrictFile(t, vaultPath, "docs/_index.md", "---\ntitle: Docs\npublish: true\n---\nDocs\n")
 	writeStrictFile(t, vaultPath, "docs/nested/_index.md", "---\ntitle: Nested\npublish: true\n---\nNested\n")
 	writeStrictFile(t, vaultPath, "docs/nested/leaf.md", "---\ntitle: Leaf\npublish: true\ntype: page\n---\nLeaf\n")
+	writeStrictFile(t, vaultPath, "docs/nested/sibling.md", "---\ntitle: Sibling\npublish: true\ntype: page\n---\nSibling\n")
+	writeStrictFile(t, vaultPath, "docs/nested/draft.md", "---\ntitle: Draft\npublish: false\ntype: page\n---\nDraft\n")
 	writeStrictFile(t, vaultPath, "other/_index.md", "---\ntitle: Other\npublish: true\n---\nOther\n")
 	writeStrictFile(t, vaultPath, "other/unrelated.md", "---\ntitle: Unrelated\npublish: true\ntype: page\n---\nUnrelated\n")
 
@@ -129,34 +136,110 @@ sidebar:
 	}
 
 	rootFallback := fallback("index.html")
-	for _, want := range []string{"Home", "Docs", "Other"} {
+	for _, want := range []string{"Docs", "Nested", "Leaf", "Sibling", "Other", "Unrelated"} {
 		if !strings.Contains(rootFallback, want) {
-			t.Fatalf("root Sidebar fallback missing direct navigation %q: %s", want, rootFallback)
-		}
-	}
-	for _, unwanted := range []string{"Nested", "Leaf", "Unrelated"} {
-		if strings.Contains(rootFallback, unwanted) {
-			t.Fatalf("root Sidebar fallback copied descendant %q: %s", unwanted, rootFallback)
+			t.Fatalf("root Sidebar fallback missing complete-tree entry %q: %s", want, rootFallback)
 		}
 	}
 
 	articleFallback := fallback("docs/nested/leaf/index.html")
-	for _, want := range []string{"Home", "Docs", "Nested", "Leaf", `aria-current=page`} {
+	for _, want := range []string{"Docs", "Nested", "Leaf", "Sibling", "Other", "Unrelated", `aria-current=page`} {
 		if !strings.Contains(articleFallback, want) {
-			t.Fatalf("article Sidebar fallback missing contextual navigation %q: %s", want, articleFallback)
-		}
-	}
-	for _, unwanted := range []string{"Other", "Unrelated"} {
-		if strings.Contains(articleFallback, unwanted) {
-			t.Fatalf("article Sidebar fallback copied unrelated branch %q: %s", unwanted, articleFallback)
+			t.Fatalf("article Sidebar fallback missing complete-tree entry %q: %s", want, articleFallback)
 		}
 	}
 
-	sharedSidebar := string(readBuildOutputFile(t, outputPath, "assets/obsite/sidebar.json"))
-	for _, want := range []string{"Docs", "Nested", "Leaf", "Other", "Unrelated"} {
-		if !strings.Contains(sharedSidebar, want) {
-			t.Fatalf("shared Sidebar payload is missing complete-tree entry %q: %s", want, sharedSidebar)
+	for _, route := range []string{"index.html", "docs/index.html", "docs/nested/leaf/index.html", "404.html"} {
+		assertStrictHTMLSidebarMatchesPayload(t, outputPath, route, "", "/blog/")
+	}
+	if strings.Contains(articleFallback, "Draft") {
+		t.Fatalf("article Sidebar contains unpublished entry: %s", articleFallback)
+	}
+}
+
+func assertStrictHTMLSidebarMatchesPayload(t *testing.T, outputPath, route, versionID, basePath string) {
+	t.Helper()
+	var payload struct {
+		Default  []model.SidebarNode            `json:"default"`
+		Versions map[string][]model.SidebarNode `json:"versions"`
+	}
+	if err := json.Unmarshal(readBuildOutputFile(t, outputPath, "assets/obsite/sidebar.json"), &payload); err != nil {
+		t.Fatalf("decode Sidebar payload: %v", err)
+	}
+	nodes := payload.Default
+	if versionID != "" {
+		nodes = payload.Versions[versionID]
+	}
+	type sidebarLink struct {
+		name string
+		href string
+	}
+	var expected []sidebarLink
+	var flatten func([]model.SidebarNode)
+	flatten = func(values []model.SidebarNode) {
+		for _, node := range values {
+			expected = append(expected, sidebarLink{name: node.Name, href: strings.TrimSuffix(basePath, "/") + node.URL})
+			flatten(node.Children)
 		}
+	}
+	flatten(nodes)
+
+	document, err := xhtml.Parse(bytes.NewReader(readBuildOutputFile(t, outputPath, route)))
+	if err != nil {
+		t.Fatalf("parse Sidebar HTML %q: %v", route, err)
+	}
+	var sidebarRoot *xhtml.Node
+	var visit func(*xhtml.Node)
+	visit = func(node *xhtml.Node) {
+		if sidebarRoot != nil {
+			return
+		}
+		if node.Type == xhtml.ElementNode && node.Data == "nav" {
+			for _, attribute := range node.Attr {
+				if attribute.Key == "data-sidebar-root" {
+					sidebarRoot = node
+					return
+				}
+			}
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			visit(child)
+		}
+	}
+	visit(document)
+	if sidebarRoot == nil {
+		t.Fatalf("HTML page %q has no Sidebar root", route)
+	}
+	var actual []sidebarLink
+	var text func(*xhtml.Node) string
+	text = func(node *xhtml.Node) string {
+		if node.Type == xhtml.TextNode {
+			return node.Data
+		}
+		var value strings.Builder
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			value.WriteString(text(child))
+		}
+		return value.String()
+	}
+	var collect func(*xhtml.Node)
+	collect = func(node *xhtml.Node) {
+		if node.Type == xhtml.ElementNode && node.Data == "a" {
+			var href string
+			for _, attribute := range node.Attr {
+				if attribute.Key == "href" {
+					href = attribute.Val
+				}
+			}
+			actual = append(actual, sidebarLink{name: strings.TrimSpace(text(node)), href: href})
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			collect(child)
+		}
+	}
+	collect(sidebarRoot)
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("HTML Sidebar %q differs from shared payload: HTML=%#v payload=%#v", route, actual, expected)
 	}
 }
 

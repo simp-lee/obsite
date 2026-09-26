@@ -100,7 +100,7 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 		assets[source] = &plannedAsset
 	}
 	reservedAssetOutputs := strictReservedAssetOutputs(plan)
-	assetCollector, err := internalasset.NewCollectorWithOverrides(boundary.VaultPath, assets, reservedAssetOutputs, nil, overrides)
+	assetCollector, err := internalasset.NewCollectorWithOverrides(boundary.VaultPath, assets, reservedAssetOutputs, planned.Scan.ResourceFiles, overrides)
 	if err != nil {
 		return result, fmt.Errorf("plan strict assets: %w", err)
 	}
@@ -111,10 +111,10 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 		return result, err
 	}
 	if plan.Config.Sidebar.Enabled {
-		payload := strictSidebarPayload{Default: strictSidebar(plan, ""), Versions: make(map[string][]model.SidebarNode)}
+		payload := strictSidebarPayload{Default: render.StrictSidebarNodes(plan, ""), Versions: make(map[string][]model.SidebarNode)}
 		for _, version := range plan.Versions {
 			if version != nil && version.Root != nil && version.Root.EffectivePublish && version.Root.Route != "" {
-				payload.Versions[version.ID] = strictSidebar(plan, version.ID)
+				payload.Versions[version.ID] = render.StrictSidebarNodes(plan, version.ID)
 			}
 		}
 		data, sidebarErr := json.Marshal(payload)
@@ -223,7 +223,7 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 		}
 		route := "/" + slug.EncodePath(tag.Slug) + "/"
 		owner := "tag:" + tag.Name
-		dependency := strictCacheHTMLBase(plan, route, "Tag: "+tag.Name, "", "", "")
+		dependency := strictCacheHTMLBase(plan, route, "Tag: "+tag.Name, "", "", "", true)
 		dependency.Entries = strictCachePageEntries(notes)
 		if dependencyErr := outputs.dependency(owner, tag.Name, dependency); dependencyErr != nil {
 			return result, dependencyErr
@@ -263,8 +263,9 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 			if renderErr != nil {
 				return result, fmt.Errorf("render timeline: %w", renderErr)
 			}
-			dependency := strictCacheHTMLBase(plan, timelineRoute, "Recent articles", "", "", "")
+			dependency := strictCacheHTMLBase(plan, timelineRoute, "Recent articles", "", "", "", true)
 			dependency.Entries = strictCachePageEntries(pagePosts)
+			dependency.TimelinePageCount = pageCount
 			if dependencyErr := outputs.dependency(owner, "obsite.yaml", dependency); dependencyErr != nil {
 				return result, dependencyErr
 			}
@@ -501,66 +502,143 @@ type strictCacheArticleInput struct {
 	RawContent    []byte            `json:"rawContent"`
 }
 
-type strictCacheHTMLInput struct {
-	Config         model.SiteConfig          `json:"config"`
-	ThemeAssetURLs map[string]string         `json:"themeAssetURLs,omitempty"`
-	Route          string                    `json:"route"`
-	Title          string                    `json:"title"`
-	Description    string                    `json:"description,omitempty"`
-	SourcePath     string                    `json:"sourcePath,omitempty"`
-	VersionID      string                    `json:"versionID,omitempty"`
-	Versions       []strictCacheVersionEntry `json:"versions,omitempty"`
-	Sidebar        []model.SidebarNode       `json:"sidebar,omitempty"`
-	Section        *strictCacheSectionInput  `json:"section,omitempty"`
-	Article        *strictCacheArticleInput  `json:"article,omitempty"`
-	Entries        []strictCachePageEntry    `json:"entries,omitempty"`
-	Previous       *strictCachePageEntry     `json:"previous,omitempty"`
-	Next           *strictCachePageEntry     `json:"next,omitempty"`
-	Position       int                       `json:"position,omitempty"`
-	Total          int                       `json:"total,omitempty"`
-	Backlinks      []strictCachePageEntry    `json:"backlinks,omitempty"`
-	Related        []strictCachePageEntry    `json:"related,omitempty"`
-	MarkdownAssets map[string]string         `json:"markdownAssets,omitempty"`
-	LookupDigest   string                    `json:"lookupDigest,omitempty"`
+// strictCacheHTMLConfig is the shared shell projection. Page-specific
+// features such as source links, version selectors, and timeline pagination
+// are added to strictCacheHTMLInput only for pages that render them.
+type strictCacheHTMLConfig struct {
+	Title              string                 `json:"title"`
+	BaseURL            string                 `json:"baseURL"`
+	Language           string                 `json:"language"`
+	Navigation         []model.NavigationItem `json:"navigation,omitempty"`
+	DefaultImgURL      string                 `json:"defaultImgURL,omitempty"`
+	DefaultImgExternal bool                   `json:"defaultImgExternal,omitempty"`
+	CustomCSS          bool                   `json:"customCSS,omitempty"`
+	ThemeCSS           string                 `json:"themeCSS,omitempty"`
+	ThemeSlots         string                 `json:"themeSlots,omitempty"`
+	ThemeAuthor        string                 `json:"themeAuthor,omitempty"`
+	ThemeDescription   string                 `json:"themeDescription,omitempty"`
+	Popover            bool                   `json:"popover,omitempty"`
 }
 
-func strictCacheHTMLBase(plan *model.SitePlan, route, title, description, sourcePath, versionID string) strictCacheHTMLInput {
+type strictCacheSourceInput struct {
+	EditURL string `json:"editURL,omitempty"`
+	ViewURL string `json:"viewURL,omitempty"`
+}
+
+type strictCacheHTMLInput struct {
+	Config            strictCacheHTMLConfig     `json:"config"`
+	ThemeAssetURLs    map[string]string         `json:"themeAssetURLs,omitempty"`
+	Route             string                    `json:"route"`
+	Title             string                    `json:"title"`
+	Description       string                    `json:"description,omitempty"`
+	SourcePath        string                    `json:"sourcePath,omitempty"`
+	VersionID         string                    `json:"versionID,omitempty"`
+	Source            *strictCacheSourceInput   `json:"source,omitempty"`
+	Versions          []strictCacheVersionEntry `json:"versions,omitempty"`
+	Sidebar           []model.SidebarNode       `json:"sidebar,omitempty"`
+	Section           *strictCacheSectionInput  `json:"section,omitempty"`
+	Article           *strictCacheArticleInput  `json:"article,omitempty"`
+	Entries           []strictCachePageEntry    `json:"entries,omitempty"`
+	Previous          *strictCachePageEntry     `json:"previous,omitempty"`
+	Next              *strictCachePageEntry     `json:"next,omitempty"`
+	Position          int                       `json:"position,omitempty"`
+	Total             int                       `json:"total,omitempty"`
+	TimelinePageCount int                       `json:"timelinePageCount,omitempty"`
+	Backlinks         []strictCachePageEntry    `json:"backlinks,omitempty"`
+	Related           []strictCachePageEntry    `json:"related,omitempty"`
+	MarkdownAssets    map[string]string         `json:"markdownAssets,omitempty"`
+	LookupDigest      string                    `json:"lookupDigest,omitempty"`
+}
+
+func strictCacheHTMLBase(plan *model.SitePlan, route, title, description, sourcePath, versionID string, includeDefaultImage bool) strictCacheHTMLInput {
 	input := strictCacheHTMLInput{
-		Config:         strictCacheConfig(plan),
-		Route:          route,
-		Title:          title,
-		Description:    description,
-		SourcePath:     sourcePath,
-		VersionID:      versionID,
-		ThemeAssetURLs: make(map[string]string),
+		Config:      strictCacheConfig(plan),
+		Route:       route,
+		Title:       title,
+		Description: description,
+		SourcePath:  sourcePath,
+		VersionID:   versionID,
 	}
 	if plan == nil {
 		return input
 	}
-	for name, assetRoute := range plan.ThemeAssetURLs {
-		input.ThemeAssetURLs[name] = assetRoute
+	if !includeDefaultImage || input.Config.DefaultImgURL == "" {
+		input.Config.DefaultImgURL = ""
+		input.Config.DefaultImgExternal = false
 	}
-	for _, version := range plan.Versions {
-		if version == nil || version.Root == nil || !version.Root.EffectivePublish || version.Root.Route == "" {
-			continue
+	if sourcePath != "" && (plan.Config.Source.EditURL != "" || plan.Config.Source.ViewURL != "") {
+		input.Source = &strictCacheSourceInput{EditURL: plan.Config.Source.EditURL, ViewURL: plan.Config.Source.ViewURL}
+	}
+	if versionID != "" {
+		input.Versions = strictCacheVersionEntries(plan)
+	}
+	if strings.TrimSpace(plan.Config.ThemeSlots) != "" {
+		input.ThemeAssetURLs = make(map[string]string, len(plan.ThemeAssetURLs))
+		for name, assetRoute := range plan.ThemeAssetURLs {
+			input.ThemeAssetURLs[name] = assetRoute
 		}
-		input.Versions = append(input.Versions, strictCacheVersionEntry{ID: version.ID, Label: version.Label, RootRoute: version.Root.Route})
 	}
 	if plan.Config.Sidebar.Enabled {
-		input.Sidebar = render.StrictSidebarRootFallbackNodes(plan, versionID)
+		nodes := render.StrictSidebarNodes(plan, versionID)
+		if len(nodes) > 0 {
+			input.Sidebar = nodes
+		}
 	}
 	return input
 }
 
-func strictCacheConfig(plan *model.SitePlan) model.SiteConfig {
+func strictCacheConfig(plan *model.SitePlan) strictCacheHTMLConfig {
 	if plan == nil {
-		return model.SiteConfig{}
+		return strictCacheHTMLConfig{}
 	}
-	config := plan.Config
-	config.CustomCSS = strictCacheRelativePath(plan.VaultPath, config.CustomCSS)
-	config.ThemeDir = strictCacheRelativePath(plan.VaultPath, config.ThemeDir)
-	config.Edit = nil
+	config := strictCacheHTMLConfig{
+		Title:              plan.Config.Title,
+		BaseURL:            plan.Config.BaseURL,
+		Language:           plan.Config.Language,
+		DefaultImgURL:      plan.Config.DefaultImgURL,
+		DefaultImgExternal: plan.Config.DefaultImgExternal,
+		CustomCSS:          plan.Config.CustomCSS != "",
+		ThemeCSS:           plan.Config.ThemeCSS,
+		Popover:            plan.Config.Popover.Enabled,
+	}
+	config.Navigation = append([]model.NavigationItem(nil), plan.Config.Navigation...)
+	if strings.TrimSpace(plan.Config.ThemeSlots) != "" {
+		config.ThemeSlots = plan.Config.ThemeSlots
+		config.ThemeAuthor = plan.Config.Author
+		config.ThemeDescription = plan.Config.Description
+	}
 	return config
+}
+
+func strictCacheVersionEntries(plan *model.SitePlan) []strictCacheVersionEntry {
+	if plan == nil {
+		return nil
+	}
+	entries := make([]strictCacheVersionEntry, 0, len(plan.Versions))
+	for _, version := range plan.Versions {
+		if version == nil || version.Root == nil || !version.Root.EffectivePublish || version.Root.Route == "" {
+			continue
+		}
+		entries = append(entries, strictCacheVersionEntry{ID: version.ID, Label: version.Label, RootRoute: version.Root.Route})
+	}
+	return entries
+}
+
+func strictCacheSectionVersionEntries(plan *model.SitePlan, section *model.Section) []strictCacheVersionEntry {
+	if plan == nil || section == nil {
+		return nil
+	}
+	entries := make([]strictCacheVersionEntry, 0)
+	for _, version := range plan.Versions {
+		if version == nil || version.Root == nil || !version.Root.EffectivePublish || version.Root.Route == "" {
+			continue
+		}
+		if path.Dir(version.Root.RelPath) != section.RelPath && !strings.HasPrefix(version.Root.RelPath, section.RelPath+"/") {
+			continue
+		}
+		entries = append(entries, strictCacheVersionEntry{ID: version.ID, Label: version.Label, RootRoute: version.Root.Route})
+	}
+	return entries
 }
 
 func strictCachePageEntries(notes []*model.Note) []strictCachePageEntry {
@@ -649,9 +727,9 @@ func strictCacheLookupDigests(index *model.VaultIndex) (strictCacheLookupDigest,
 }
 
 func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
-	input := strictCacheHTMLBase(plan, section.Route, section.Title, section.Description, section.SourcePath, section.VersionID)
-	if plan.Config.Sidebar.Enabled {
-		input.Sidebar = render.StrictSidebarSectionFallbackNodes(plan, section)
+	input := strictCacheHTMLBase(plan, section.Route, section.Title, section.Description, section.SourcePath, section.VersionID, true)
+	if section.VersionID == "" {
+		input.Versions = strictCacheSectionVersionEntries(plan, section)
 	}
 	input.Section = &strictCacheSectionInput{
 		RelPath: section.RelPath, SourcePath: section.SourcePath, Route: section.Route,
@@ -667,10 +745,7 @@ func strictCacheSectionPageInput(plan *model.SitePlan, section *model.Section, l
 }
 
 func strictCacheArticlePageInput(plan *model.SitePlan, article *model.Note, section *model.Section, previous, next *model.Note, position, total int, backlinks, related []*model.Note, lookupDigest string, markdownAssets map[string]string) strictCacheHTMLInput {
-	input := strictCacheHTMLBase(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, article.RelPath, article.VersionID)
-	if plan.Config.Sidebar.Enabled {
-		input.Sidebar = render.StrictSidebarArticleFallbackNodes(plan, section, article)
-	}
+	input := strictCacheHTMLBase(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, article.RelPath, article.VersionID, false)
 	input.Article = &strictCacheArticleInput{
 		RelPath: article.RelPath, Route: article.Route, SectionPath: article.SectionPath,
 		VersionID: article.VersionID, VersionRoutes: article.VersionRoutes, SocialImage: article.SocialImage,
@@ -1012,43 +1087,6 @@ type strictSidebarPayload struct {
 	Versions map[string][]model.SidebarNode `json:"versions,omitempty"`
 }
 
-func strictSidebar(plan *model.SitePlan, versionID string) []model.SidebarNode {
-	if plan == nil {
-		return nil
-	}
-	root := plan.Root
-	if versionID != "" {
-		for _, version := range plan.Versions {
-			if version != nil && version.ID == versionID {
-				root = version.Root
-				break
-			}
-		}
-	}
-	if root == nil {
-		return nil
-	}
-	return strictSidebarChildren(root)
-}
-
-func strictSidebarChildren(section *model.Section) []model.SidebarNode {
-	if section == nil {
-		return nil
-	}
-	result := make([]model.SidebarNode, 0, len(section.Children)+len(section.Articles))
-	for _, child := range section.Children {
-		if child != nil && child.EffectivePublish {
-			result = append(result, model.SidebarNode{Name: child.Title, URL: child.Route, IsDir: true, Children: strictSidebarChildren(child)})
-		}
-	}
-	for _, article := range section.Articles {
-		if article != nil {
-			result = append(result, model.SidebarNode{Name: article.Frontmatter.Title, URL: article.Route, Source: article.RelPath})
-		}
-	}
-	return result
-}
-
 func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *model.VaultIndex, outputs *strictOutputRegistry) error {
 	var sitemap strings.Builder
 	sitemapTimeline := make([]string, 0)
@@ -1233,7 +1271,7 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 	if err != nil {
 		return err
 	}
-	if err := outputs.dependency("404", "obsite.yaml", strictCacheHTMLBase(plan, "/404.html", "Not found", "", "", "")); err != nil {
+	if err := outputs.dependency("404", "obsite.yaml", strictCacheHTMLBase(plan, "/404.html", "Not found", "", "", "", true)); err != nil {
 		return err
 	}
 	return writeStrictHTML(outputs, outputRoot, "404.html", "404", notFound)
@@ -1372,7 +1410,7 @@ func validateStrictAsset(vaultRoot, raw, kind string) ([]byte, error) {
 	}
 	if strings.HasSuffix(lower, ".svg") {
 		if err := internalasset.ValidateLocalSVG(data); err != nil {
-			return nil, fmt.Errorf("banner %q SVG: %w", raw, err)
+			return nil, fmt.Errorf("%s %q SVG: %w", kind, raw, err)
 		}
 		return data, nil
 	}

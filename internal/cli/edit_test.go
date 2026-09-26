@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -49,6 +50,22 @@ func TestEditSetupRejectsServiceFlagsAndNonInteractiveInputWithoutBuild(t *testi
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"edit", "--setup", "--vault", vault})
 	if err == nil || !strings.Contains(err.Error(), "interactive terminal") {
 		t.Fatalf("non-interactive setup error = %v", err)
+	}
+}
+
+func TestEditCommandRequiresConfiguredAccountBeforeListening(t *testing.T) {
+	vault := t.TempDir()
+	writeCLIConfig(t, vault)
+	if err := os.WriteFile(filepath.Join(vault, "_index.md"), []byte("---\ntitle: Home\npublish: true\n---\nHome\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(t.TempDir(), "public")
+	_, _, err := executeForTest(t, defaultCommandDependencies(), []string{"edit", "--vault", vault, "--output", output, "--port", "18080"})
+	if err == nil || !strings.Contains(err.Error(), "edit.username and edit.passwordHash must be configured") {
+		t.Fatalf("missing account error = %v", err)
+	}
+	if _, statErr := os.Stat(output); statErr != nil {
+		t.Fatalf("initial build output stat = %v", statErr)
 	}
 }
 

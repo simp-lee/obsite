@@ -158,10 +158,6 @@ func buildWithConfigAndOutputAndOverlay(vaultPath string, cfg model.SiteConfig, 
 
 	required := requiredSectionPaths(sources)
 	for sectionPath := range required {
-		if isIntermediateVersionContainer(sectionPath, cfg.Versions, sources) {
-			delete(required, sectionPath)
-			continue
-		}
 		if _, ok := sections[sectionPath]; !ok {
 			record(collector, diag.KindSection, sectionSourcePath(sectionPath), "missing required _index.md for section %q", sectionPath)
 		}
@@ -210,7 +206,7 @@ func buildWithConfigAndOutputAndOverlay(vaultPath string, cfg model.SiteConfig, 
 		validateStrictMarkdown(plan, indexResult.Index, collector)
 	}
 
-	plannedAssetOutputs := validateAssetDestinations(resolvedVault, plan, frontmatterAssets, assetOwners, indexResult.Index, collector)
+	plannedAssetOutputs := validateAssetDestinations(resolvedVault, plan, frontmatterAssets, assetOwners, indexResult.Index, scan.ResourceFiles, collector)
 	validateThemeSlotAssets(plan, indexResult.Index, plannedAssetOutputs, collector)
 	result := &Result{Plan: plan, Scan: scan, Sources: sources, Index: indexResult.Index, RelatedSemantic: indexResult.RelatedSemantic, Diagnostics: collector.Diagnostics()}
 	if collector.HasErrors() {
@@ -286,24 +282,6 @@ func record(collector *diag.Collector, kind diag.Kind, source string, format str
 		}
 	}
 	collector.Add(item)
-}
-
-func isIntermediateVersionContainer(sectionPath string, config *model.VersionsConfig, sources vault.StrictFrontmatterResult) bool {
-	if config == nil || sectionPath == "." || sectionPath == config.Root {
-		return false
-	}
-	for _, source := range sources.Sources {
-		if source.Article != nil && path.Dir(source.RelPath) == sectionPath {
-			return false
-		}
-	}
-	for _, entry := range config.Entries {
-		fullSource := path.Join(config.Root, entry.Source)
-		if sectionPath != fullSource && isDescendant(fullSource, sectionPath) {
-			return true
-		}
-	}
-	return false
 }
 
 func allSections(sections map[string]*model.Section) []*model.Section {
@@ -917,7 +895,7 @@ func validatePlannedAssets(vaultRoot, outputPath string, plan *model.SitePlan, s
 		}
 		if strings.HasSuffix(lower, ".svg") {
 			if err := internalasset.ValidateLocalSVG(data); err != nil {
-				assetRecord(collector, owner, line, kind, source, "banner SVG: %v", err)
+				assetRecord(collector, owner, line, kind, source, "%s SVG: %v", kind, err)
 				return
 			}
 			if plannedAssetReference(plan, kind, owner) {
@@ -983,7 +961,7 @@ func plannedAssetReference(plan *model.SitePlan, kind, owner string) bool {
 	return false
 }
 
-func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatter map[string]*model.Asset, owners map[string]assetDiagnostic, index *model.VaultIndex, collector *diag.Collector) map[string]struct{} {
+func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatter map[string]*model.Asset, owners map[string]assetDiagnostic, index *model.VaultIndex, resourceFiles []string, collector *diag.Collector) map[string]struct{} {
 	outputs := make(map[string]struct{})
 	if plan == nil {
 		return outputs
@@ -1032,7 +1010,7 @@ func validateAssetDestinations(vaultRoot string, plan *model.SitePlan, frontmatt
 	addPlanned(plan.ThemeAssets)
 	addPlanned(plan.VaultCSSAssets)
 
-	assetCollector, err := internalasset.NewCollectorWithOverrides(vaultRoot, allAssets, nil, nil, overrides)
+	assetCollector, err := internalasset.NewCollectorWithOverrides(vaultRoot, allAssets, nil, resourceFiles, overrides)
 	if err != nil {
 		record(collector, diag.KindMetadata, vaultRoot, "plan asset destinations: %v", err)
 		return outputs

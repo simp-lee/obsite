@@ -100,6 +100,57 @@ func TestCoordinatorPreservesCASAndPublishesSourceAndOutputTogether(t *testing.T
 	}
 }
 
+func TestCoordinatorEditsScannerAcceptedUppercaseMarkdownRelPath(t *testing.T) {
+	vault := t.TempDir()
+	output := filepath.Join(t.TempDir(), "public")
+	writeEditFile(t, vault, "obsite.yaml", "title: Site\nbaseURL: https://example.test/\nnavigation: []\n")
+	writeEditFile(t, vault, "_index.md", "---\ntitle: Home\npublish: true\n---\nHome\n")
+	original := "---\ntitle: Article\npublish: true\ntype: doc\n---\nOriginal\n"
+	writeEditFile(t, vault, "Article.MD", original)
+
+	built, err := internalbuild.BuildWithOptions(vault, output, internalbuild.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, entry := range built.Catalog.Entries {
+		if entry.RelPath == "Article.MD" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("catalog does not contain scanner path Article.MD: %#v", built.Catalog.Entries)
+	}
+
+	coordinator, err := NewCoordinator(vault, output, built.Catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := "---\ntitle: Article\npublish: true\ntype: doc\n---\nUpdated\n"
+	result, err := coordinator.Save("Article.MD", sourceHash([]byte(original)), []byte(updated))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceHash != sourceHash([]byte(updated)) {
+		t.Fatalf("saved source hash = %q", result.SourceHash)
+	}
+	if got, err := os.ReadFile(filepath.Join(vault, "Article.MD")); err != nil || string(got) != updated {
+		t.Fatalf("saved uppercase source = %q, err=%v", got, err)
+	}
+
+	result, err = coordinator.Delete("Article.MD", result.SourceHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.SourceHash != AbsentSourceHash {
+		t.Fatalf("deleted source hash = %q", result.SourceHash)
+	}
+	if _, err := os.Stat(filepath.Join(vault, "Article.MD")); !os.IsNotExist(err) {
+		t.Fatalf("deleted uppercase source stat error = %v", err)
+	}
+}
+
 func sourceHash(data []byte) string {
 	hash := sha256.Sum256(data)
 	return hex.EncodeToString(hash[:])

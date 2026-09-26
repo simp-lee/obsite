@@ -77,7 +77,7 @@ func RenderStrictSection(plan *model.SitePlan, section *model.Section, index *mo
 		body.WriteString(`</ul>`)
 	}
 	body.WriteString(`</section>`)
-	return strictDocument(plan, section.Route, section.Title, section.Description, section.Breadcrumbs, section.VersionID, section.VersionRoutes, "", nil, section.SourcePath, StrictSidebarSectionFallbackNodes(plan, section), body.String())
+	return strictDocument(plan, section.Route, section.Title, section.Description, section.Breadcrumbs, section.VersionID, section.VersionRoutes, "", nil, section.SourcePath, StrictSidebarNodes(plan, section.VersionID), body.String())
 }
 
 // RenderStrictArticle renders a normalized article page and its single shared
@@ -157,7 +157,7 @@ func RenderStrictArticle(plan *model.SitePlan, article *model.Note, previous, ne
 		body.WriteString(`</nav>`)
 	}
 	body.WriteString(`</article>`)
-	return strictDocument(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, breadcrumbs, article.VersionID, article.VersionRoutes, article.SocialImage, article, article.RelPath, StrictSidebarArticleFallbackNodes(plan, section, article), body.String())
+	return strictDocument(plan, article.Route, article.Frontmatter.Title, article.Frontmatter.Description, breadcrumbs, article.VersionID, article.VersionRoutes, article.SocialImage, article, article.RelPath, StrictSidebarNodes(plan, article.VersionID), body.String())
 }
 
 // RenderStrictNotFound renders the fixed static 404 page.
@@ -166,7 +166,7 @@ func RenderStrictNotFound(plan *model.SitePlan) ([]byte, error) {
 		return nil, fmt.Errorf("404 page requires a plan")
 	}
 	body := `<section class="not-found-page"><h1>Not found</h1><p>The requested page could not be found.</p><a href="` + esc(strictSitePath(plan, "/")) + `">Home</a></section>`
-	return strictDocument(plan, "/404.html", "Not found", "", nil, "", nil, "", nil, "", StrictSidebarRootFallbackNodes(plan, ""), body)
+	return strictDocument(plan, "/404.html", "Not found", "", nil, "", nil, "", nil, "", StrictSidebarNodes(plan, ""), body)
 }
 
 // RenderStrictTag renders a deterministic tag archive from the normalized index.
@@ -183,7 +183,7 @@ func RenderStrictTag(plan *model.SitePlan, tag *model.Tag, notes []*model.Note) 
 	}
 	body.WriteString(`</ul></section>`)
 	route := "/" + slug.EncodePath(tag.Slug) + "/"
-	return strictDocument(plan, route, "Tag: "+tag.Name, "", nil, "", nil, "", nil, "", StrictSidebarRootFallbackNodes(plan, ""), body.String())
+	return strictDocument(plan, route, "Tag: "+tag.Name, "", nil, "", nil, "", nil, "", StrictSidebarNodes(plan, ""), body.String())
 }
 
 // RenderStrictTimeline renders the optional recent-article archive.
@@ -210,7 +210,7 @@ func RenderStrictTimeline(plan *model.SitePlan, route string, notes []*model.Not
 		body.WriteString(`</nav>`)
 	}
 	body.WriteString(`</section>`)
-	return strictDocument(plan, route, "Recent articles", "", nil, "", nil, "", nil, "", StrictSidebarRootFallbackNodes(plan, ""), body.String())
+	return strictDocument(plan, route, "Recent articles", "", nil, "", nil, "", nil, "", StrictSidebarNodes(plan, ""), body.String())
 }
 
 func timelinePageInfo(plan *model.SitePlan, route string) (page, total int) {
@@ -533,8 +533,8 @@ func strictDocument(plan *model.SitePlan, currentRoute, title, description strin
 	output.WriteString(`</header><main class="site-main" data-obsite-main>`)
 	if plan.Config.Sidebar.Enabled && len(sidebarNodes) > 0 {
 		output.WriteString(`<button type="button" class="sidebar-toggle-mobile sidebar-launch" data-sidebar-toggle hidden aria-expanded="false"><span class="sidebar-launch-icon" aria-hidden="true"></span>Open navigation</button><aside class="sidebar-shell" data-sidebar-shell><div class="sidebar-panel-head"><strong>Navigation</strong><button type="button" class="sidebar-close" data-sidebar-close>Close navigation</button></div><nav class="sidebar" aria-label="Sidebar" data-sidebar-root>`)
-		// Keep the no-JavaScript fallback local to this page. The runtime loads
-		// the complete tree from the single shared Sidebar payload.
+		// Render the complete current-version tree so the Sidebar remains usable
+		// when the runtime is unavailable or JavaScript is disabled.
 		output.WriteString(`<ul class="sidebar-list sidebar-list-root">`)
 		strictWriteSidebarFallbackHTML(&output, plan, sidebarNodes, currentRoute)
 		output.WriteString(`</ul></nav></aside><button type="button" class="sidebar-overlay" data-sidebar-overlay hidden aria-label="Close navigation"></button>`)
@@ -594,23 +594,6 @@ func strictBasePath(plan *model.SitePlan) string {
 	return parsed.EscapedPath()
 }
 
-func hasPublishedSidebarEntries(section *model.Section) bool {
-	if section == nil {
-		return false
-	}
-	for _, child := range section.Children {
-		if child != nil && child.EffectivePublish && child.Route != "" {
-			return true
-		}
-	}
-	for _, article := range section.Articles {
-		if article != nil && article.Route != "" {
-			return true
-		}
-	}
-	return false
-}
-
 func strictSidebarRoot(plan *model.SitePlan, versionID string) *model.Section {
 	if plan == nil {
 		return nil
@@ -625,96 +608,34 @@ func strictSidebarRoot(plan *model.SitePlan, versionID string) *model.Section {
 	return plan.Root
 }
 
-// StrictSidebarRootFallbackNodes returns the bounded Sidebar projection for a
-// generated page outside the section tree. The complete tree remains in the
-// shared Sidebar JSON.
-func StrictSidebarRootFallbackNodes(plan *model.SitePlan, versionID string) []model.SidebarNode {
-	root := strictSidebarRoot(plan, versionID)
-	if root == nil || !root.EffectivePublish || root.Route == "" || !hasPublishedSidebarEntries(root) {
-		return nil
-	}
-	return []model.SidebarNode{strictSidebarSectionNode(root, nil)}
+// StrictSidebarNodes returns the complete sidebar tree for the selected
+// version. The same normalized section tree is used for the shared runtime
+// payload and for the server-rendered no-JavaScript sidebar.
+func StrictSidebarNodes(plan *model.SitePlan, versionID string) []model.SidebarNode {
+	return strictSidebarChildren(strictSidebarRoot(plan, versionID))
 }
 
-// StrictSidebarSectionFallbackNodes returns the current section's ancestor
-// chain and direct section navigation without copying unrelated descendants.
-func StrictSidebarSectionFallbackNodes(plan *model.SitePlan, section *model.Section) []model.SidebarNode {
+func strictSidebarChildren(section *model.Section) []model.SidebarNode {
 	if section == nil {
 		return nil
 	}
-	root := strictSidebarRoot(plan, section.VersionID)
-	if root == nil || !hasPublishedSidebarEntries(root) {
-		return nil
-	}
-	sections, ok := strictSidebarAncestorPath(root, section)
-	if !ok {
-		return StrictSidebarRootFallbackNodes(plan, section.VersionID)
-	}
-	return strictSidebarWrapSections(sections, strictSidebarDirectNodes(section))
-}
-
-// StrictSidebarArticleFallbackNodes returns the current article and its section
-// ancestors without copying sibling articles or unrelated branches.
-func StrictSidebarArticleFallbackNodes(plan *model.SitePlan, section *model.Section, article *model.Note) []model.SidebarNode {
-	if article == nil {
-		return nil
-	}
-	root := strictSidebarRoot(plan, article.VersionID)
-	if root == nil || !hasPublishedSidebarEntries(root) {
-		return nil
-	}
-	sections, ok := strictSidebarAncestorPath(root, section)
-	if !ok {
-		return StrictSidebarRootFallbackNodes(plan, article.VersionID)
-	}
-	return strictSidebarWrapSections(sections, []model.SidebarNode{{Name: article.Frontmatter.Title, URL: article.Route}})
-}
-
-func strictSidebarAncestorPath(root, section *model.Section) ([]*model.Section, bool) {
-	if root == nil || section == nil {
-		return nil, false
-	}
-	reversed := make([]*model.Section, 0)
-	for current := section; current != nil; current = current.Parent {
-		reversed = append(reversed, current)
-		if current == root {
-			sections := make([]*model.Section, len(reversed))
-			for index := range reversed {
-				sections[len(reversed)-1-index] = reversed[index]
-			}
-			return sections, true
-		}
-	}
-	return nil, false
-}
-
-func strictSidebarWrapSections(sections []*model.Section, children []model.SidebarNode) []model.SidebarNode {
-	for index := len(sections) - 1; index >= 0; index-- {
-		children = []model.SidebarNode{strictSidebarSectionNode(sections[index], children)}
-	}
-	return children
-}
-
-func strictSidebarSectionNode(section *model.Section, children []model.SidebarNode) model.SidebarNode {
-	return model.SidebarNode{Name: section.Title, URL: section.Route, IsDir: true, Children: children}
-}
-
-func strictSidebarDirectNodes(section *model.Section) []model.SidebarNode {
-	if section == nil {
-		return nil
-	}
-	nodes := make([]model.SidebarNode, 0, len(section.Children)+len(section.Articles))
+	result := make([]model.SidebarNode, 0, len(section.Children)+len(section.Articles))
 	for _, child := range section.Children {
-		if child != nil && child.EffectivePublish && child.Route != "" {
-			nodes = append(nodes, strictSidebarSectionNode(child, nil))
+		if child != nil && child.EffectivePublish {
+			result = append(result, model.SidebarNode{
+				Name: child.Title, URL: child.Route, IsDir: true,
+				Children: strictSidebarChildren(child),
+			})
 		}
 	}
 	for _, article := range section.Articles {
-		if article != nil && article.Route != "" {
-			nodes = append(nodes, model.SidebarNode{Name: article.Frontmatter.Title, URL: article.Route})
+		if article != nil {
+			result = append(result, model.SidebarNode{
+				Name: article.Frontmatter.Title, URL: article.Route, Source: article.RelPath,
+			})
 		}
 	}
-	return nodes
+	return result
 }
 
 func strictWriteSidebarFallbackHTML(output *strings.Builder, plan *model.SitePlan, nodes []model.SidebarNode, currentRoute string) {
