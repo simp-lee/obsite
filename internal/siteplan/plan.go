@@ -186,6 +186,9 @@ func buildWithConfigAndOutputAndOverlay(vaultPath string, cfg model.SiteConfig, 
 	frontmatterAssets, assetOwners := validatePlannedAssets(resolvedVault, outputPath, plan, sections, sources, scan.ResourceFiles, collector)
 	buildVersionCorrespondence(versions, collector)
 	finalizeCollections(plan, sections, versions, collector)
+	if cfg.Timeline.Enabled {
+		plan.Timeline = model.NewTimelinePagePlan(cfg.Timeline.Path, cfg.Pagination.PageSize, len(plan.Posts))
+	}
 	indexResult, indexErr := vault.BuildStrictIndex(scan, sources, plan.Articles, plan.Sections, collector, vault.BuildIndexOptions{Concurrency: concurrency, CollectRelatedSemantic: cfg.Related.Enabled, ResourceSections: allSections(sections)})
 	if indexErr != nil {
 		record(collector, diag.KindSchema, resolvedVault, "index strict Markdown: %v", indexErr)
@@ -198,9 +201,9 @@ func buildWithConfigAndOutputAndOverlay(vaultPath string, cfg model.SiteConfig, 
 				claimPublicPageRoute(plan, "/"+encodePath(tag.Slug)+"/", "tag:"+tag.Name, collector)
 			}
 		}
-		if cfg.Timeline.Enabled {
-			for _, route := range timelineRoutes(cfg.Timeline.Path, cfg.Pagination.PageSize, len(plan.Posts)) {
-				claimPublicPageRoute(plan, route, "timeline", collector)
+		if plan.Timeline != nil {
+			for _, page := range plan.Timeline.Pages {
+				claimPublicPageRoute(plan, page.Route, "timeline", collector)
 			}
 		}
 		validateStrictMarkdown(plan, indexResult.Index, collector)
@@ -1376,29 +1379,6 @@ func breadcrumbs(section *model.Section) []model.Breadcrumb {
 	return reversed
 }
 
-func timelineRoutes(rawPath string, pageSize, total int) []string {
-	base := "/" + encodePath(strings.Trim(rawPath, "/")) + "/"
-	if pageSize <= 0 || pageSize >= total {
-		pageSize = total
-	}
-	if pageSize == 0 {
-		pageSize = 1
-	}
-	pageCount := (total + pageSize - 1) / pageSize
-	if pageCount == 0 {
-		pageCount = 1
-	}
-	routes := make([]string, 0, pageCount)
-	for page := 1; page <= pageCount; page++ {
-		route := base
-		if page > 1 {
-			route = strings.TrimSuffix(base, "/") + "/page/" + strconv.Itoa(page) + "/"
-		}
-		routes = append(routes, route)
-	}
-	return routes
-}
-
 func reservedRoutes() map[string]struct{} {
 	values := []string{"/assets/", "/style.css", "/sitemap.xml", "/robots.txt", "/index.xml", "/404.html", "/.obsite-output", "/.obsite-cache/", "/_popover/", "/_obsite/"}
 	result := make(map[string]struct{}, len(values))
@@ -1406,6 +1386,94 @@ func reservedRoutes() map[string]struct{} {
 		result[v] = struct{}{}
 	}
 	return result
+}
+
+func initializeRouteOutputIndex(plan *model.SitePlan) {
+	if plan.RouteIndex == nil {
+		plan.RouteIndex = &model.RouteOutputIndex{}
+	}
+	index := plan.RouteIndex
+	if index.Exact == nil {
+		index.Exact = make(map[string]string)
+	}
+	if index.Prefixes == nil {
+		index.Prefixes = make(map[string]string)
+	}
+	if index.FoldedExact == nil {
+		index.FoldedExact = make(map[string]string)
+	}
+	if index.FoldedPrefix == nil {
+		index.FoldedPrefix = make(map[string]string)
+	}
+	if len(index.Exact) == 0 && len(plan.Routes) > 0 {
+		routes := make([]string, 0, len(plan.Routes))
+		for route := range plan.Routes {
+			routes = append(routes, route)
+		}
+		sort.Strings(routes)
+		for _, route := range routes {
+			addRouteOutputClaim(index, route)
+		}
+	}
+}
+
+func addRouteOutputClaim(index *model.RouteOutputIndex, route string) {
+	if index == nil {
+		return
+	}
+	destination := physicalOutputPath(routeDestination(route))
+	setRouteOutputOwner(index.Exact, destination, route)
+	for _, prefix := range routeOutputPrefixes(destination) {
+		setRouteOutputOwner(index.Prefixes, prefix, route)
+	}
+	folded := fold(destination)
+	setRouteOutputOwner(index.FoldedExact, folded, route)
+	for _, prefix := range routeOutputPrefixes(folded) {
+		setRouteOutputOwner(index.FoldedPrefix, prefix, route)
+	}
+}
+
+func routeOutputConflict(index *model.RouteOutputIndex, destination string) string {
+	if index == nil {
+		return ""
+	}
+	find := func(exact, prefixes map[string]string, value string) string {
+		best := ""
+		for _, prefix := range routeOutputPrefixes(value) {
+			if route := exact[prefix]; route != "" && (best == "" || route < best) {
+				best = route
+			}
+		}
+		if route := prefixes[value]; route != "" && (best == "" || route < best) {
+			best = route
+		}
+		return best
+	}
+	physical := physicalOutputPath(destination)
+	best := find(index.Exact, index.Prefixes, physical)
+	folded := find(index.FoldedExact, index.FoldedPrefix, fold(physical))
+	if folded != "" && (best == "" || folded < best) {
+		best = folded
+	}
+	return best
+}
+
+func routeOutputPrefixes(value string) []string {
+	parts := strings.Split(strings.Trim(value, "/"), "/")
+	prefixes := make([]string, 0, len(parts))
+	for index := range parts {
+		prefix := strings.Join(parts[:index+1], "/")
+		if prefix != "" {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
+}
+
+func setRouteOutputOwner(owners map[string]string, outputPath, route string) {
+	if current := owners[outputPath]; current == "" || route < current {
+		owners[outputPath] = route
+	}
 }
 
 func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {
@@ -1425,19 +1493,16 @@ func claimRoute(plan *model.SitePlan, route, owner string, collector *diag.Colle
 			return
 		}
 	}
-	existingRoutes := make([]string, 0, len(plan.Routes))
-	for existing := range plan.Routes {
-		existingRoutes = append(existingRoutes, existing)
+	if plan.Routes == nil {
+		plan.Routes = make(map[string]string)
 	}
-	sort.Strings(existingRoutes)
-	for _, existing := range existingRoutes {
-		existingOwner := plan.Routes[existing]
-		if outputPathsConflict(destination, routeDestination(existing)) {
-			record(collector, diag.KindRoute, owner, "route %q conflicts with %q", route, existingOwner)
-			return
-		}
+	initializeRouteOutputIndex(plan)
+	if existing := routeOutputConflict(plan.RouteIndex, destination); existing != "" {
+		record(collector, diag.KindRoute, owner, "route %q conflicts with %q", route, plan.Routes[existing])
+		return
 	}
 	plan.Routes[key] = owner
+	addRouteOutputClaim(plan.RouteIndex, key)
 }
 
 func claimPublicPageRoute(plan *model.SitePlan, route, owner string, collector *diag.Collector) {

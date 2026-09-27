@@ -47,20 +47,32 @@ type Version struct {
 	Sections []*Section
 }
 
+// RouteOutputIndex tracks physical output paths claimed by generated routes.
+// It lets the planner detect exact and ancestor/descendant conflicts without
+// rescanning every previously claimed route.
+type RouteOutputIndex struct {
+	Exact        map[string]string
+	Prefixes     map[string]string
+	FoldedExact  map[string]string
+	FoldedPrefix map[string]string
+}
+
 // SitePlan is the immutable normalized handoff from vault analysis to later
 // validation, asset planning, and rendering. Slices are sorted by the planner;
 // consumers must treat the pointed-to values as read-only.
 type SitePlan struct {
-	VaultPath string
-	Config    SiteConfig
-	Root      *Section
-	Sections  []*Section
-	Articles  []*Note
-	Documents []*Note
-	Posts     []*Note
-	Pages     []*Note
-	Versions  []*Version
-	Routes    map[string]string
+	VaultPath  string
+	Config     SiteConfig
+	Root       *Section
+	Sections   []*Section
+	Articles   []*Note
+	Documents  []*Note
+	Posts      []*Note
+	Pages      []*Note
+	Versions   []*Version
+	Timeline   *TimelinePagePlan
+	RouteIndex *RouteOutputIndex
+	Routes     map[string]string
 	// PublicPageRoutes contains generated HTML page routes that do not have a
 	// note or section target in the vault index.
 	PublicPageRoutes map[string]struct{}

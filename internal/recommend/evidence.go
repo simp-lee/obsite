@@ -13,7 +13,7 @@ import (
 
 var (
 	topicDatePattern    = regexp.MustCompile(`^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$`)
-	topicVersionPattern = regexp.MustCompile(`(?i)^v(?:ersion)?\d+(?:[._-]\d+)*$`)
+	topicVersionPattern = regexp.MustCompile(`(?i)^v(?:ersion)?\p{N}+(?:[._-]\p{N}+)*$`)
 	topicUUIDPattern    = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 )
 

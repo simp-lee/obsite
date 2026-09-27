@@ -64,24 +64,25 @@ func TestCalibrationJudgments(t *testing.T) {
 			}
 		})
 	}
-	if calibrationSets == 4 {
-		t.Run("complete", func(t *testing.T) {
-			totalJudgments := 0
-			for _, reference := range manifest.LabelSets {
-				if reference.Split != "calibration" {
-					continue
-				}
-				set, err := loadQualityJudgmentSet(reference)
-				if err != nil {
-					t.Fatal(err)
-				}
-				totalJudgments += len(set.Sources)
-			}
-			if totalJudgments != 40 {
-				t.Fatalf("complete calibration judgments = %d, want 40", totalJudgments)
-			}
-		})
+	if calibrationSets != 4 {
+		t.Fatalf("calibration label sets = %d, want 4", calibrationSets)
 	}
+	t.Run("complete", func(t *testing.T) {
+		totalJudgments := 0
+		for _, reference := range manifest.LabelSets {
+			if reference.Split != "calibration" {
+				continue
+			}
+			set, err := loadQualityJudgmentSet(reference)
+			if err != nil {
+				t.Fatal(err)
+			}
+			totalJudgments += len(set.Sources)
+		}
+		if totalJudgments != 40 {
+			t.Fatalf("complete calibration judgments = %d, want 40", totalJudgments)
+		}
+	})
 }
 
 func loadQualityRankingCorpus(manifest qualityManifest, split string) (qualityRankingCorpus, error) {

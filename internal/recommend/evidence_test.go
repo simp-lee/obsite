@@ -31,6 +31,7 @@ func TestTopicShapeTable(t *testing.T) {
 		{term: "2026.04.6", want: false},
 		{term: "v2", want: false},
 		{term: "VERSION2.1-3", want: false},
+		{term: "VERSION١.٢", want: false},
 		{term: "550e8400-e29b-41d4-a716-446655440000", want: false},
 		{term: "deadbeefcafebabe", want: false},
 		{term: "dead:beef/cafe_babe", want: false},

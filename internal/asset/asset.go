@@ -51,12 +51,12 @@ func planAssetDestinationsWithOverrides(vaultRoot string, assets map[string]*mod
 		hashed := hashCollisionPathsWithOverrides(vaultRoot, groupKey, sources, overrides)
 
 		if len(sources) == 1 {
-			planned[sources[0]] = hashed[sources[0]]
+			planned[sources[0]] = avoidReservedOutputPath(hashed[sources[0]], reservedOutputKeys)
 			continue
 		}
 
 		for _, srcPath := range sources {
-			planned[srcPath] = hashed[srcPath]
+			planned[srcPath] = avoidReservedOutputPath(hashed[srcPath], reservedOutputKeys)
 		}
 	}
 
@@ -275,6 +275,30 @@ func normalizeReservedOutputKeys(reservedOutputPaths []string) map[string]struct
 	}
 
 	return reserved
+}
+
+func avoidReservedOutputPath(dstPath string, reservedOutputKeys map[string]struct{}) string {
+	if !isReservedOutputKey(dstPath, reservedOutputKeys) {
+		return dstPath
+	}
+
+	ext := path.Ext(dstPath)
+	stem := strings.TrimSuffix(dstPath, ext)
+	for attempt := 1; ; attempt++ {
+		candidate := fmt.Sprintf("%s-%d%s", stem, attempt, ext)
+		if !isReservedOutputKey(candidate, reservedOutputKeys) {
+			return candidate
+		}
+	}
+}
+
+func isReservedOutputKey(outputPath string, reservedOutputKeys map[string]struct{}) bool {
+	if outputPath == "" || len(reservedOutputKeys) == 0 {
+		return false
+	}
+
+	_, ok := reservedOutputKeys[outputSiteKey(outputPath)]
+	return ok
 }
 
 func plainAssetKey(srcPath string) string {

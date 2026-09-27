@@ -11,9 +11,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	internalasset "github.com/simp-lee/obsite/internal/asset"
@@ -145,41 +147,18 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 			return result, writeErr
 		}
 	}
+	socialCards, cardErr := generateStrictSocialCards(plan, boundary.VaultPath, workerConcurrency)
+	if cardErr != nil {
+		return result, cardErr
+	}
 	for _, article := range plan.Articles {
 		if article == nil || article.Route == "" {
 			continue
 		}
 		section := strictArticleSection(plan, article)
-		cover, coverErr := strictCoverBytes(boundary.VaultPath, article.Frontmatter.Cover)
-		if coverErr != nil {
-			return result, fmt.Errorf("read cover for %q: %w", article.RelPath, coverErr)
-		}
-		context := ""
-		if section != nil {
-			context = section.Title
-		}
-		if article.VersionID != "" {
-			for _, version := range plan.Versions {
-				if version != nil && version.ID == article.VersionID {
-					if context != "" {
-						context += " / "
-					}
-					context += version.Label
-				}
-			}
-		}
-		card, cardErr := social.Generate(social.Input{
-			CanonicalURL: strictBuildCanonicalURL(plan.Config.BaseURL, article.Route), SiteTitle: plan.Config.Title,
-			Title: article.Frontmatter.Title, Context: context, Description: article.Frontmatter.Description,
-			Date: strictCardDate(article.Frontmatter.Date), Updated: strictCardDate(article.Frontmatter.Updated),
-			Tags: append([]string(nil), article.Frontmatter.Tags...), Aliases: append([]string(nil), article.Frontmatter.Aliases...),
-			Slug: article.Frontmatter.Slug, Type: article.Frontmatter.Type, Order: article.Frontmatter.Order,
-			Author: article.Frontmatter.Author, Reviewed: strictCardDate(article.Frontmatter.Reviewed),
-			Status: article.Frontmatter.Status, Audience: article.Frontmatter.Audience,
-			ProductVersion: article.Frontmatter.ProductVersion, Series: article.Frontmatter.Series, Cover: cover,
-		})
-		if cardErr != nil {
-			return result, fmt.Errorf("generate social card for %q: %w", article.RelPath, cardErr)
+		card, ok := socialCards[article.RelPath]
+		if !ok {
+			return result, fmt.Errorf("social card for %q was not generated", article.RelPath)
 		}
 		if err := outputs.dependencyBytes("social:"+article.RelPath, article.RelPath, card.CanonicalJSON); err != nil {
 			return result, err
@@ -233,43 +212,24 @@ func buildStrictSiteWithTransactionTracking(planned *siteplan.Result, vaultPath,
 		}
 		result.TagPages++
 	}
-	if plan.Config.Timeline.Enabled {
-		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
-		pageSize := plan.Config.Pagination.PageSize
-		if pageSize <= 0 || pageSize >= len(plan.Posts) {
-			pageSize = len(plan.Posts)
-		}
-		if pageSize == 0 {
-			pageSize = 1
-		}
-		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
-		if pageCount == 0 {
-			pageCount = 1
-		}
-		for page := 1; page <= pageCount; page++ {
-			start := (page - 1) * pageSize
-			end := start + pageSize
-			if end > len(plan.Posts) {
-				end = len(plan.Posts)
-			}
-			timelineRoute := baseTimelineRoute
+	if plan.Timeline != nil {
+		for _, page := range plan.Timeline.Pages {
 			owner := "timeline"
-			if page > 1 {
-				timelineRoute = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
-				owner += ":" + strconv.Itoa(page)
+			if page.Number > 1 {
+				owner += ":" + strconv.Itoa(page.Number)
 			}
-			pagePosts := plan.Posts[start:end]
-			data, renderErr := render.RenderStrictTimeline(plan, timelineRoute, pagePosts)
+			pagePosts := plan.Posts[page.Start:page.End]
+			data, renderErr := render.RenderStrictTimeline(plan, page.Route, pagePosts)
 			if renderErr != nil {
 				return result, fmt.Errorf("render timeline: %w", renderErr)
 			}
-			dependency := strictCacheHTMLBase(plan, timelineRoute, "Recent articles", "", "", "", true)
+			dependency := strictCacheHTMLBase(plan, page.Route, "Recent articles", "", "", "", true)
 			dependency.Entries = strictCachePageEntries(pagePosts)
-			dependency.TimelinePageCount = pageCount
+			dependency.TimelinePageCount = len(plan.Timeline.Pages)
 			if dependencyErr := outputs.dependency(owner, "obsite.yaml", dependency); dependencyErr != nil {
 				return result, dependencyErr
 			}
-			if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(timelineRoute), owner, data); writeErr != nil {
+			if writeErr := writeStrictHTML(outputs, staging, render.StrictRouteOutputPath(page.Route), owner, data); writeErr != nil {
 				return result, writeErr
 			}
 		}
@@ -781,6 +741,108 @@ func writeStrictHTML(outputs *strictOutputRegistry, outputRoot, relPath, owner s
 	return outputs.write(outputRoot, relPath, owner, compact)
 }
 
+func generateStrictSocialCards(plan *model.SitePlan, vaultPath string, workerCount int) (map[string]social.Result, error) {
+	cards := make(map[string]social.Result)
+	if plan == nil {
+		return cards, nil
+	}
+	articles := make([]*model.Note, 0, len(plan.Articles))
+	for _, article := range plan.Articles {
+		if article != nil && article.Route != "" {
+			articles = append(articles, article)
+		}
+	}
+	if len(articles) == 0 {
+		return cards, nil
+	}
+	if workerCount <= 0 {
+		workerCount = runtime.GOMAXPROCS(0)
+		if workerCount > 8 {
+			workerCount = 8
+		}
+		if workerCount < 1 {
+			workerCount = 1
+		}
+	}
+	if workerCount > len(articles) {
+		workerCount = len(articles)
+	}
+
+	results := make([]social.Result, len(articles))
+	errorsByArticle := make([]error, len(articles))
+	coverErrors := make([]bool, len(articles))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	for worker := 0; worker < workerCount; worker++ {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				article := articles[index]
+				cover, err := strictCoverBytes(vaultPath, article.Frontmatter.Cover)
+				if err == nil {
+					var input social.Input
+					input, err = strictSocialCardInput(plan, article, cover)
+					if err == nil {
+						results[index], err = social.Generate(input)
+					}
+				}
+				if err != nil {
+					coverErrors[index] = cover == nil && article.Frontmatter.Cover != ""
+					errorsByArticle[index] = err
+				}
+			}
+		}()
+	}
+	for index := range articles {
+		jobs <- index
+	}
+	close(jobs)
+	workers.Wait()
+
+	for index, article := range articles {
+		if err := errorsByArticle[index]; err != nil {
+			if coverErrors[index] {
+				return nil, fmt.Errorf("read cover for %q: %w", article.RelPath, err)
+			}
+			return nil, fmt.Errorf("generate social card for %q: %w", article.RelPath, err)
+		}
+		cards[article.RelPath] = results[index]
+	}
+	return cards, nil
+}
+
+func strictSocialCardInput(plan *model.SitePlan, article *model.Note, cover []byte) (social.Input, error) {
+	if plan == nil || article == nil {
+		return social.Input{}, fmt.Errorf("social card requires a plan and article")
+	}
+	section := strictArticleSection(plan, article)
+	context := ""
+	if section != nil {
+		context = section.Title
+	}
+	if article.VersionID != "" {
+		for _, version := range plan.Versions {
+			if version != nil && version.ID == article.VersionID {
+				if context != "" {
+					context += " / "
+				}
+				context += version.Label
+			}
+		}
+	}
+	return social.Input{
+		CanonicalURL: strictBuildCanonicalURL(plan.Config.BaseURL, article.Route), SiteTitle: plan.Config.Title,
+		Title: article.Frontmatter.Title, Context: context, Description: article.Frontmatter.Description,
+		Date: strictCardDate(article.Frontmatter.Date), Updated: strictCardDate(article.Frontmatter.Updated),
+		Tags: append([]string(nil), article.Frontmatter.Tags...), Aliases: append([]string(nil), article.Frontmatter.Aliases...),
+		Slug: article.Frontmatter.Slug, Type: article.Frontmatter.Type, Order: article.Frontmatter.Order,
+		Author: article.Frontmatter.Author, Reviewed: strictCardDate(article.Frontmatter.Reviewed),
+		Status: article.Frontmatter.Status, Audience: article.Frontmatter.Audience,
+		ProductVersion: article.Frontmatter.ProductVersion, Series: article.Frontmatter.Series, Cover: cover,
+	}, nil
+}
+
 func buildStrictRelations(planned *siteplan.Result, concurrency int) (*model.LinkGraph, map[string][]*model.Note, error) {
 	related := make(map[string][]*model.Note)
 	if planned == nil || planned.Plan == nil || planned.Index == nil {
@@ -1108,26 +1170,10 @@ func writeStrictMetadataOutputs(outputRoot string, plan *model.SitePlan, index *
 			}
 		}
 	}
-	if plan.Config.Timeline.Enabled {
-		baseTimelineRoute := "/" + slug.EncodePath(strings.Trim(plan.Config.Timeline.Path, "/")) + "/"
-		pageSize := plan.Config.Pagination.PageSize
-		if pageSize <= 0 || pageSize >= len(plan.Posts) {
-			pageSize = len(plan.Posts)
-		}
-		if pageSize == 0 {
-			pageSize = 1
-		}
-		pageCount := (len(plan.Posts) + pageSize - 1) / pageSize
-		if pageCount == 0 {
-			pageCount = 1
-		}
-		for page := 1; page <= pageCount; page++ {
-			route := baseTimelineRoute
-			if page > 1 {
-				route = strings.TrimSuffix(baseTimelineRoute, "/") + "/page/" + strconv.Itoa(page) + "/"
-			}
-			sitemapTimeline = append(sitemapTimeline, route)
-			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, route)))
+	if plan.Timeline != nil {
+		for _, page := range plan.Timeline.Pages {
+			sitemapTimeline = append(sitemapTimeline, page.Route)
+			_, _ = fmt.Fprintf(&sitemap, `<url><loc>%s</loc></url>`, strictXMLEscape(strictBuildCanonicalURL(plan.Config.BaseURL, page.Route)))
 		}
 	}
 	sitemap.WriteString(`</urlset>`)

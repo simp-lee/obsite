@@ -53,9 +53,9 @@ func validateThemeSlotAssets(plan *model.SitePlan, index *model.VaultIndex, plan
 			check("/"+encodePath(tag.Slug)+"/", "Tag: "+tag.Name, nil, "")
 		}
 	}
-	if plan.Config.Timeline.Enabled {
-		for _, route := range timelineRoutes(plan.Config.Timeline.Path, plan.Config.Pagination.PageSize, len(plan.Posts)) {
-			check(route, "Recent articles", nil, "")
+	if plan.Timeline != nil {
+		for _, page := range plan.Timeline.Pages {
+			check(page.Route, "Recent articles", nil, "")
 		}
 	}
 	check("/404.html", "Not found", nil, "")

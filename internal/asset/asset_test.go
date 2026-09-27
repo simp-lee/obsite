@@ -692,6 +692,47 @@ func TestMergeAssetsRestoresPlainPathAfterReservedOutputIsReleased(t *testing.T)
 	}
 }
 
+func TestAssetPlannerAvoidsReservedHashedDestination(t *testing.T) {
+	t.Parallel()
+
+	vaultRoot := t.TempDir()
+	srcPath := "images/hero.png"
+	writeAssetFile(t, vaultRoot, srcPath, "hero")
+	contentAddressed := expectedHashedAssetPath(t, vaultRoot, srcPath)
+
+	assigned := planAssetDestinations(vaultRoot, map[string]*model.Asset{
+		srcPath: {SrcPath: srcPath},
+	}, normalizeReservedOutputKeys([]string{contentAddressed}))
+	got := assigned[srcPath]
+	if got == "" {
+		t.Fatalf("planAssetDestinations()[%q] = empty path, want destination", srcPath)
+	}
+	if got == contentAddressed {
+		t.Fatalf("planAssetDestinations()[%q] = %q, want reserved destination to be avoided", srcPath, got)
+	}
+	if isReservedOutputKey(got, normalizeReservedOutputKeys([]string{contentAddressed})) {
+		t.Fatalf("planAssetDestinations()[%q] = %q, want non-reserved destination", srcPath, got)
+	}
+
+	collector, err := NewCollectorWithResourceFiles(vaultRoot, nil, []string{contentAddressed}, nil)
+	if err != nil {
+		t.Fatalf("NewCollectorWithResourceFiles() error = %v", err)
+	}
+	if got := collector.Register(srcPath); got != assigned[srcPath] {
+		t.Fatalf("Register(%q) = %q, want planner destination %q", srcPath, got, assigned[srcPath])
+	}
+
+	missingSource := "images/missing.png"
+	missingDestination := hashedAssetPath(missingSource, missingAssetHash(missingSource))
+	missingCollector, err := NewCollectorWithResourceFiles(vaultRoot, nil, []string{missingDestination}, nil)
+	if err != nil {
+		t.Fatalf("NewCollectorWithResourceFiles() for missing source error = %v", err)
+	}
+	if got := missingCollector.Register(missingSource); got == missingDestination || isReservedOutputKey(got, normalizeReservedOutputKeys([]string{missingDestination})) {
+		t.Fatalf("Register(%q) = %q, want non-reserved fallback destination", missingSource, got)
+	}
+}
+
 func TestMergeAssetsRewritesNonAssetDestinationUnderAssets(t *testing.T) {
 	t.Parallel()
 

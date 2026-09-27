@@ -12,10 +12,7 @@ import (
 	"github.com/simp-lee/obsite/internal/model"
 )
 
-const (
-	themeSlotsRootName           = "obsite-theme-slots-primary"
-	themeSlotsValidationRootName = "obsite-theme-slots-secondary"
-)
+const themeSlotsRootName = "obsite-theme-slots-primary"
 
 var themeSlotNames = [...]string{
 	"obsite-head-end",

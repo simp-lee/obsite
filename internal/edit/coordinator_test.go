@@ -159,7 +159,7 @@ func sourceHash(data []byte) string {
 func snapshotEditOutput(t *testing.T, root string) map[string][]byte {
 	t.Helper()
 	result := make(map[string][]byte)
-	_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+	if err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info == nil || info.IsDir() {
 			return err
 		}
@@ -173,6 +173,8 @@ func snapshotEditOutput(t *testing.T, root string) map[string][]byte {
 		}
 		result[filepath.ToSlash(rel)] = data
 		return nil
-	})
+	}); err != nil {
+		t.Fatalf("walk edit output: %v", err)
+	}
 	return result
 }

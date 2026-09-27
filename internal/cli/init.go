@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	internalconfig "github.com/simp-lee/obsite/internal/config"
 	internalfsutil "github.com/simp-lee/obsite/internal/fsutil"
@@ -46,7 +47,7 @@ func newInitCommand() *cobra.Command {
 }
 
 func prepareInitVault(rawPath string) (string, bool, error) {
-	trimmed := rawPath
+	trimmed := strings.TrimSpace(rawPath)
 	if trimmed == "" {
 		trimmed = "."
 	}

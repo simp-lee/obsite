@@ -216,7 +216,7 @@ func (c *AssetCollector) registerSitePathLocked(srcPath string) string {
 		return dstPath
 	}
 	if !c.sourceExists(srcPath) {
-		dstPath := hashedAssetPath(srcPath, missingAssetHash(srcPath))
+		dstPath := avoidReservedOutputPath(hashedAssetPath(srcPath, missingAssetHash(srcPath)), c.reservedOutputKeys)
 		c.planned[srcPath] = dstPath
 		return dstPath
 	}
@@ -231,7 +231,7 @@ func (c *AssetCollector) registerSitePathLocked(srcPath string) string {
 		hashValue = missingAssetHash(srcPath)
 	}
 
-	dstPath := hashedAssetPath(srcPath, hashValue)
+	dstPath := avoidReservedOutputPath(hashedAssetPath(srcPath, hashValue), c.reservedOutputKeys)
 	c.planned[srcPath] = dstPath
 	return dstPath
 }

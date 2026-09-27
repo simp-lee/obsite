@@ -35,6 +35,24 @@ func TestInitCommandDefaultsToCurrentVaultAndSeedsStrictRoot(t *testing.T) {
 	}
 }
 
+func TestInitCommandTrimsVaultPathWhitespace(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+
+	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", " \tvault \n"})
+	if err != nil {
+		t.Fatalf("executeForTest() error = %v", err)
+	}
+	for _, name := range []string{defaultConfigFilename, "_index.md"} {
+		if _, err := os.Stat(filepath.Join(root, "vault", name)); err != nil {
+			t.Fatalf("missing init file %q: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, " \tvault \n")); !os.IsNotExist(err) {
+		t.Fatalf("init used untrimmed vault path: %v", err)
+	}
+}
+
 func TestInitCommandCreatesMissingDirectoryAndStrictConfig(t *testing.T) {
 	vaultPath := filepath.Join(t.TempDir(), "new-vault")
 	_, _, err := executeForTest(t, testCommandDependencies(), []string{"init", "--vault", vaultPath})

@@ -18,7 +18,7 @@ func TestHoldoutJudgments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := BuildEngine(corpus.Semantics, corpus.Index, corpus.Graph, ProductionEngineParameters(10, 1))
+	result, err := BuildEngineFromSemanticOwner(&corpus.Semantics, corpus.Index, corpus.Graph, ProductionEngineParameters(10, 1))
 	if err != nil {
 		t.Fatal(err)
 	}

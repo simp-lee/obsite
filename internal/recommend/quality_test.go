@@ -127,27 +127,69 @@ func TestQualityAssetSchema(t *testing.T) {
 	}
 
 	root := t.TempDir()
-	writeQualityTestFile(t, root, "calibration/en/source.md", "# Retry Budgets\n\nA reviewed article about bounded retries and backoff.\n")
-	writeQualityTestFile(t, root, "calibration/en/peer.md", "# Backoff Design\n\nA reviewed peer article about retry timing.\n")
-	sources := []qualitySource{
-		qualityTestSource(t, root, "cal-en-source", "Retry Budgets", "calibration", "en", "calibration/en/source.md", "author-a", "reviewer-b"),
-		qualityTestSource(t, root, "cal-en-peer", "Backoff Design", "calibration", "en", "calibration/en/peer.md", "author-a", "reviewer-b"),
+	languages := []string{"en", "zh-hans", "zh-hant", "mixed"}
+	sources := make([]qualitySource, 0, 16)
+	labelSets := make([]qualityLabelSetReference, 0, 8)
+	holdoutReviews := make([]qualityAdjudicationReview, 0, len(languages))
+	var judgments qualityJudgmentSet
+	for _, split := range []string{"calibration", "holdout"} {
+		for _, language := range languages {
+			prefix := split + "-" + language
+			sourceID := prefix + "-source"
+			candidateID := prefix + "-candidate"
+			sourcePath := split + "/" + language + "/source.md"
+			candidatePath := split + "/" + language + "/candidate.md"
+			sourceTitle := fmt.Sprintf("%s %s source", split, language)
+			candidateTitle := fmt.Sprintf("%s %s candidate", split, language)
+			writeQualityTestFile(t, root, sourcePath, "# "+sourceTitle+"\n\nA reviewed article.\n")
+			writeQualityTestFile(t, root, candidatePath, "# "+candidateTitle+"\n\nA reviewed peer article.\n")
+			sources = append(sources,
+				qualityTestSource(t, root, sourceID, sourceTitle, split, language, sourcePath, "author-a", "reviewer-b"),
+				qualityTestSource(t, root, candidateID, candidateTitle, split, language, candidatePath, "author-a", "reviewer-b"),
+			)
+			set := qualityJudgmentSet{
+				Split: split, Language: language,
+				PoolKind: "calibration-grid", GridTupleCount: 81,
+				Sources: []qualitySourceJudgment{{
+					SourceID: sourceID, KnownRelevant: []string{candidateID},
+					Candidates: []qualityCandidateJudgment{{CandidateID: candidateID, Grade: 2, Discovery: []string{"search"}}},
+				}},
+			}
+			if split == "holdout" {
+				set.PoolKind = "holdout-active"
+				set.GridTupleCount = 0
+				set.AdjudicationReview = &qualityJudgmentReview{
+					Reviewer: "blind-reviewer", Record: "holdout/review.json",
+					Method: "article-content-only", ReviewedPairCount: 1,
+				}
+				holdoutReviews = append(holdoutReviews, qualityAdjudicationReview{
+					Language: language, Reviewer: "blind-reviewer",
+					Pairs: []qualityAdjudicatedPair{{SourceID: sourceID, CandidateID: candidateID, Grade: 2, Rationale: "same core problem"}},
+				})
+			} else if language == "en" {
+				judgments = set
+			}
+			labelPath := split + "/labels-" + language + ".json"
+			writeQualityJSON(t, root, labelPath, set)
+			labelSets = append(labelSets, qualityLabelSetReference{
+				Split: split, Language: language, Path: labelPath,
+				SHA256: qualityFileHash(t, filepath.Join(root, filepath.FromSlash(labelPath))),
+			})
+		}
 	}
-	judgments := qualityJudgmentSet{
-		Split: "calibration", Language: "en", PoolKind: "calibration-grid", GridTupleCount: 81,
-		Sources: []qualitySourceJudgment{{
-			SourceID: "cal-en-source", KnownRelevant: []string{"cal-en-peer"},
-			Candidates: []qualityCandidateJudgment{{CandidateID: "cal-en-peer", Grade: 2, Discovery: []string{"search"}}},
-		}},
+	holdoutRecord := qualityAdjudicationRecord{
+		SchemaVersion: 1, Method: "article-content-only", ReviewedAt: "2026-01-01",
+		Rubric:  map[string]string{"0": "unrelated", "1": "partially related", "2": "same core problem"},
+		Reviews: holdoutReviews,
 	}
-	writeQualityJSON(t, root, "calibration/labels-en.json", judgments)
+	writeQualityJSON(t, root, "holdout/review.json", holdoutRecord)
 	manifest = qualityManifest{
 		SchemaVersion: 1,
 		Sources:       sources,
-		LabelSets: []qualityLabelSetReference{{
-			Split: "calibration", Language: "en", Path: "calibration/labels-en.json",
-			SHA256: qualityFileHash(t, filepath.Join(root, "calibration/labels-en.json")),
-		}},
+		LabelSets:     labelSets,
+		HoldoutAdjudication: &qualityAdjudicationReference{
+			Path: "holdout/review.json", SHA256: qualityFileHash(t, filepath.Join(root, "holdout/review.json")), PairCount: len(holdoutReviews),
+		},
 	}
 	if err := validateQualityManifest(root, manifest); err != nil {
 		t.Fatalf("validateQualityManifest(valid fixture) error = %v", err)
@@ -185,10 +227,10 @@ func TestQualityAssetSchema(t *testing.T) {
 		AdjudicationReview: &qualityJudgmentReview{Reviewer: "blind-reviewer", Record: "holdout/review.json", Method: "article-content-only", ReviewedPairCount: 1},
 		Sources:            []qualitySourceJudgment{{SourceID: "source", Candidates: []qualityCandidateJudgment{{CandidateID: "candidate", Grade: 1}}}},
 	}
-	holdoutRecord := qualityAdjudicationRecord{Reviews: []qualityAdjudicationReview{{
+	mismatchedHoldoutRecord := qualityAdjudicationRecord{Reviews: []qualityAdjudicationReview{{
 		Language: "en", Reviewer: "blind-reviewer", Pairs: []qualityAdjudicatedPair{{SourceID: "source", CandidateID: "candidate", Grade: 2, Rationale: "same core problem"}},
 	}}}
-	if err := validateHoldoutAdjudicationBinding(holdoutSet, qualityAdjudicationReference{Path: "holdout/review.json", PairCount: 1}, holdoutRecord); err == nil {
+	if err := validateHoldoutAdjudicationBinding(holdoutSet, qualityAdjudicationReference{Path: "holdout/review.json", PairCount: 1}, mismatchedHoldoutRecord); err == nil {
 		t.Fatal("validateHoldoutAdjudicationBinding(grade mismatch) error = nil")
 	}
 }
@@ -334,6 +376,7 @@ func validateQualityManifest(root string, manifest qualityManifest) error {
 	}
 	sources := make(map[string]qualitySource, len(manifest.Sources))
 	paths := make(map[string]struct{}, len(manifest.Sources))
+	sourceKeys := make(map[string]struct{})
 	for _, source := range manifest.Sources {
 		if err := validateQualitySource(root, source); err != nil {
 			return err
@@ -346,6 +389,7 @@ func validateQualityManifest(root string, manifest qualityManifest) error {
 		}
 		sources[source.ID] = source
 		paths[source.Path] = struct{}{}
+		sourceKeys[source.Split+"/"+source.Language] = struct{}{}
 	}
 
 	adjudication, err := loadQualityAdjudication(root, manifest.HoldoutAdjudication, sources)
@@ -393,6 +437,17 @@ func validateQualityManifest(root string, manifest qualityManifest) error {
 			}
 		} else if judgments.AdjudicationReview != nil {
 			return fmt.Errorf("calibration label set %q unexpectedly has holdout adjudication metadata", reference.Path)
+		}
+	}
+	for _, split := range []string{"calibration", "holdout"} {
+		for _, language := range []string{"zh-hans", "zh-hant", "en", "mixed"} {
+			key := split + "/" + language
+			if _, exists := sourceKeys[key]; !exists {
+				return fmt.Errorf("missing quality source group %q", key)
+			}
+			if _, exists := labelKeys[key]; !exists {
+				return fmt.Errorf("missing quality label set %q", key)
+			}
 		}
 	}
 	return nil
