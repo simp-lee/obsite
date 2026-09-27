@@ -28,7 +28,7 @@ import (
 const (
 	Width                = 1200
 	Height               = 630
-	GeneratorVersion     = "obsite-social-card-v1"
+	GeneratorVersion     = "obsite-social-card-v2"
 	cardPrimaryFontName  = "KaTeX_Main-Regular.ttf"
 	cardFallbackFontName = "DroidSansFallbackFull.ttf"
 )
@@ -189,7 +189,10 @@ func Generate(input Input) (Result, error) {
 		}
 	}
 	var encoded bytes.Buffer
-	if err := png.Encode(&encoded, canvas); err != nil {
+	// Cards are independently content-addressed; BestSpeed keeps their bytes
+	// deterministic while avoiding default zlib compression cost at scale.
+	encoder := png.Encoder{CompressionLevel: png.BestSpeed}
+	if err := encoder.Encode(&encoded, canvas); err != nil {
 		return Result{}, err
 	}
 	pngBytes := encoded.Bytes()

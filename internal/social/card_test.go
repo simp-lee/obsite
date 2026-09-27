@@ -22,8 +22,8 @@ func TestGenerateHasFixedCanonicalInputAndPNGSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantJSON = `{"canonicalURL":"https://example.test/docs/start/","siteTitle":"Obsite","title":"Deterministic title","context":"Docs / v1","description":"A description","date":"2026-04-06T00:00:00Z","updated":"2026-04-07T00:00:00Z","tags":["guide","go"],"aliases":["start"],"slug":"start","type":"doc","order":7,"author":"Alice","reviewed":"2026-04-08T00:00:00Z","status":"stable","audience":"developers","productVersion":"v1","series":"getting-started","generator":"obsite-social-card-v1"}`
-	const wantPNGHash = "278d7c15699d84b77d8b69e30e2007c827a8c81ede047610ed7b8fadee8eb8c7"
+	const wantJSON = `{"canonicalURL":"https://example.test/docs/start/","siteTitle":"Obsite","title":"Deterministic title","context":"Docs / v1","description":"A description","date":"2026-04-06T00:00:00Z","updated":"2026-04-07T00:00:00Z","tags":["guide","go"],"aliases":["start"],"slug":"start","type":"doc","order":7,"author":"Alice","reviewed":"2026-04-08T00:00:00Z","status":"stable","audience":"developers","productVersion":"v1","series":"getting-started","generator":"obsite-social-card-v2"}`
+	const wantPNGHash = "a1c67b2af0fff7428d056a28b04dee38e9ad3dc347d40de57b7e8bed65da4a90"
 	if string(result.CanonicalJSON) != wantJSON {
 		t.Fatalf("canonical JSON = %s, want %s", result.CanonicalJSON, wantJSON)
 	}
@@ -31,7 +31,7 @@ func TestGenerateHasFixedCanonicalInputAndPNGSnapshot(t *testing.T) {
 	if got := hex.EncodeToString(hash[:]); got != wantPNGHash {
 		t.Fatalf("PNG hash = %s, want %s", got, wantPNGHash)
 	}
-	if want := "assets/social/2647f899c632ffe86c58d0dc5bea3d840e2aaec648cbcac1706defb3f772b7ea/77d0f3547dd6a4747f4aad9e0631d88ee3bcbfcb26a33844896dcb06f7057067-" + wantPNGHash + ".png"; result.Path != want {
+	if want := "assets/social/2647f899c632ffe86c58d0dc5bea3d840e2aaec648cbcac1706defb3f772b7ea/2c11b81a6529d3c612985da4dcb33063af2b7d101ee165b58de61b7afb91b17b-" + wantPNGHash + ".png"; result.Path != want {
 		t.Fatalf("path = %s, want %s", result.Path, want)
 	}
 }
@@ -41,7 +41,7 @@ func TestGenerateEnforcesFixedColorsAndNoCoverGeometry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const wantJSON = `{"canonicalURL":"https://example.test/no-cover/","siteTitle":"Site","title":"Title","context":"","generator":"obsite-social-card-v1"}`
+	const wantJSON = `{"canonicalURL":"https://example.test/no-cover/","siteTitle":"Site","title":"Title","context":"","generator":"obsite-social-card-v2"}`
 	if string(result.CanonicalJSON) != wantJSON {
 		t.Fatalf("canonical JSON = %s, want %s", result.CanonicalJSON, wantJSON)
 	}
@@ -94,7 +94,7 @@ func TestGenerateTruncatesLongGraphemeTextDeterministically(t *testing.T) {
 	if !bytes.Equal(first.PNG, second.PNG) {
 		t.Fatal("long grapheme input was not stable PNG output")
 	}
-	const wantHash = "699af2b604d7d18837d564aa7151ebcc8ddb96c76d4a5900b146e4afd5228b65"
+	const wantHash = "cdb80c357b8a65d3523e31005609f3cc9c4a944f76b24380af7181047c699316"
 	if first.PNGHash != wantHash {
 		t.Fatalf("long grapheme PNG hash = %s, want %s", first.PNGHash, wantHash)
 	}
